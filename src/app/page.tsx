@@ -4,6 +4,7 @@ import { SummaryCards } from "@/components/dashboard/SummaryCards";
 import { WhatsNext } from "@/components/dashboard/WhatsNext";
 import { IssueTable } from "@/components/dashboard/IssueTable";
 import { PriorityAlerts } from "@/components/dashboard/PriorityAlerts";
+import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { SummaryCardSkeleton } from "@/components/ui/LoadingSkeleton";
 import { useIssues } from "@/hooks/useIssues";
@@ -73,6 +74,8 @@ export default function Home() {
       )}
 
       <IssueTable issues={plan.all_issues} />
+
+      <ActivityFeed />
     </div>
   );
 }

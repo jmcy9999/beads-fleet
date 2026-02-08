@@ -77,6 +77,17 @@ export function IssueCard({
         <PriorityIndicator priority={issue.priority} />
       </div>
       <h3 className="text-sm font-medium mb-2 line-clamp-2">{issue.title}</h3>
+      {issue.impact_score != null && issue.impact_score > 0 && (
+        <div className="mt-1 flex items-center gap-1.5">
+          <div className="flex-1 h-1 bg-surface-2 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full"
+              style={{ width: `${Math.round(issue.impact_score * 100)}%` }}
+            />
+          </div>
+          <span className="text-[10px] text-gray-500">{Math.round(issue.impact_score * 100)}</span>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <StatusBadge status={issue.status} />
         <div className="flex items-center gap-2 text-xs text-gray-400">

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useHealth } from "@/hooks/useHealth";
 
 const NAV_ITEMS = [
   {
@@ -65,6 +66,8 @@ const NAV_ITEMS = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { data: health } = useHealth();
+  const bvAvailable = health?.bv_available ?? false;
 
   return (
     <aside className="hidden lg:flex lg:flex-col w-64 bg-surface-1 border-r border-border-default z-30">
@@ -106,6 +109,14 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      {/* Graph Health */}
+      <div className="px-4 py-2 border-t border-border-default">
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span className={bvAvailable ? "text-status-open" : "text-status-progress"}>●</span>
+          <span>{bvAvailable ? "bv connected" : "JSONL fallback"}</span>
+        </div>
+      </div>
 
       {/* Bottom Section */}
       <div className="px-6 py-4 border-t border-border-default">
