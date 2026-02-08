@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: theme("colors.surface-1");
+  }
+  ::-webkit-scrollbar-thumb {
+    background: theme("colors.surface-3");
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: theme("colors.border-default");
+  }
+
+  ::selection {
+    background: theme("colors.status-open / 30%");
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface-1 border border-border-default rounded-lg;
+  }
+  .card-hover {
+    @apply bg-surface-1 border border-border-default rounded-lg hover:bg-surface-2 hover:border-surface-3 transition-colors;
+  }
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.2s ease-out;
+}
