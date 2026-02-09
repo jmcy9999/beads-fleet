@@ -12,11 +12,14 @@ export function SetupWizard() {
   const [error, setError] = useState<string | null>(null);
 
   const { data: health } = useHealth();
-  const { data: repos } = useRepos();
+  const { data: repos, isLoading } = useRepos();
   const mutation = useRepoMutation();
 
   const bvAvailable = health?.bv_available ?? false;
   const hasRepos = (repos?.repos.length ?? 0) > 0;
+
+  // Don't show wizard while still loading repo data
+  if (isLoading) return null;
 
   // If we already have repos configured, don't show the wizard
   if (hasRepos) return null;
