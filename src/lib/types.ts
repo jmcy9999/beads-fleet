@@ -254,3 +254,37 @@ export const KANBAN_COLUMNS: IssueStatus[] = [
   "blocked",
   "closed",
 ];
+
+// -----------------------------------------------------------------------------
+// Category D: Token Usage Types
+// -----------------------------------------------------------------------------
+
+export interface TokenUsageRecord {
+  timestamp: string;
+  session_id: string;
+  issue_id: string;
+  project: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_cost_usd: number;
+  duration_ms: number;
+  num_turns: number;
+}
+
+export interface IssueTokenSummary {
+  issue_id: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  session_count: number;
+  total_duration_ms: number;
+  total_turns: number;
+  first_session: string;
+  last_session: string;
+}
