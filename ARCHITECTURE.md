@@ -383,6 +383,34 @@ Dark mode with 4-tier surface palette:
 3. **Security:** CLI calls use `execFile` (not `exec`). Diff `since` param validated against safe regex. No user-writeable mutations to issue data (read-only dashboard).
 4. **Cache invalidation:** bv-client has 10s server TTL. React Query has 15s stale time + polling. Repo switch invalidates everything.
 
+## Claude Code Hooks
+
+Three global hooks installed at `~/.claude/hooks/` (canonical copies tracked in `scripts/hooks/`):
+
+### `beads-collect-tokens.sh` (Stop hook)
+Fires when a Claude Code session ends. Extracts token usage from the session transcript and writes a normalized record to `.beads/token-usage.jsonl`.
+
+- **Token extraction:** Sums `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` from all assistant entries in the transcript JSONL.
+- **Model:** Reads `.message.model` from the first non-synthetic assistant entry.
+- **Cost calculation:** Multiplies token counts by model pricing (Opus: $15/$75/$1.875/$18.75 per M; Sonnet: $3/$15/$0.375/$3.75; Haiku: $0.80/$4/$0.10/$1).
+- **Duration:** Computed from first to last timestamp in the transcript.
+- **Turns:** Count of `user`-type entries in the transcript.
+- **Issue attribution:** Looks up `issue_id` from `.beads/.session-map.jsonl` (keyed by `session_id`), falls back to `.beads/.current-issue`.
+- **Deduplication:** If a record for the same `session_id` already exists, removes it before writing (the Stop hook can fire multiple times per session on resume/clear).
+
+### `beads-session-start.sh` (SessionStart hook)
+Fires when a Claude Code session starts or resumes. Detects beads-enabled projects (checks for `.beads/` directory), finds the active `in_progress` issue via `bd list`, and writes a session-to-issue mapping to `.beads/.session-map.jsonl`. Also sets OTEL environment variables.
+
+### `beads-track-issue.sh` (PostToolUse hook)
+Fires after Bash tool calls. Watches for `bd update <id> --status=in_progress` commands to track mid-session issue switches. Updates `.beads/.current-issue` and appends an `issue_switch` event to `.beads/.session-map.jsonl`.
+
+### Data files written by hooks
+| File | Written by | Purpose |
+|------|-----------|---------|
+| `.beads/token-usage.jsonl` | collect-tokens | One record per session with token counts, cost, model, duration, turns |
+| `.beads/.session-map.jsonl` | session-start, track-issue | Maps session_id to issue_id (session_start and issue_switch events) |
+| `.beads/.current-issue` | session-start, track-issue | Current active issue ID (single line, used as fallback for attribution) |
+
 ## File Structure
 
 ```
@@ -433,4 +461,11 @@ src/
     insights/               # MetricPanel, CyclesPanel, GraphDensityBadge, DependencyGraph
     filters/                # FilterBar, RecipeSelector
     ui/                     # StatusBadge, PriorityIndicator, IssueTypeIcon, SummaryCard, IssueCard, EmptyState, ErrorState, LoadingSkeleton, ErrorBoundary, ShortcutsHelp, SetupWizard
+scripts/
+  hooks/
+    beads-collect-tokens.sh   # Stop hook: token usage collection (canonical copy)
+    beads-session-start.sh    # SessionStart hook: issue attribution setup
+    beads-track-issue.sh      # PostToolUse hook: mid-session issue tracking
+  install-bv.sh               # Install bv CLI
+  sync-hub.sh                 # Sync issues across repos into projects_master hub
 ```
