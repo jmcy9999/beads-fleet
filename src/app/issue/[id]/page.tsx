@@ -308,6 +308,9 @@ export default function IssueDetailPage() {
     (id) => !allIssues.some((i) => i.id === id)
   );
 
+  // --- Epic children (issues whose epic field points to this issue) ---
+  const epicChildren = allIssues.filter((i) => i.epic === issue.id);
+
   // --- Labels ---
   const labels = rawIssue?.labels ?? issue.labels ?? [];
 
@@ -374,6 +377,13 @@ export default function IssueDetailPage() {
               resolvedIssues={unblocksResolved}
               unresolvedIds={unblocksUnresolved}
             />
+            {epicChildren.length > 0 && (
+              <DependencyList
+                label={`Children (${epicChildren.length})`}
+                resolvedIssues={epicChildren}
+                unresolvedIds={[]}
+              />
+            )}
           </section>
 
           {/* Token Usage */}
@@ -495,6 +505,24 @@ export default function IssueDetailPage() {
                 <p className="text-sm text-gray-500">None</p>
               )}
             </div>
+
+            {/* Epic */}
+            {issue.epic && (
+              <div>
+                <h3 className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-1">
+                  Epic
+                </h3>
+                <Link
+                  href={`/issue/${issue.epic}`}
+                  className="text-sm text-blue-400 hover:text-blue-300 hover:underline"
+                >
+                  <span className="font-mono text-xs">{issue.epic}</span>
+                  {issue.epic_title && (
+                    <span className="ml-1.5 text-gray-300">{issue.epic_title}</span>
+                  )}
+                </Link>
+              </div>
+            )}
 
             {/* Impact Score */}
             {issue.impact_score != null && (
