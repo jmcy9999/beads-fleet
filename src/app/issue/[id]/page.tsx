@@ -2,10 +2,13 @@
 
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useIssueDetail } from "@/hooks/useIssueDetail";
 import { useIssues } from "@/hooks/useIssues";
 import { useTokenUsage, useTokenUsageSummary } from "@/hooks/useTokenUsage";
+import { useResearchReport } from "@/hooks/useResearchReport";
 import { useIssueAction } from "@/hooks/useIssueAction";
 import { buildFleetApps, computeEpicCosts } from "@/components/fleet/fleet-utils";
 import { ActivityTimeline } from "@/components/fleet/ActivityTimeline";
@@ -23,6 +26,24 @@ function resolveIssues(ids: string[], allIssues: PlanIssue[]): PlanIssue[] {
   return ids
     .map((id) => allIssues.find((i) => i.id === id))
     .filter((i): i is PlanIssue => i !== undefined);
+}
+
+/**
+ * Extract the app name from an epic title.
+ * Expects patterns like "LensCycle: Contact lens reminder app" → "LensCycle"
+ * or "LensCycle" → "LensCycle"
+ */
+function extractAppName(epicTitle: string | undefined): string | null {
+  if (!epicTitle) return null;
+  const colonIdx = epicTitle.indexOf(":");
+  if (colonIdx > 0) {
+    const name = epicTitle.slice(0, colonIdx).trim();
+    // Must be a single word / identifier-like
+    if (/^[a-zA-Z0-9_-]+$/.test(name)) return name;
+  }
+  // If the whole title is an identifier, use it
+  if (/^[a-zA-Z0-9_-]+$/.test(epicTitle.trim())) return epicTitle.trim();
+  return null;
 }
 
 function formatTimestamp(iso: string): string {
@@ -148,10 +169,14 @@ function DependencyList({
 // Action buttons
 // ---------------------------------------------------------------------------
 
-function IssueActionButtons({ issueId, status }: { issueId: string; status: IssueStatus }) {
+function IssueActionButtons({ issueId, status, labels }: { issueId: string; status: IssueStatus; labels?: string[] }) {
   const mutation = useIssueAction();
   const [closeReason, setCloseReason] = useState("");
   const [showCloseInput, setShowCloseInput] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [showFeedbackInput, setShowFeedbackInput] = useState(false);
+
+  const isResearch = labels?.includes("research") ?? false;
 
   const handleStart = () => mutation.mutate({ issueId, action: "start" });
   const handleReopen = () => mutation.mutate({ issueId, action: "reopen" });
@@ -159,6 +184,18 @@ function IssueActionButtons({ issueId, status }: { issueId: string; status: Issu
     mutation.mutate(
       { issueId, action: "close", reason: closeReason || undefined },
       { onSuccess: () => { setShowCloseInput(false); setCloseReason(""); } },
+    );
+  };
+  const handleApprove = () => {
+    mutation.mutate(
+      { issueId, action: "close", reason: "Research approved. Ready for development." },
+    );
+  };
+  const handleRequestMoreResearch = () => {
+    if (!feedbackText.trim()) return;
+    mutation.mutate(
+      { issueId, action: "comment", reason: feedbackText.trim() },
+      { onSuccess: () => { setShowFeedbackInput(false); setFeedbackText(""); } },
     );
   };
 
@@ -176,6 +213,56 @@ function IssueActionButtons({ issueId, status }: { issueId: string; status: Issu
 
       {(status === "in_progress" || status === "blocked" || status === "deferred") && (
         <>
+          {/* Factory research workflow buttons */}
+          {isResearch && (
+            <div className="space-y-2 pb-2 mb-2 border-b border-border-default">
+              <button
+                onClick={handleApprove}
+                disabled={mutation.isPending}
+                className="w-full rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+              >
+                {mutation.isPending ? "Approving..." : "Approve & Send to Development"}
+              </button>
+              {!showFeedbackInput ? (
+                <button
+                  onClick={() => setShowFeedbackInput(true)}
+                  disabled={mutation.isPending}
+                  className="w-full rounded-md bg-surface-2 px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-surface-3 border border-border-default disabled:opacity-50 transition-colors"
+                >
+                  Request More Research
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <textarea
+                    value={feedbackText}
+                    onChange={(e) => setFeedbackText(e.target.value)}
+                    placeholder="What additional research is needed?"
+                    rows={3}
+                    className="w-full rounded-md border border-border-default bg-surface-2 px-3 py-1.5 text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+                    onKeyDown={(e) => { if (e.key === "Escape") { setShowFeedbackInput(false); setFeedbackText(""); } }}
+                    autoFocus
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleRequestMoreResearch}
+                      disabled={mutation.isPending || !feedbackText.trim()}
+                      className="flex-1 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
+                    >
+                      {mutation.isPending ? "Sending..." : "Send Feedback"}
+                    </button>
+                    <button
+                      onClick={() => { setShowFeedbackInput(false); setFeedbackText(""); }}
+                      className="rounded-md bg-surface-2 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Standard close button */}
           {!showCloseInput ? (
             <button
               onClick={() => setShowCloseInput(true)}
@@ -259,6 +346,19 @@ export default function IssueDetailPage() {
 
   // The primary display issue merges both sources
   const issue = planIssue;
+
+  // Research report — derive app name from epic title
+  const researchAppName = useMemo(() => {
+    if (!issue) return null;
+    const isResearch = (rawIssue?.labels ?? issue.labels ?? []).includes("research");
+    if (!isResearch) return null;
+    // If this issue has an epic, use the epic title to derive app name
+    if (issue.epic_title) return extractAppName(issue.epic_title);
+    // If this IS an epic with research label, use its own title
+    if (issue.issue_type === "epic") return extractAppName(issue.title);
+    return null;
+  }, [issue, rawIssue]);
+  const { data: researchReport } = useResearchReport(researchAppName);
 
   // --- Loading ---
   if (detailLoading) {
@@ -384,6 +484,33 @@ export default function IssueDetailPage() {
               <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">
                 {rawIssue.notes}
               </p>
+            </section>
+          )}
+
+          {/* Research Report (markdown from factory repo) */}
+          {researchReport?.content && (
+            <section className="card p-5">
+              <h2 className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-3">
+                Research Report
+              </h2>
+              <div className="prose prose-invert prose-sm max-w-none
+                prose-headings:text-gray-200 prose-headings:font-semibold
+                prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
+                prose-p:text-gray-300 prose-p:leading-relaxed
+                prose-a:text-blue-400 prose-a:no-underline hover:prose-a:underline
+                prose-strong:text-gray-200
+                prose-code:text-amber-300 prose-code:bg-surface-2 prose-code:rounded prose-code:px-1
+                prose-pre:bg-surface-0 prose-pre:border prose-pre:border-border-default
+                prose-table:text-sm
+                prose-th:text-gray-400 prose-th:border-border-default
+                prose-td:border-border-default
+                prose-li:text-gray-300
+                prose-blockquote:border-blue-500/50 prose-blockquote:text-gray-400
+                prose-hr:border-border-default">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {researchReport.content}
+                </ReactMarkdown>
+              </div>
             </section>
           )}
 
@@ -528,7 +655,7 @@ export default function IssueDetailPage() {
             </div>
 
             {/* Action Buttons */}
-            <IssueActionButtons issueId={issue.id} status={issue.status} />
+            <IssueActionButtons issueId={issue.id} status={issue.status} labels={labels} />
 
             {/* Priority */}
             <div>

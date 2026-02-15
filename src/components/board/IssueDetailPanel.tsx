@@ -13,10 +13,14 @@ interface IssueDetailPanelProps {
   onClose: () => void;
 }
 
-function CompactActionButtons({ issueId, status }: { issueId: string; status: IssueStatus }) {
+function CompactActionButtons({ issueId, status, labels }: { issueId: string; status: IssueStatus; labels?: string[] }) {
   const mutation = useIssueAction();
   const [closeReason, setCloseReason] = useState("");
   const [showCloseInput, setShowCloseInput] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [showFeedbackInput, setShowFeedbackInput] = useState(false);
+
+  const isResearch = labels?.includes("research") ?? false;
 
   const handleStart = () => mutation.mutate({ issueId, action: "start" });
   const handleReopen = () => mutation.mutate({ issueId, action: "reopen" });
@@ -26,10 +30,22 @@ function CompactActionButtons({ issueId, status }: { issueId: string; status: Is
       { onSuccess: () => { setShowCloseInput(false); setCloseReason(""); } },
     );
   };
+  const handleApprove = () => {
+    mutation.mutate(
+      { issueId, action: "close", reason: "Research approved. Ready for development." },
+    );
+  };
+  const handleRequestMoreResearch = () => {
+    if (!feedbackText.trim()) return;
+    mutation.mutate(
+      { issueId, action: "comment", reason: feedbackText.trim() },
+      { onSuccess: () => { setShowFeedbackInput(false); setFeedbackText(""); } },
+    );
+  };
 
   return (
     <div className="space-y-2">
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
         {status === "open" && (
           <button
             onClick={handleStart}
@@ -40,13 +56,34 @@ function CompactActionButtons({ issueId, status }: { issueId: string; status: Is
           </button>
         )}
         {(status === "in_progress" || status === "blocked" || status === "deferred") && (
-          <button
-            onClick={() => showCloseInput ? handleClose() : setShowCloseInput(true)}
-            disabled={mutation.isPending}
-            className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
-          >
-            {mutation.isPending ? "Closing..." : showCloseInput ? "Confirm" : "Close"}
-          </button>
+          <>
+            {/* Factory research workflow buttons */}
+            {isResearch && (
+              <>
+                <button
+                  onClick={handleApprove}
+                  disabled={mutation.isPending}
+                  className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+                >
+                  {mutation.isPending ? "Approving..." : "Approve"}
+                </button>
+                <button
+                  onClick={() => setShowFeedbackInput(!showFeedbackInput)}
+                  disabled={mutation.isPending}
+                  className="rounded-md bg-surface-2 px-3 py-1.5 text-xs font-medium text-gray-300 hover:text-white hover:bg-surface-3 border border-border-default disabled:opacity-50 transition-colors"
+                >
+                  More Research
+                </button>
+              </>
+            )}
+            <button
+              onClick={() => showCloseInput ? handleClose() : setShowCloseInput(true)}
+              disabled={mutation.isPending}
+              className="rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+            >
+              {mutation.isPending ? "Closing..." : showCloseInput ? "Confirm" : "Close"}
+            </button>
+          </>
         )}
         {status === "closed" && (
           <button
@@ -58,6 +95,35 @@ function CompactActionButtons({ issueId, status }: { issueId: string; status: Is
           </button>
         )}
       </div>
+      {/* Feedback input for "Request More Research" */}
+      {showFeedbackInput && isResearch && (status === "in_progress" || status === "blocked" || status === "deferred") && (
+        <div className="space-y-2">
+          <textarea
+            value={feedbackText}
+            onChange={(e) => setFeedbackText(e.target.value)}
+            placeholder="What additional research is needed?"
+            rows={2}
+            className="w-full rounded-md border border-border-default bg-surface-2 px-2 py-1 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+            onKeyDown={(e) => { if (e.key === "Escape") { setShowFeedbackInput(false); setFeedbackText(""); } }}
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={handleRequestMoreResearch}
+              disabled={mutation.isPending || !feedbackText.trim()}
+              className="flex-1 rounded-md bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
+            >
+              {mutation.isPending ? "Sending..." : "Send"}
+            </button>
+            <button
+              onClick={() => { setShowFeedbackInput(false); setFeedbackText(""); }}
+              className="text-xs text-gray-500 hover:text-gray-300"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {showCloseInput && (status === "in_progress" || status === "blocked" || status === "deferred") && (
         <div className="flex gap-2">
           <input
@@ -155,7 +221,7 @@ export function IssueDetailPanel({
           </div>
 
           {/* Action Buttons */}
-          <CompactActionButtons issueId={issue.id} status={issue.status} />
+          <CompactActionButtons issueId={issue.id} status={issue.status} labels={issue.labels} />
 
           {/* Owner */}
           <div>

@@ -9,9 +9,9 @@ const execFile = promisify(execFileCb);
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-type IssueAction = "start" | "close" | "reopen";
+type IssueAction = "start" | "close" | "reopen" | "comment";
 
-const VALID_ACTIONS = new Set<IssueAction>(["start", "close", "reopen"]);
+const VALID_ACTIONS = new Set<IssueAction>(["start", "close", "reopen", "comment"]);
 const ISSUE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 export async function POST(
@@ -43,7 +43,15 @@ export async function POST(
   // Validate action
   if (!action || !VALID_ACTIONS.has(action as IssueAction)) {
     return NextResponse.json(
-      { error: `Invalid action: ${action}. Must be one of: start, close, reopen` },
+      { error: `Invalid action: ${action}. Must be one of: start, close, reopen, comment` },
+      { status: 400 },
+    );
+  }
+
+  // Comment action requires text
+  if (action === "comment" && !reason) {
+    return NextResponse.json(
+      { error: "Comment text is required" },
       { status: 400 },
     );
   }
@@ -62,6 +70,9 @@ export async function POST(
       break;
     case "reopen":
       args = ["update", issueId, "--status=open"];
+      break;
+    case "comment":
+      args = ["comment", issueId, reason!];
       break;
   }
 

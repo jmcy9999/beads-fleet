@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface IssueActionParams {
   issueId: string;
-  action: "start" | "close" | "reopen";
+  action: "start" | "close" | "reopen" | "comment";
   reason?: string;
 }
 

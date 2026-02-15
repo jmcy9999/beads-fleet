@@ -221,6 +221,63 @@ describe("POST /api/issues/:id/action", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Comment action
+  // -------------------------------------------------------------------------
+
+  it("runs bd comment for comment action with text", async () => {
+    mockGetActiveProjectPath.mockResolvedValue(TEST_PROJECT_PATH);
+    mockFindRepoForIssue.mockResolvedValue(TEST_PROJECT_PATH);
+
+    const response = await POST(
+      makeRequest("TEST-001", { action: "comment", reason: "Need more competitor analysis" }),
+      makeParams("TEST-001"),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ success: true, action: "comment", issueId: "TEST-001" });
+    expect(mockExecFile).toHaveBeenCalledWith(
+      "bd",
+      ["comment", "TEST-001", "Need more competitor analysis"],
+      expect.objectContaining({ cwd: TEST_PROJECT_PATH }),
+    );
+    expect(invalidateCache).toHaveBeenCalled();
+  });
+
+  it("returns 400 when comment action has no text", async () => {
+    const response = await POST(
+      makeRequest("TEST-001", { action: "comment" }),
+      makeParams("TEST-001"),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain("Comment text is required");
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it("comment action works in __all__ aggregation mode", async () => {
+    mockGetActiveProjectPath.mockResolvedValue("__all__");
+    mockFindRepoForIssue.mockResolvedValue("/tmp/resolved");
+
+    const response = await POST(
+      makeRequest("TEST-001", { action: "comment", reason: "Need more competitor analysis" }),
+      makeParams("TEST-001"),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({ success: true, action: "comment", issueId: "TEST-001" });
+    expect(mockFindRepoForIssue).toHaveBeenCalledWith("TEST-001");
+    expect(mockExecFile).toHaveBeenCalledWith(
+      "bd",
+      ["comment", "TEST-001", "Need more competitor analysis"],
+      expect.objectContaining({ cwd: "/tmp/resolved" }),
+    );
+    expect(invalidateCache).toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
   // Error handling
   // -------------------------------------------------------------------------
 

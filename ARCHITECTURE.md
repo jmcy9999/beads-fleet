@@ -192,6 +192,14 @@ Or add it directly to `~/.beads-web.json`:
 - **Submissions view:** Filters issues with `submission:*` labels (ready, in-review, approved, rejected)
 - Save custom filter combinations as named views (localStorage)
 
+### Research Report Display
+- **API endpoint:** `GET /api/research/[appName]` reads markdown reports from factory repo at `apps/<appName>/research/report.md`
+- **Multi-repo search:** Searches all configured repos for the report file, returns first match
+- **Markdown rendering:** Uses `react-markdown` with `remark-gfm` for full GitHub-flavored markdown (tables, task lists, strikethrough, etc.)
+- **Issue detail integration:** When viewing a `research`-labeled issue, the app name is derived from the parent epic title (e.g., "LensCycle: Market research" -> epic "LensCycle: Contact lens app" -> appName "LensCycle")
+- **Styled for dark mode:** Custom Tailwind prose classes for dark theme rendering
+- **Security:** App name validated against `^[a-zA-Z0-9_-]+$` to prevent path traversal
+
 ### Token Usage Tracking
 - Dashboard summary: total tokens, total cost, session count, total turns
 - Per-issue detail: sessions table with model, tokens, cost, duration, turns
@@ -213,7 +221,8 @@ Or add it directly to `~/.beads-web.json`:
 ### Issue Detail Page
 - Full description, status, priority, owner, labels, type
 - **Notes section:** Displays research reports and extended notes from `notes` field (only when non-empty)
-- **Workflow action buttons:** Start Work (open), Close with reason (in_progress/blocked/deferred), Reopen (closed)
+- **Workflow action buttons:** Start Work (open), Close with reason (in_progress/blocked/deferred), Reopen (closed), Comment (adds comment to issue)
+- **Factory research workflow:** When an issue has the `research` label, additional buttons appear: "Approve & Send to Development" (closes with approval reason) and "Request More Research" (adds a comment with feedback text). Available on both the issue detail page and kanban slide-in panel.
 - Dependency tree: blocked by / unblocks (with titles resolved)
 - **Epic children with progress:** For epic issues, lists all child issues with a progress bar showing completion percentage (closed/total)
 - **Parent epic link:** For child issues, sidebar shows clickable link to parent epic
@@ -329,7 +338,7 @@ bv CLI (--robot-plan/insights/priority/diff)                            │
 |----------|--------|---------|-------|
 | `/api/issues` | GET | `RobotPlan` (all_issues, tracks, summary) | Supports `__all__` aggregation |
 | `/api/issues/[id]` | GET | `{ plan_issue, raw_issue }` | Single issue with raw JSONL data |
-| `/api/issues/[id]/action` | POST | `{ success, action, issueId }` | Body: `{ action: "start"\|"close"\|"reopen", reason? }`. Shells out to `bd` CLI |
+| `/api/issues/[id]/action` | POST | `{ success, action, issueId }` | Body: `{ action: "start"\|"close"\|"reopen"\|"comment", reason? }`. Shells out to `bd` CLI. Comment requires `reason` (text). |
 | `/api/insights` | GET | `RobotInsights` (bottlenecks, keystones, etc.) | Graph metrics |
 | `/api/priority` | GET | `RobotPriority` (recommendations[]) | Priority misalignment detection |
 | `/api/diff?since=REF` | GET | `RobotDiff` (changes[]) | Git ref validated against safe pattern |
@@ -337,6 +346,7 @@ bv CLI (--robot-plan/insights/priority/diff)                            │
 | `/api/repos` | GET | `RepoStore` (repos[], activeRepo) | Repo config |
 | `/api/repos` | POST | `RepoStore` | Actions: `add`, `remove`, `set-active` (path required); `scan` (trigger watch dir scan); `set-watch-dirs` (dirs[] required) |
 | `/api/token-usage` | GET | `TokenUsageRecord[]` or summary | Params: `summary=true`, `issue_id=X`. Supports `__all__` |
+| `/api/research/[appName]` | GET | `{ content, repoPath }` | Reads `apps/<appName>/research/report.md` from configured repos. 404 if not found |
 | `/api/signals` | GET | `{ signals[], count, since }` | Params: `since` (required), `label`, `status`, `field`. Polling for state changes. Supports `__all__` |
 
 ## Core Library Modules
@@ -396,6 +406,7 @@ All TypeScript types:
 | `useHealth()` | `/api/health` | 60s |
 | `useRepos()` | `/api/repos` -> `RepoStore` | none (60s stale) |
 | `useIssueAction()` | POST `/api/issues/[id]/action` | invalidates issues, issue, insights, priority |
+| `useResearchReport(appName)` | `/api/research/[appName]` | 60s stale, enabled only when appName non-null |
 | `useRepoMutation()` | POST `/api/repos` | invalidates all queries |
 | `useTokenUsage(issueId?)` | `/api/token-usage` | 60s |
 | `useTokenUsageSummary()` | `/api/token-usage?summary=true` | 60s |
@@ -507,6 +518,7 @@ src/
       health/route.ts       # GET system health
       repos/route.ts        # GET/POST repo config
       token-usage/route.ts  # GET token usage (supports __all__)
+      research/[appName]/route.ts  # GET research report markdown
       signals/route.ts      # GET polling endpoint for state changes
   lib/
     bv-client.ts            # Central data layer (bv CLI wrapper)
@@ -528,6 +540,7 @@ src/
     useIssueAction.ts       # Issue status mutation (start/close/reopen)
     useRepos.ts             # Repo config + mutation hook
     useTokenUsage.ts        # Token usage hooks
+    useResearchReport.ts    # Research report fetcher
     useKeyboardShortcuts.ts # Keyboard navigation
   components/
     providers/              # QueryProvider, ClientShell
