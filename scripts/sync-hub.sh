@@ -97,7 +97,6 @@ echo ""
 # ---------------------------------------------------------------------------
 for repo_path in "${REPO_PATHS[@]}"; do
   project_name="$(basename "$repo_path")"
-  jsonl_path="$repo_path/.beads/issues.jsonl"
 
   echo "--- Syncing $project_name ---"
 
@@ -109,9 +108,28 @@ for repo_path in "${REPO_PATHS[@]}"; do
     }
   fi
 
-  # 1b. Import the repo's JSONL into the hub
-  if [ ! -f "$jsonl_path" ]; then
-    echo "  No JSONL found at $jsonl_path -- skipping"
+  # 1b. Find the best JSONL source. bd sync may write to a worktree rather
+  #     than the main .beads/issues.jsonl. Prefer whichever has more content.
+  main_jsonl="$repo_path/.beads/issues.jsonl"
+  worktree_jsonl="$repo_path/.git/beads-worktrees/beads-sync/.beads/issues.jsonl"
+  jsonl_path=""
+
+  main_count=0
+  worktree_count=0
+  [ -f "$main_jsonl" ] && main_count=$(wc -l < "$main_jsonl" | tr -d ' ')
+  [ -f "$worktree_jsonl" ] && worktree_count=$(wc -l < "$worktree_jsonl" | tr -d ' ')
+
+  if [ "$worktree_count" -gt 0 ] && [ "$worktree_count" -ge "$main_count" ]; then
+    jsonl_path="$worktree_jsonl"
+    echo "  Using worktree JSONL ($worktree_count lines)"
+  elif [ "$main_count" -gt 0 ]; then
+    jsonl_path="$main_jsonl"
+    echo "  Using main JSONL ($main_count lines)"
+  fi
+
+  # 1c. Import the repo's JSONL into the hub
+  if [ -z "$jsonl_path" ]; then
+    echo "  No JSONL found for $project_name -- skipping"
     echo ""
     continue
   fi
@@ -134,7 +152,109 @@ for repo_path in "${REPO_PATHS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Step 2: Label unlabelled issues by matching titles to source JSONLs
+# Step 2: Update existing hub issues with current status from source repos
+# ---------------------------------------------------------------------------
+echo "--- Updating existing issues ---"
+
+# The import step uses --skip-existing, so status/priority/closed_at changes
+# in source repos never propagate to the hub. This step fixes that by
+# matching hub issues to source issues by title and updating key fields.
+python3 - "$HUB_DB" "${REPO_PATHS[@]}" <<'UPDATE_SCRIPT'
+import json
+import sqlite3
+import sys
+import os
+
+hub_db = sys.argv[1]
+repo_paths = sys.argv[2:]
+
+# Resolve the best JSONL path (worktree preferred over main)
+def resolve_jsonl(repo_path):
+    main = os.path.join(repo_path, ".beads", "issues.jsonl")
+    worktree = os.path.join(repo_path, ".git", "beads-worktrees", "beads-sync", ".beads", "issues.jsonl")
+    main_lines = 0
+    worktree_lines = 0
+    if os.path.isfile(main):
+        with open(main) as f:
+            main_lines = sum(1 for line in f if line.strip())
+    if os.path.isfile(worktree):
+        with open(worktree) as f:
+            worktree_lines = sum(1 for line in f if line.strip())
+    if worktree_lines > 0 and worktree_lines >= main_lines:
+        return worktree
+    if main_lines > 0:
+        return main
+    return None
+
+# Build a map: title -> latest issue data from each repo's JSONL
+title_to_source = {}
+for repo_path in repo_paths:
+    jsonl_path = resolve_jsonl(repo_path)
+    if jsonl_path is None:
+        continue
+    with open(jsonl_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                issue = json.loads(line)
+                title = issue.get("title", "")
+                if title:
+                    title_to_source[title] = issue
+            except json.JSONDecodeError:
+                continue
+
+conn = sqlite3.connect(hub_db)
+cur = conn.cursor()
+
+# Get all hub issues (excluding tombstones)
+cur.execute("""
+    SELECT id, title, status, priority, closed_at, close_reason, updated_at
+    FROM issues
+    WHERE status <> 'tombstone'
+""")
+hub_issues = cur.fetchall()
+
+updated_count = 0
+for hub_id, title, hub_status, hub_priority, hub_closed_at, hub_close_reason, hub_updated_at in hub_issues:
+    source = title_to_source.get(title)
+    if source is None:
+        continue
+
+    src_status = source.get("status", hub_status)
+    src_priority = source.get("priority", hub_priority)
+    src_closed_at = source.get("closed_at") or None
+    src_close_reason = source.get("close_reason") or None
+    src_updated_at = source.get("updated_at") or hub_updated_at
+
+    # Check if anything changed
+    if (src_status == hub_status
+        and src_priority == hub_priority
+        and src_closed_at == hub_closed_at
+        and src_close_reason == hub_close_reason):
+        continue
+
+    cur.execute("""
+        UPDATE issues
+        SET status = ?, priority = ?, closed_at = ?, close_reason = ?, updated_at = ?
+        WHERE id = ?
+    """, (src_status, src_priority, src_closed_at, src_close_reason, src_updated_at, hub_id))
+    updated_count += 1
+
+conn.commit()
+conn.close()
+
+if updated_count == 0:
+    print("  All hub issues already up to date")
+else:
+    print(f"  Updated {updated_count} issue(s) with current status from source repos")
+UPDATE_SCRIPT
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# Step 3: Label unlabelled issues by matching titles to source JSONLs
 # ---------------------------------------------------------------------------
 echo "--- Labelling issues ---"
 
@@ -149,12 +269,30 @@ import os
 hub_db = sys.argv[1]
 repo_paths = sys.argv[2:]
 
+# Resolve the best JSONL path (worktree preferred over main)
+def resolve_jsonl(repo_path):
+    main = os.path.join(repo_path, ".beads", "issues.jsonl")
+    worktree = os.path.join(repo_path, ".git", "beads-worktrees", "beads-sync", ".beads", "issues.jsonl")
+    main_lines = 0
+    worktree_lines = 0
+    if os.path.isfile(main):
+        with open(main) as f:
+            main_lines = sum(1 for line in f if line.strip())
+    if os.path.isfile(worktree):
+        with open(worktree) as f:
+            worktree_lines = sum(1 for line in f if line.strip())
+    if worktree_lines > 0 and worktree_lines >= main_lines:
+        return worktree
+    if main_lines > 0:
+        return main
+    return None
+
 # Build a map: title -> project_name from each repo's JSONL
 title_to_project = {}
 for repo_path in repo_paths:
     project_name = os.path.basename(repo_path)
-    jsonl_path = os.path.join(repo_path, ".beads", "issues.jsonl")
-    if not os.path.isfile(jsonl_path):
+    jsonl_path = resolve_jsonl(repo_path)
+    if jsonl_path is None:
         continue
     with open(jsonl_path, "r") as f:
         for line in f:
