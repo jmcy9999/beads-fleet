@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getIssueById } from "@/lib/bv-client";
-import { getActiveProjectPath } from "@/lib/repo-config";
+import { findRepoForIssue, getActiveProjectPath, ALL_PROJECTS_SENTINEL } from "@/lib/repo-config";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,7 +10,17 @@ export async function GET(
   { params }: { params: { id: string } },
 ) {
   try {
-    const projectPath = await getActiveProjectPath();
+    let projectPath = await getActiveProjectPath();
+    if (projectPath === ALL_PROJECTS_SENTINEL) {
+      const resolved = await findRepoForIssue(params.id);
+      if (!resolved) {
+        return NextResponse.json(
+          { error: `Issue ${params.id} not found in any configured repo` },
+          { status: 404 },
+        );
+      }
+      projectPath = resolved;
+    }
     const data = await getIssueById(params.id, projectPath);
     return NextResponse.json(data);
   } catch (error: unknown) {
