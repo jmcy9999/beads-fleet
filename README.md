@@ -8,7 +8,7 @@
 
 The first web frontend for Beads. Until now, interaction with Beads has been limited to the CLI (`bd`) and the terminal TUI (`bv` / beads_viewer). Beads Web gives teams visual, real-time access to their issue data -- dependencies, priorities, graph-based insights, and more -- through a dark-themed web UI.
 
-Beyond issue visualization, Beads Web includes a **pipeline orchestration layer** for managing epics through multi-stage workflows. Track projects from idea through research, development, and delivery on a kanban board, with one-click agent launches that spawn [Claude Code](https://claude.ai/claude-code) sessions to do the work. Pipeline labels are managed automatically as agents start and finish, and token usage is tracked per-project and per-phase. If you need lightweight project orchestration without the complexity of a full multi-agent framework like [Gastown](https://github.com/steveyegge/gastown), this is it.
+Beyond issue visualization, Beads Web includes a **pipeline orchestration layer** for managing epics through multi-stage workflows. Track projects from idea through research, development, and delivery on a kanban board, with one-click agent launches that spawn [Claude Code](https://claude.ai/claude-code) sessions to do the work. Pipeline labels are managed automatically as agents start and finish, and token usage is tracked per-project and per-phase. If [Gastown](https://github.com/steveyegge/gastown) is overkill for your requirements, you can use Beads Web to build your own factory backend for autonomous project delivery.
 
 <!-- screenshot -->
 <img width="1368" height="651" alt="Screenshot 2026-02-09 at 01 20 22" src="https://github.com/user-attachments/assets/6f9c0bf4-3fa8-4f26-b45c-45f0adcc01e8" />
