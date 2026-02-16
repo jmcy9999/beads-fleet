@@ -15,12 +15,30 @@ The first web frontend for Beads. Until now, interaction with Beads has been lim
 
 ## Features
 
+### Core Issue Management
+
 - **Dashboard** -- Sortable issue table with summary stats, quick status overview, and full-text search
 - **Kanban Board** -- Issues grouped by status columns (Open, In Progress, Blocked, Closed)
+- **Issue Detail** -- Full issue view with description, dependency tree, and metadata sidebar
+- **Issue Actions** -- Start, close, reopen, and comment on issues directly from the UI
+
+### Analysis & Insights
+
 - **Insights** -- Interactive dependency graph with PageRank bottlenecks, keystone detection, HITS influencer/authority analysis, cycle detection, and graph density metrics
 - **Time Travel** -- Git-based diff view showing issue changes since any ref (`HEAD~1`, `HEAD~5`, a branch name, etc.)
-- **Issue Detail** -- Full issue view with description, dependency tree, and metadata sidebar
-- **Settings** -- Add, remove, and switch between multiple Beads-enabled repositories
+- **Token Usage Tracking** -- Per-issue and aggregate token/cost analytics for Claude Code agent sessions, with summary roll-ups across all repositories
+
+### Pipeline & Agent Orchestration
+
+- **Fleet** -- Pipeline kanban board for tracking epics through configurable project stages (e.g. research, development, review, submission). Epics are visualized as cards moving through pipeline columns, with per-epic cost tracking and agent status indicators.
+- **Activity** -- Timeline view of agent sessions across all tracked issues, correlating token usage records with issue metadata
+- **Agent Orchestration** -- Launch and stop Claude Code agents directly from the dashboard. Agents run as background subprocesses, with live status polling and log tailing. Pipeline labels are automatically managed when agents start and finish.
+- **Signals Polling** -- Query endpoint for detecting issue state changes since a given timestamp, filterable by label and status. Useful for automation scripts and CI integrations that need to react to issue transitions.
+
+### Multi-Repo & Navigation
+
+- **Multi-Repo Support** -- Manage multiple Beads-enabled repositories from a single dashboard. Switch between repos or view all projects aggregated. Watch directories auto-discover new projects.
+- **Settings** -- Add, remove, and switch between multiple Beads-enabled repositories. Configure watch directories for auto-discovery.
 - **Filter Bar** -- Search, status, priority, and type multi-select filters across all views
 - **Saved Views** -- 6 built-in presets (All Issues, Actionable, In Progress, Blocked, High Priority, Bugs) plus custom saved views
 - **Keyboard Shortcuts** -- Single-key navigation throughout the app
@@ -60,6 +78,7 @@ Open [http://localhost:3000](http://localhost:3000).
 | **Node.js 18+** | Runtime for Next.js |
 | **Git** | Required for Time Travel diffs and Beads itself |
 | **Beads CLI (`bd`) and beads_viewer (`bv`)** | Both installed automatically by `npm install` -- no separate or global install needed. `bd` is bundled as the `@beads/bd` npm dependency. `bv` is downloaded from GitHub releases by the `scripts/install-bv.sh` postinstall script. If the `bv` download fails (no internet, unsupported platform), the app falls back to SQLite-based analytics. At least one project must be initialized with `bd init`. The `BV_PATH` env var can override the `bv` binary path. |
+| **Claude Code CLI** (optional) | Required only for agent orchestration features (Fleet, agent launch/stop). Install from [claude.ai](https://claude.ai). Not needed for core issue management. |
 
 ---
 
@@ -112,7 +131,24 @@ Beads Web can manage multiple Beads-enabled repositories. Configuration is store
 
 - **Add repos** via the Settings page or the first-run wizard
 - **Switch repos** using the sidebar dropdown or the Settings page
+- **Aggregate mode**: Select "All Projects" to view issues from every configured repo in a single dashboard
+- **Watch directories**: Configure parent directories to auto-discover new Beads-enabled projects
 - **API-driven**: `POST /api/repos` to add/remove repos programmatically
+
+---
+
+## Pages
+
+| Page | Path | Description |
+|------|------|-------------|
+| **Dashboard** | `/` | Sortable issue table with summary stats and full-text search |
+| **Board** | `/board` | Kanban board with issues grouped by status columns |
+| **Insights** | `/insights` | Interactive dependency graph with graph metrics |
+| **Time Travel** | `/diff` | Git-based diff view for issue changes since any ref |
+| **Issue Detail** | `/issue/:id` | Full issue view with description and dependency tree |
+| **Fleet** | `/fleet` | Pipeline kanban for tracking epics through project stages |
+| **Activity** | `/activity` | Timeline of agent sessions across all tracked issues |
+| **Settings** | `/settings` | Repository management and configuration |
 
 ---
 
@@ -171,11 +207,18 @@ Responses are cached in memory with a short TTL to keep the UI responsive withou
 | `/api/health` | `GET` | System status -- bv availability, project path validity |
 | `/api/issues` | `GET` | All issues with summary counts and track grouping |
 | `/api/issues/:id` | `GET` | Single issue detail with full metadata |
+| `/api/issues/:id/action` | `POST` | Perform actions on an issue (start, close, reopen, comment) |
 | `/api/insights` | `GET` | Graph metrics: bottlenecks, keystones, hubs, cycles, density |
 | `/api/priority` | `GET` | Priority recommendations with confidence scores |
 | `/api/diff?since=REF` | `GET` | Issue changes since a git reference (e.g. `HEAD~5`) |
-| `/api/repos` | `GET` | List configured repositories |
-| `/api/repos` | `POST` | Add, remove, or set the active repository |
+| `/api/repos` | `GET`, `POST` | List, add, remove, or set the active repository |
+| `/api/token-usage` | `GET` | Token usage records and per-issue cost summaries |
+| `/api/agent` | `GET`, `POST` | Get agent status, launch or stop a Claude Code agent |
+| `/api/signals` | `GET` | Poll for issue state changes since a timestamp |
+| `/api/fleet/action` | `POST` | Execute pipeline actions on epics (stage transitions) |
+| `/api/research/:name` | `GET` | Retrieve a markdown research report by project name |
+
+Full API documentation with request/response schemas: [docs/API.md](docs/API.md)
 
 ---
 
@@ -195,33 +238,46 @@ npx jest             # Run tests
 src/
   app/                     # Next.js App Router pages
     api/                   # API route handlers
+      agent/               # GET/POST /api/agent
       diff/                # GET /api/diff?since=HEAD~5
+      fleet/action/        # POST /api/fleet/action
       health/              # GET /api/health
       insights/            # GET /api/insights
       issues/              # GET /api/issues
         [id]/              # GET /api/issues/:id
+          action/          # POST /api/issues/:id/action
       priority/            # GET /api/priority
       repos/               # GET/POST /api/repos
+      research/[appName]/  # GET /api/research/:name
+      signals/             # GET /api/signals
+      token-usage/         # GET /api/token-usage
+    activity/              # Agent activity timeline page
     board/                 # Kanban board page
     diff/                  # Time Travel page
+    fleet/                 # Pipeline fleet board page
     insights/              # Graph insights page
     issue/[id]/            # Issue detail page
     settings/              # Repository settings page
   components/
     dashboard/             # Dashboard-specific components
     filters/               # FilterBar, RecipeSelector
+    fleet/                 # FleetBoard, AgentStatusBanner, ActivityTimeline
     insights/              # MetricPanel, DependencyGraph, ActivityFeed
     layout/                # Sidebar, Header
     providers/             # QueryProvider, ClientShell
     ui/                    # IssueCard, ErrorBoundary, SetupWizard
   hooks/                   # React Query hooks
   lib/                     # Core data access and utilities
+    agent-launcher.ts      # Claude Code agent subprocess management
     bv-client.ts           # bv CLI wrapper + fallback chain
-    sqlite-reader.ts       # Direct SQLite DB reader
-    jsonl-fallback.ts      # JSONL parser (final fallback)
-    repo-config.ts         # Multi-repo configuration (~/.beads-web.json)
-    recipes.ts             # Saved view / filter presets
     cache.ts               # TTL cache for bv responses
+    graph-metrics.ts       # In-process graph analytics fallback
+    jsonl-fallback.ts      # JSONL parser (final fallback)
+    pipeline-labels.ts     # Pipeline label management for epics
+    recipes.ts             # Saved view / filter presets
+    repo-config.ts         # Multi-repo configuration (~/.beads-web.json)
+    sqlite-reader.ts       # Direct SQLite DB reader
+    token-usage.ts         # Token usage JSONL reader and aggregation
     types.ts               # Shared TypeScript types
 ```
 
