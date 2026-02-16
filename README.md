@@ -12,7 +12,11 @@ A web frontend for Beads that gives teams visual, real-time access to their issu
 Beyond issue visualization, Beads Fleet includes a **pipeline orchestration layer** for managing epics through multi-stage workflows. Track projects from idea through research, development, and delivery on a kanban board, with one-click agent launches that spawn [Claude Code](https://claude.ai/claude-code) sessions to do the work. Pipeline labels are managed automatically as agents start and finish, and token usage is tracked per-project and per-phase. If [Gastown](https://github.com/steveyegge/gastown) is overkill for your requirements, you can use Beads Fleet to build your own factory backend for autonomous project delivery.
 
 <!-- screenshot -->
-<img width="1368" height="651" alt="Screenshot 2026-02-09 at 01 20 22" src="https://github.com/user-attachments/assets/6f9c0bf4-3fa8-4f26-b45c-45f0adcc01e8" />
+<img width="1428" height="698" alt="Screenshot 2026-02-16 at 17 25 31" src="https://github.com/user-attachments/assets/631c5a1f-f487-493b-809f-2936b2c4e9e7" />
+
+<img width="1427" height="694" alt="Screenshot 2026-02-16 at 17 27 10" src="https://github.com/user-attachments/assets/cff28ee6-aa77-460f-b485-203c0cfd05b5" />
+
+<img width="1403" height="700" alt="Screenshot 2026-02-16 at 17 28 21" src="https://github.com/user-attachments/assets/6613e470-cb47-450f-8a95-e6d58d4c6ccf" />
 
 ---
 
