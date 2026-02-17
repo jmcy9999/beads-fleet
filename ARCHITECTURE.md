@@ -200,6 +200,16 @@ Or add it directly to `~/.beads-web.json`:
 - **Styled for dark mode:** Custom Tailwind prose classes for dark theme rendering
 - **Security:** App name validated against `^[a-zA-Z0-9_-]+$` to prevent path traversal
 
+### Plan Viewer
+- **API endpoint:** `GET /api/plan/[issueId]` reads markdown plan documents from `.beads/plans/<issueId>.md` in configured repos
+- **Multi-repo search:** Searches all configured repos for the plan file, returns first match
+- **Keyed by issue ID:** Plans use the issue ID directly (e.g., `bw-0i9.1.md`), not app name
+- **Markdown rendering:** Uses `react-markdown` with `remark-gfm`, same dark-mode prose styling as research reports
+- **Issue detail integration:** Plan section appears for any issue that has a matching plan file. Gracefully hidden when no plan exists (404/empty)
+- **Visual distinction:** Plan heading uses purple color (`text-purple-400`) and purple-tinted blockquote borders, distinguishing it from the research report section
+- **Security:** Issue ID validated against `^[a-zA-Z0-9_.-]+$` to prevent path traversal
+- **Hook:** `usePlanReport(issueId)` — mirrors `useResearchReport` structure with TanStack Query, 60s staleTime, `keepPreviousData`
+
 ### Token Usage Tracking
 - Dashboard summary: total tokens, total cost, session count, total turns
 - Per-issue detail: sessions table with model, tokens, cost, duration, turns
@@ -221,8 +231,10 @@ Or add it directly to `~/.beads-web.json`:
 ### Issue Detail Page
 - Full description, status, priority, owner, labels, type
 - **Notes section:** Displays research reports and extended notes from `notes` field (only when non-empty)
+- **Plan section:** Displays plan documents from `.beads/plans/<issueId>.md` with purple-themed heading. Shown for any issue with a matching plan file, gracefully hidden otherwise
 - **Workflow action buttons:** Start Work (open), Close with reason (in_progress/blocked/deferred), Reopen (closed), Comment (adds comment to issue)
 - **Factory research workflow:** When an issue has the `research` label, additional buttons appear: "Approve & Send to Development" (closes with approval reason) and "Request More Research" (adds a comment with feedback text). Available on both the issue detail page and kanban slide-in panel.
+- **Planning phase buttons:** At Research Complete, the issue detail page shows the same three-state button logic as FleetCard based on `plan:pending`/`plan:approved` labels. At Candidates, "Skip to Plan" is available. At Prepare for Launch, "Revise Plan" sends the app back to planning with feedback.
 - Dependency tree: blocked by / unblocks (with titles resolved)
 - **Epic children with progress:** For epic issues, lists all child issues with a progress bar showing completion percentage (closed/total)
 - **Parent epic link:** For child issues, sidebar shows clickable link to parent epic
@@ -250,7 +262,8 @@ Or add it directly to `~/.beads-web.json`:
 - **Fleet cards:** Each app shows epic title, progress bar (closed/total children), priority, active/blocked task counts, submission status badges, cost breakdown by phase, phase history dots, stage-specific action buttons, and owner
 - **Zoom controls:** User-controlled CSS transform scaling (50%-150%) via magnifying glass +/-/reset buttons in the toolbar. Uses `transform: scale(X)` with `transformOrigin: "top left"` and compensating `width: ${100/scale}%`
 - **Column filter:** Funnel icon dropdown with checkboxes for each pipeline stage. Toggle individual columns on/off (minimum one must remain visible). "Show all" link when filtered. Filter state persisted in localStorage (`beads-fleet-visible-columns`). Funnel icon turns blue when columns are hidden
-- **Pipeline actions:** Stage-specific action buttons on each card — Launch Recon (Harbour), Recall Crew (Recon/Under Construction/Refit when crew aboard), Begin Construction / More Recon / Scuttle (Charted), Clear for Launch / Return to Dry Dock (Sea Trials), Mark as Deployed (Launched). Actions dispatched via `onPipelineAction` callback to the fleet page
+- **Pipeline actions:** Stage-specific action buttons on each card — Start Research / Skip to Plan (Candidates), Stop Agent (Research/Development/Refit when agent running), Generate Plan / More Research / Abandon (Research Complete, no plan), Approve Plan / Revise Plan / Abandon (Research Complete, plan:pending), Start Building / Revise Plan / Abandon (Research Complete, plan:approved), Launch / Send Back / Revise Plan (Prepare for Launch), Mark Deployed (Launched). Actions dispatched via `onPipelineAction` callback to the fleet page
+- **Planning phase:** At Research Complete, the card shows three sub-states based on `plan:pending` and `plan:approved` labels. "Generate Plan" launches a planning agent in the app repo. "Approve Plan" is a label-only change. "Revise Plan" re-launches the planning agent with optional feedback. "Skip to Plan" from Candidates bypasses research entirely. "Revise Plan" from Prepare for Launch returns to the planning phase
 - **Phase history:** Each card shows a row of colored dots representing all pipeline stages — past stages solid, current stage pulsing, future stages dimmed
 - **Empty state:** Guidance on how to create epics and label children to use the fleet view
 - **Navigation:** Sidebar link + keyboard shortcut `f`
@@ -370,9 +383,11 @@ bv CLI (--robot-plan/insights/priority/diff)                            │
 | `/api/repos` | POST | `RepoStore` | Actions: `add`, `remove`, `set-active` (path required); `scan` (trigger watch dir scan); `set-watch-dirs` (dirs[] required) |
 | `/api/token-usage` | GET | `TokenUsageRecord[]` or summary | Params: `summary=true`, `issue_id=X`. Supports `__all__` |
 | `/api/research/[appName]` | GET | `{ content, repoPath }` | Reads `apps/<appName>/research/report.md` from configured repos. 404 if not found |
+| `/api/plan/[issueId]` | GET | `{ content, repoPath }` | Reads `.beads/plans/<issueId>.md` from configured repos. 404 if not found |
 | `/api/signals` | GET | `{ signals[], count, since }` | Params: `since` (required), `label`, `status`, `field`. Polling for state changes. Supports `__all__` |
 | `/api/agent` | GET | `AgentStatus` (running, session, recentLog) | Current agent process status |
 | `/api/agent` | POST | `{ launched, session }` or `{ stopped, pid }` | Body: `{ action: "launch", repoPath, prompt, model?, maxTurns?, allowedTools? }` or `{ action: "stop" }`. 409 if already running |
+| `/api/fleet/action` | POST | `{ success, action, epicId, session? }` | Body: `{ epicId, epicTitle, action, feedback?, currentLabels? }`. Actions: `start-research`, `send-for-development`, `more-research`, `deprioritise`, `approve-submission`, `send-back-to-dev`, `mark-as-live`, `stop-agent`, `generate-plan`, `approve-plan`, `revise-plan`, `skip-to-plan`, `revise-plan-from-launch` |
 
 ## Core Library Modules
 
@@ -435,13 +450,14 @@ All TypeScript types:
 | `useRepos()` | `/api/repos` -> `RepoStore` | none (60s stale) |
 | `useIssueAction()` | POST `/api/issues/[id]/action` | invalidates issues, issue, insights, priority |
 | `useResearchReport(appName)` | `/api/research/[appName]` | 60s stale, enabled only when appName non-null |
+| `usePlanReport(issueId)` | `/api/plan/[issueId]` | 60s stale, enabled only when issueId non-null |
 | `useRepoMutation()` | POST `/api/repos` | invalidates all queries |
 | `useTokenUsage(issueId?)` | `/api/token-usage` | 60s |
 | `useTokenUsageSummary()` | `/api/token-usage?summary=true` | 60s |
 | `useAgentStatus()` | GET `/api/agent` | 5s (while agent may be running) |
 | `useAgentLaunch()` | POST `/api/agent` (launch) | invalidates agent-status |
 | `useAgentStop()` | POST `/api/agent` (stop) | invalidates agent-status |
-| `usePipelineAction()` | POST `/api/issues/[id]/action` | Pipeline stage transitions (start-research, send-for-development, etc.) |
+| `usePipelineAction()` | POST `/api/fleet/action` | Pipeline stage transitions (start-research, send-for-development, generate-plan, approve-plan, revise-plan, skip-to-plan, revise-plan-from-launch, etc.) |
 | `useKeyboardShortcuts()` | -- | d/b/f/i/t/s navigation, / search, ? help |
 
 ## Component Tree
@@ -551,8 +567,10 @@ src/
       repos/route.ts        # GET/POST repo config
       token-usage/route.ts  # GET token usage (supports __all__)
       research/[appName]/route.ts  # GET research report markdown
+      plan/[issueId]/route.ts     # GET plan document markdown
       signals/route.ts      # GET polling endpoint for state changes
       agent/route.ts        # GET/POST agent launch/stop/status
+      fleet/action/route.ts # POST pipeline actions (plan, research, dev transitions)
   lib/
     bv-client.ts            # Central data layer (bv CLI wrapper)
     types.ts                # All TypeScript types
@@ -574,6 +592,7 @@ src/
     useRepos.ts             # Repo config + mutation hook
     useTokenUsage.ts        # Token usage hooks
     useResearchReport.ts    # Research report fetcher
+    usePlanReport.ts        # Plan document fetcher
     useAgent.ts             # Agent launch/stop/status hooks
     usePipelineAction.ts    # Fleet pipeline stage transition mutation
     useKeyboardShortcuts.ts # Keyboard navigation

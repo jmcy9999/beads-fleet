@@ -21,7 +21,12 @@ type PipelineAction =
   | "approve-submission"
   | "send-back-to-dev"
   | "mark-as-live"
-  | "stop-agent";
+  | "stop-agent"
+  | "generate-plan"
+  | "approve-plan"
+  | "revise-plan"
+  | "skip-to-plan"
+  | "revise-plan-from-launch";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -32,6 +37,11 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "send-back-to-dev",
   "mark-as-live",
   "stop-agent",
+  "generate-plan",
+  "approve-plan",
+  "revise-plan",
+  "skip-to-plan",
+  "revise-plan-from-launch",
 ]);
 
 const FACTORY_REPO_PATH = "/Users/janemckay/dev/claude_projects/cycle-apps-factory";
@@ -118,7 +128,7 @@ export async function POST(request: NextRequest) {
       // SEND FOR DEVELOPMENT: Research Complete -> In Development
       // -------------------------------------------------------------------
       case "send-for-development": {
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete"], factoryPath);
+        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending", "plan:approved"], factoryPath);
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], factoryPath);
         invalidateCache();
 
@@ -142,7 +152,7 @@ export async function POST(request: NextRequest) {
       // MORE RESEARCH: Research Complete -> In Research (loop)
       // -------------------------------------------------------------------
       case "more-research": {
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete"], factoryPath);
+        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending", "plan:approved"], factoryPath);
         await addLabelsToEpic(epicId, ["pipeline:research", "agent:running"], factoryPath);
         invalidateCache();
 
@@ -169,6 +179,7 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "deprioritise": {
         await removeAllPipelineLabels(epicId, labels, factoryPath);
+        await removeLabelsFromEpic(epicId, ["plan:pending", "plan:approved"], factoryPath);
         await addLabelsToEpic(epicId, ["pipeline:bad-idea"], factoryPath);
         const reason = typeof feedback === "string" && feedback.trim()
           ? feedback
@@ -248,6 +259,117 @@ export async function POST(request: NextRequest) {
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
           pipelineStage: "kit-management",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session });
+      }
+
+      // -------------------------------------------------------------------
+      // GENERATE PLAN: Research Complete -> Planning (launch planning agent)
+      // -------------------------------------------------------------------
+      case "generate-plan": {
+        // Keep research-complete label, add plan:pending and agent:running
+        await addLabelsToEpic(epicId, ["pipeline:research-complete", "plan:pending", "agent:running"], factoryPath);
+        invalidateCache();
+
+        const appRepoPath3 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const session = await launchAgent({
+          repoPath: appRepoPath3,
+          repoName: appName,
+          prompt: `Plan the app "${epicTitle}" (epic: ${epicId}). Follow the planning workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.`,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          pipelineStage: "planning",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session });
+      }
+
+      // -------------------------------------------------------------------
+      // APPROVE PLAN: plan:pending -> plan:approved (label change only)
+      // -------------------------------------------------------------------
+      case "approve-plan": {
+        await removeLabelsFromEpic(epicId, ["plan:pending"], factoryPath);
+        await addLabelsToEpic(epicId, ["plan:approved"], factoryPath);
+        invalidateCache();
+
+        return NextResponse.json({ success: true, action, epicId });
+      }
+
+      // -------------------------------------------------------------------
+      // REVISE PLAN: Re-launch planning agent with feedback
+      // -------------------------------------------------------------------
+      case "revise-plan": {
+        await removeLabelsFromEpic(epicId, ["plan:approved"], factoryPath);
+        await addLabelsToEpic(epicId, ["plan:pending", "agent:running"], factoryPath);
+        invalidateCache();
+
+        const appRepoPath4 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const feedbackStr3 = typeof feedback === "string" && feedback.trim()
+          ? ` Jane's feedback: "${feedback}".`
+          : "";
+
+        const session = await launchAgent({
+          repoPath: appRepoPath4,
+          repoName: appName,
+          prompt: `Revise the plan for "${epicTitle}" (epic: ${epicId}).${feedbackStr3} Review the existing plan and beads in the app repo and revise the plan. Follow the planning workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.`,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          pipelineStage: "planning",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session });
+      }
+
+      // -------------------------------------------------------------------
+      // SKIP TO PLAN: Candidates -> Planning (no research, straight to plan)
+      // -------------------------------------------------------------------
+      case "skip-to-plan": {
+        await addLabelsToEpic(epicId, ["pipeline:research-complete", "plan:pending", "agent:running"], factoryPath);
+        await updateEpicStatus(epicId, "in_progress", factoryPath);
+        invalidateCache();
+
+        const appRepoPath5 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const session = await launchAgent({
+          repoPath: appRepoPath5,
+          repoName: appName,
+          prompt: `Plan the app "${epicTitle}" (epic: ${epicId}). There is no research report — use the epic description as the specification. Follow the planning workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md.`,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          pipelineStage: "planning",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session });
+      }
+
+      // -------------------------------------------------------------------
+      // REVISE PLAN FROM LAUNCH: Submission Prep -> Planning (with feedback)
+      // -------------------------------------------------------------------
+      case "revise-plan-from-launch": {
+        await removeLabelsFromEpic(epicId, ["pipeline:submission-prep"], factoryPath);
+        await addLabelsToEpic(epicId, ["pipeline:research-complete", "plan:pending", "agent:running"], factoryPath);
+        invalidateCache();
+
+        const appRepoPath6 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const feedbackStr4 = typeof feedback === "string" && feedback.trim()
+          ? ` Jane's feedback: "${feedback}".`
+          : "";
+
+        const session = await launchAgent({
+          repoPath: appRepoPath6,
+          repoName: appName,
+          prompt: `Revise the plan for "${epicTitle}" (epic: ${epicId}).${feedbackStr4} Review existing beads in the app repo and revise the plan. Follow the planning workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md.`,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          pipelineStage: "planning",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });

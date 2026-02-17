@@ -15,7 +15,12 @@ export type PipelineActionType =
   | "approve-submission"
   | "send-back-to-dev"
   | "send-back-to-development"  // alias for backward compat
-  | "mark-as-live";
+  | "mark-as-live"
+  | "generate-plan"
+  | "approve-plan"
+  | "revise-plan"
+  | "skip-to-plan"
+  | "revise-plan-from-launch";
 
 export interface PipelineActionParams {
   epicId: string;

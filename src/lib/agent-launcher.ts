@@ -60,6 +60,9 @@ const LOG_DIR = path.join(os.tmpdir(), "beads-web-agent-logs");
  */
 const NEXT_STAGE: Record<string, string> = {
   research: "pipeline:research-complete",
+  // Planning agents don't advance the pipeline stage on exit -- the plan
+  // stays at research-complete with plan:pending until Jane approves.
+  // So "planning" is intentionally omitted from this mapping.
   development: "pipeline:submission-prep",
   "submission-prep": "pipeline:submitted",
   "kit-management": "pipeline:completed",

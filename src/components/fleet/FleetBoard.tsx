@@ -19,7 +19,12 @@ export type PipelineAction =
   | "approve-submission"
   | "send-back-to-dev"
   | "mark-as-live"
-  | "stop-agent";
+  | "stop-agent"
+  | "generate-plan"
+  | "approve-plan"
+  | "revise-plan"
+  | "skip-to-plan"
+  | "revise-plan-from-launch";
 
 export interface PipelineActionPayload {
   epicId: string;

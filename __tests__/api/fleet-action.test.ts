@@ -182,7 +182,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("send-for-development", () => {
-    it("removes research-complete and adds development + agent:running", async () => {
+    it("removes research-complete and plan labels, adds development + agent:running", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -193,7 +193,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:research-complete"],
+        ["pipeline:research-complete", "plan:pending", "plan:approved"],
         expect.any(String),
       );
       expect(mockAddLabels).toHaveBeenCalledWith(
@@ -227,7 +227,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("more-research", () => {
-    it("removes research-complete and adds research + agent:running", async () => {
+    it("removes research-complete and plan labels, adds research + agent:running", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -236,7 +236,7 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:research-complete"], expect.any(String));
+      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:research-complete", "plan:pending", "plan:approved"], expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["pipeline:research", "agent:running"], expect.any(String));
     });
 
@@ -482,6 +482,241 @@ describe("POST /api/fleet/action", () => {
       await POST(req);
 
       expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // generate-plan
+  // -------------------------------------------------------------------------
+
+  describe("generate-plan", () => {
+    it("adds plan:pending and agent:running labels", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "generate-plan",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:research-complete", "plan:pending", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("launches planning agent in the app repo", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "generate-plan",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
+          model: "opus",
+          maxTurns: 200,
+          pipelineStage: "planning",
+          epicId: "epic-1",
+          prompt: expect.stringContaining("Plan the app"),
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // approve-plan
+  // -------------------------------------------------------------------------
+
+  describe("approve-plan", () => {
+    it("removes plan:pending and adds plan:approved", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "approve-plan",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["plan:pending"], expect.any(String));
+      expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["plan:approved"], expect.any(String));
+    });
+
+    it("does not launch an agent", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "approve-plan",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // revise-plan
+  // -------------------------------------------------------------------------
+
+  describe("revise-plan", () => {
+    it("removes plan:approved and adds plan:pending + agent:running", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "revise-plan",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["plan:approved"], expect.any(String));
+      expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["plan:pending", "agent:running"], expect.any(String));
+    });
+
+    it("includes feedback in the prompt when provided", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "revise-plan",
+        feedback: "Add more detail to the notifications bead",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("Add more detail to the notifications bead"),
+          pipelineStage: "planning",
+        }),
+      );
+    });
+
+    it("launches planning agent in the app repo", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "revise-plan",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
+          pipelineStage: "planning",
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // skip-to-plan
+  // -------------------------------------------------------------------------
+
+  describe("skip-to-plan", () => {
+    it("adds research-complete, plan:pending, agent:running labels", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "skip-to-plan",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:research-complete", "plan:pending", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("updates epic status to in_progress", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "skip-to-plan",
+      });
+      await POST(req);
+
+      expect(mockUpdateStatus).toHaveBeenCalledWith(
+        "epic-1",
+        "in_progress",
+        expect.any(String),
+      );
+    });
+
+    it("launches planning agent with no-research prompt", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "skip-to-plan",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
+          model: "opus",
+          pipelineStage: "planning",
+          prompt: expect.stringContaining("no research report"),
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // revise-plan-from-launch
+  // -------------------------------------------------------------------------
+
+  describe("revise-plan-from-launch", () => {
+    it("removes submission-prep and adds research-complete + plan:pending + agent:running", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "revise-plan-from-launch",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:submission-prep"], expect.any(String));
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:research-complete", "plan:pending", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("includes feedback in the prompt when provided", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "revise-plan-from-launch",
+        feedback: "Need to restructure the data layer",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("Need to restructure the data layer"),
+          pipelineStage: "planning",
+        }),
+      );
+    });
+
+    it("launches planning agent in the app repo", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "revise-plan-from-launch",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
+          pipelineStage: "planning",
+        }),
+      );
     });
   });
 });

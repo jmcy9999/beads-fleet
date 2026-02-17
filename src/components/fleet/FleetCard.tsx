@@ -220,15 +220,24 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
       {/* ---- Stage-specific action buttons ---- */}
       {onPipelineAction && (
         <div className="mt-2 flex flex-col gap-1.5">
-          {/* Ideas: Start Research */}
+          {/* Ideas: Start Research + Skip to Plan */}
           {app.stage === "idea" && (
-            <button
-              onClick={(e) => handleAction(e, "start-research")}
-              disabled={anyAgentRunning}
-              className={BTN_BLUE}
-            >
-              {anyAgentRunning ? "Agent Running..." : "Start Research"}
-            </button>
+            <>
+              <button
+                onClick={(e) => handleAction(e, "start-research")}
+                disabled={anyAgentRunning}
+                className={BTN_BLUE}
+              >
+                {anyAgentRunning ? "Agent Running..." : "Start Research"}
+              </button>
+              <button
+                onClick={(e) => handleAction(e, "skip-to-plan")}
+                disabled={anyAgentRunning}
+                className={BTN_GREEN}
+              >
+                {anyAgentRunning ? "Agent Running..." : "Skip to Plan"}
+              </button>
+            </>
           )}
 
           {/* In Research / In Development / Kit Management (with agent): Stop Agent */}
@@ -242,34 +251,99 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
               </button>
             )}
 
-          {/* Research Complete: three options */}
-          {app.stage === "research-complete" && (
-            <>
-              <button
-                onClick={(e) => handleAction(e, "send-for-development")}
-                disabled={anyAgentRunning}
-                className={BTN_GREEN}
-              >
-                {anyAgentRunning ? "Agent Running..." : "Start Building"}
-              </button>
-              <button
-                onClick={(e) => handleAction(e, "more-research")}
-                disabled={anyAgentRunning}
-                className={BTN_AMBER}
-              >
-                {anyAgentRunning ? "Agent Running..." : "More Research"}
-              </button>
-              <button
-                onClick={(e) => handleAction(e, "deprioritise")}
-                disabled={anyAgentRunning}
-                className={BTN_RED}
-              >
-                Abandon
-              </button>
-            </>
-          )}
+          {/* Research Complete: buttons depend on plan sub-labels */}
+          {app.stage === "research-complete" && (() => {
+            const epicLabels = epic.labels ?? [];
+            const hasPlanPending = epicLabels.includes("plan:pending");
+            const hasPlanApproved = epicLabels.includes("plan:approved");
 
-          {/* Prepare for Submission: two options */}
+            // plan:approved -> ready to build
+            if (hasPlanApproved) {
+              return (
+                <>
+                  <button
+                    onClick={(e) => handleAction(e, "send-for-development")}
+                    disabled={anyAgentRunning}
+                    className={BTN_GREEN}
+                  >
+                    {anyAgentRunning ? "Agent Running..." : "Start Building"}
+                  </button>
+                  <button
+                    onClick={(e) => handleAction(e, "revise-plan")}
+                    disabled={anyAgentRunning}
+                    className={BTN_AMBER}
+                  >
+                    {anyAgentRunning ? "Agent Running..." : "Revise Plan"}
+                  </button>
+                  <button
+                    onClick={(e) => handleAction(e, "deprioritise")}
+                    disabled={anyAgentRunning}
+                    className={BTN_RED}
+                  >
+                    Abandon
+                  </button>
+                </>
+              );
+            }
+
+            // plan:pending -> plan generated, awaiting review
+            if (hasPlanPending) {
+              return (
+                <>
+                  <button
+                    onClick={(e) => handleAction(e, "approve-plan")}
+                    disabled={anyAgentRunning}
+                    className={BTN_GREEN}
+                  >
+                    {anyAgentRunning ? "Agent Running..." : "Approve Plan"}
+                  </button>
+                  <button
+                    onClick={(e) => handleAction(e, "revise-plan")}
+                    disabled={anyAgentRunning}
+                    className={BTN_AMBER}
+                  >
+                    {anyAgentRunning ? "Agent Running..." : "Revise Plan"}
+                  </button>
+                  <button
+                    onClick={(e) => handleAction(e, "deprioritise")}
+                    disabled={anyAgentRunning}
+                    className={BTN_RED}
+                  >
+                    Abandon
+                  </button>
+                </>
+              );
+            }
+
+            // No plan label -> initial research review
+            return (
+              <>
+                <button
+                  onClick={(e) => handleAction(e, "generate-plan")}
+                  disabled={anyAgentRunning}
+                  className={BTN_BLUE}
+                >
+                  {anyAgentRunning ? "Agent Running..." : "Generate Plan"}
+                </button>
+                <button
+                  onClick={(e) => handleAction(e, "more-research")}
+                  disabled={anyAgentRunning}
+                  className={BTN_AMBER}
+                >
+                  {anyAgentRunning ? "Agent Running..." : "More Research"}
+                </button>
+                <button
+                  onClick={(e) => handleAction(e, "deprioritise")}
+                  disabled={anyAgentRunning}
+                  className={BTN_RED}
+                >
+                  Abandon
+                </button>
+              </>
+            );
+          })()}
+
+          {/* Prepare for Submission: three options */}
           {app.stage === "submission-prep" && (
             <>
               <button
@@ -285,6 +359,13 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
                 className={BTN_AMBER}
               >
                 {anyAgentRunning ? "Agent Running..." : "Send Back"}
+              </button>
+              <button
+                onClick={(e) => handleAction(e, "revise-plan-from-launch")}
+                disabled={anyAgentRunning}
+                className={BTN_AMBER}
+              >
+                {anyAgentRunning ? "Agent Running..." : "Revise Plan"}
               </button>
             </>
           )}

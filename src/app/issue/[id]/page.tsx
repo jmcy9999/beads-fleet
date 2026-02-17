@@ -9,6 +9,7 @@ import { useIssueDetail } from "@/hooks/useIssueDetail";
 import { useIssues } from "@/hooks/useIssues";
 import { useTokenUsage, useTokenUsageSummary } from "@/hooks/useTokenUsage";
 import { useResearchReport } from "@/hooks/useResearchReport";
+import { usePlanReport } from "@/hooks/usePlanReport";
 import { useIssueAction } from "@/hooks/useIssueAction";
 import { usePipelineAction } from "@/hooks/usePipelineAction";
 import type { PipelineActionType } from "@/hooks/usePipelineAction";
@@ -361,7 +362,7 @@ function PipelineActionButtons({
 }) {
   const mutation = usePipelineAction();
   const [feedbackText, setFeedbackText] = useState("");
-  const [showFeedback, setShowFeedback] = useState<"more-research" | "send-back" | null>(null);
+  const [showFeedback, setShowFeedback] = useState<"more-research" | "send-back" | "revise-plan" | "revise-plan-from-launch" | null>(null);
 
   const stage = detectPipelineStage(labels);
   const hasAgentRunning = labels.includes("agent:running");
@@ -421,15 +422,24 @@ function PipelineActionButtons({
 
   return (
     <div className="space-y-2">
-      {/* Ideas stage: Start Research */}
+      {/* Ideas stage: Start Research + Skip to Plan */}
       {stage === "idea" && (
-        <button
-          onClick={() => handleAction("start-research")}
-          disabled={mutation.isPending}
-          className="w-full rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
-        >
-          {mutation.isPending ? "Starting..." : "Start Research"}
-        </button>
+        <div className="space-y-2">
+          <button
+            onClick={() => handleAction("start-research")}
+            disabled={mutation.isPending}
+            className="w-full rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+          >
+            {mutation.isPending ? "Starting..." : "Start Research"}
+          </button>
+          <button
+            onClick={() => handleAction("skip-to-plan")}
+            disabled={mutation.isPending}
+            className="w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
+          >
+            {mutation.isPending ? "Starting..." : "Skip to Plan"}
+          </button>
+        </div>
       )}
 
       {/* In Research: Stop Agent (only if agent is running) */}
@@ -443,42 +453,126 @@ function PipelineActionButtons({
         </button>
       )}
 
-      {/* Research Complete: Send for Dev, More Research, Deprioritise */}
-      {stage === "research-complete" && (
-        <div className="space-y-2">
-          <button
-            onClick={() => handleAction("send-to-development")}
-            disabled={mutation.isPending}
-            className="w-full rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
-          >
-            {mutation.isPending ? "Sending..." : "Send for Development"}
-          </button>
+      {/* Research Complete: buttons depend on plan sub-labels */}
+      {stage === "research-complete" && (() => {
+        const hasPlanPending = labels.includes("plan:pending");
+        const hasPlanApproved = labels.includes("plan:approved");
 
-          {showFeedback !== "more-research" ? (
+        // plan:approved -> ready to build
+        if (hasPlanApproved) {
+          return (
+            <div className="space-y-2">
+              <button
+                onClick={() => handleAction("send-for-development")}
+                disabled={mutation.isPending}
+                className="w-full rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+              >
+                {mutation.isPending ? "Sending..." : "Start Building"}
+              </button>
+
+              {showFeedback !== "revise-plan" ? (
+                <button
+                  onClick={() => setShowFeedback("revise-plan")}
+                  disabled={mutation.isPending}
+                  className="w-full rounded-md bg-surface-2 px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-surface-3 border border-border-default disabled:opacity-50 transition-colors"
+                >
+                  Revise Plan
+                </button>
+              ) : (
+                renderFeedbackArea(
+                  "revise-plan",
+                  "What changes are needed to the plan?",
+                  "Send Feedback & Revise Plan",
+                )
+              )}
+
+              <button
+                onClick={() => handleAction("deprioritise")}
+                disabled={mutation.isPending}
+                className="w-full rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors"
+              >
+                {mutation.isPending ? "Abandoning..." : "Abandon"}
+              </button>
+            </div>
+          );
+        }
+
+        // plan:pending -> plan generated, awaiting review
+        if (hasPlanPending) {
+          return (
+            <div className="space-y-2">
+              <button
+                onClick={() => handleAction("approve-plan")}
+                disabled={mutation.isPending}
+                className="w-full rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50 transition-colors"
+              >
+                {mutation.isPending ? "Approving..." : "Approve Plan"}
+              </button>
+
+              {showFeedback !== "revise-plan" ? (
+                <button
+                  onClick={() => setShowFeedback("revise-plan")}
+                  disabled={mutation.isPending}
+                  className="w-full rounded-md bg-surface-2 px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-surface-3 border border-border-default disabled:opacity-50 transition-colors"
+                >
+                  Revise Plan
+                </button>
+              ) : (
+                renderFeedbackArea(
+                  "revise-plan",
+                  "What changes are needed to the plan?",
+                  "Send Feedback & Revise Plan",
+                )
+              )}
+
+              <button
+                onClick={() => handleAction("deprioritise")}
+                disabled={mutation.isPending}
+                className="w-full rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors"
+              >
+                {mutation.isPending ? "Abandoning..." : "Abandon"}
+              </button>
+            </div>
+          );
+        }
+
+        // No plan label -> initial research review
+        return (
+          <div className="space-y-2">
             <button
-              onClick={() => setShowFeedback("more-research")}
+              onClick={() => handleAction("generate-plan")}
               disabled={mutation.isPending}
-              className="w-full rounded-md bg-surface-2 px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-surface-3 border border-border-default disabled:opacity-50 transition-colors"
+              className="w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
             >
-              More Research
+              {mutation.isPending ? "Generating..." : "Generate Plan"}
             </button>
-          ) : (
-            renderFeedbackArea(
-              "more-research",
-              "What additional research is needed?",
-              "Send Feedback & Re-run Research",
-            )
-          )}
 
-          <button
-            onClick={() => handleAction("deprioritise")}
-            disabled={mutation.isPending}
-            className="w-full rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50 transition-colors"
-          >
-            {mutation.isPending ? "Deprioritising..." : "Deprioritise"}
-          </button>
-        </div>
-      )}
+            {showFeedback !== "more-research" ? (
+              <button
+                onClick={() => setShowFeedback("more-research")}
+                disabled={mutation.isPending}
+                className="w-full rounded-md bg-surface-2 px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-surface-3 border border-border-default disabled:opacity-50 transition-colors"
+              >
+                More Research
+              </button>
+            ) : (
+              renderFeedbackArea(
+                "more-research",
+                "What additional research is needed?",
+                "Send Feedback & Re-run Research",
+              )
+            )}
+
+            <button
+              onClick={() => handleAction("deprioritise")}
+              disabled={mutation.isPending}
+              className="w-full rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50 transition-colors"
+            >
+              {mutation.isPending ? "Abandoning..." : "Abandon"}
+            </button>
+          </div>
+        );
+      })()}
 
       {/* In Development: Stop Agent (only if agent is running) */}
       {stage === "development" && hasAgentRunning && (
@@ -491,7 +585,7 @@ function PipelineActionButtons({
         </button>
       )}
 
-      {/* Submission Prep: Approve Submission, Send back to Development */}
+      {/* Submission Prep: Approve Submission, Send back to Development, Revise Plan */}
       {stage === "submission-prep" && (
         <div className="space-y-2">
           <button
@@ -515,6 +609,22 @@ function PipelineActionButtons({
               "send-back-to-development",
               "What needs to be fixed or changed?",
               "Send Feedback & Restart Development",
+            )
+          )}
+
+          {showFeedback !== "revise-plan-from-launch" ? (
+            <button
+              onClick={() => setShowFeedback("revise-plan-from-launch")}
+              disabled={mutation.isPending}
+              className="w-full rounded-md bg-surface-2 px-3 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-surface-3 border border-border-default disabled:opacity-50 transition-colors"
+            >
+              Revise Plan
+            </button>
+          ) : (
+            renderFeedbackArea(
+              "revise-plan-from-launch",
+              "What needs to change in the plan?",
+              "Send Feedback & Revise Plan",
             )
           )}
         </div>
@@ -602,6 +712,18 @@ export default function IssueDetailPage() {
     return null;
   }, [issue, rawIssue]);
   const { data: researchReport } = useResearchReport(researchAppName);
+
+  // Only fetch plan for epics or issues with plan-related labels
+  const planIssueId = useMemo(() => {
+    if (!issue) return null;
+    const issueLabels = rawIssue?.labels ?? issue.labels ?? [];
+    const hasPlanLabel = issueLabels.some(
+      (l) => l.startsWith("plan:") || l.startsWith("pipeline:"),
+    );
+    if (issue.issue_type === "epic" || hasPlanLabel) return issueId;
+    return null;
+  }, [issue, rawIssue, issueId]);
+  const { data: planReport } = usePlanReport(planIssueId);
 
   // --- Loading ---
   if (detailLoading) {
@@ -754,6 +876,38 @@ export default function IssueDetailPage() {
                   {researchReport.content}
                 </ReactMarkdown>
               </div>
+            </section>
+          )}
+
+          {/* Plan (markdown from .beads/plans/) */}
+          {planReport?.content && (
+            <section className="card p-5">
+              <details open>
+                <summary className="text-xs font-medium uppercase tracking-wider text-purple-400 mb-3 cursor-pointer select-none list-none flex items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+                  <svg className="w-3 h-3 transition-transform [[open]>summary>&]:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                  Plan
+                </summary>
+                <div className="prose prose-invert prose-sm max-w-none
+                  prose-headings:text-gray-200 prose-headings:font-semibold
+                  prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
+                  prose-p:text-gray-300 prose-p:leading-relaxed
+                  prose-a:text-blue-400 prose-a:no-underline hover:prose-a:underline
+                  prose-strong:text-gray-200
+                  prose-code:text-amber-300 prose-code:bg-surface-2 prose-code:rounded prose-code:px-1
+                  prose-pre:bg-surface-0 prose-pre:border prose-pre:border-border-default
+                  prose-table:text-sm
+                  prose-th:text-gray-400 prose-th:border-border-default
+                  prose-td:border-border-default
+                  prose-li:text-gray-300
+                  prose-blockquote:border-purple-500/50 prose-blockquote:text-gray-400
+                  prose-hr:border-border-default">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {planReport.content}
+                  </ReactMarkdown>
+                </div>
+              </details>
             </section>
           )}
 
