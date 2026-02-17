@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { KanbanBoard } from "@/components/board/KanbanBoard";
-import { IssueDetailPanel } from "@/components/board/IssueDetailPanel";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { CardSkeleton } from "@/components/ui/LoadingSkeleton";
@@ -12,7 +12,7 @@ import { applyFilter } from "@/lib/recipes";
 
 export default function BoardPage() {
   const { data, isLoading, error, refetch } = useIssues();
-  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
+  const router = useRouter();
   const [filter, setFilter] = useState<FilterCriteria>({});
   const [activeViewId, setActiveViewId] = useState<string>("");
 
@@ -22,10 +22,6 @@ export default function BoardPage() {
     () => applyFilter(allIssues, filter),
     [allIssues, filter],
   );
-
-  const selectedIssue = selectedIssueId
-    ? allIssues.find((i) => i.id === selectedIssueId) ?? null
-    : null;
 
   return (
     <div className="flex flex-col h-full">
@@ -71,15 +67,7 @@ export default function BoardPage() {
       {data && (
         <KanbanBoard
           issues={filteredIssues}
-          onSelectIssue={setSelectedIssueId}
-        />
-      )}
-
-      {selectedIssue && (
-        <IssueDetailPanel
-          issue={selectedIssue}
-          allIssues={allIssues}
-          onClose={() => setSelectedIssueId(null)}
+          onSelectIssue={(id) => router.push(`/issue/${id}`)}
         />
       )}
     </div>
