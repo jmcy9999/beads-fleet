@@ -115,6 +115,9 @@ export interface PlanIssue {
   story_points?: number;
   epic?: string;       // parent epic ID (from parent-child dependencies)
   epic_title?: string; // parent epic title (for display)
+  created_at?: string;
+  updated_at?: string;
+  closed_at?: string;
 }
 
 export interface PlanTrack {

@@ -122,6 +122,9 @@ export function issuesToPlan(
     story_points: issue.story_points,
     epic: parentMap.get(issue.id),
     epic_title: parentMap.has(issue.id) ? titleMap.get(parentMap.get(issue.id)!) : undefined,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at,
+    closed_at: issue.closed_at,
     // impact_score not available without bv
   }));
 

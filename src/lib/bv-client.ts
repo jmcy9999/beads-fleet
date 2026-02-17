@@ -224,6 +224,9 @@ function normalizePlanItem(item: any): PlanIssue {
     blocked_by: item.blocked_by ?? [],
     blocks: item.unblocks ?? item.blocks ?? [],
     impact_score: item.impact_score ?? undefined,
+    created_at: item.created_at ?? undefined,
+    updated_at: item.updated_at ?? undefined,
+    closed_at: item.closed_at ?? undefined,
   };
 }
 

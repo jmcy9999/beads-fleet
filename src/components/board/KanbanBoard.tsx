@@ -6,8 +6,6 @@ interface KanbanBoardProps {
   onSelectIssue: (id: string) => void;
 }
 
-const PRIORITY_ORDER = [0, 1, 2, 3, 4] as const;
-
 /** Columns that are always shown, even when empty. */
 const ALWAYS_VISIBLE: IssueStatus[] = ["open", "in_progress"];
 
@@ -25,13 +23,32 @@ export function KanbanBoard({ issues, onSelectIssue }: KanbanBoardProps) {
     }
   }
 
-  // Sort each column by priority (P0 first)
-  for (const [, bucket] of Array.from(grouped)) {
-    bucket.sort(
-      (a, b) =>
-        PRIORITY_ORDER.indexOf(a.priority) -
-        PRIORITY_ORDER.indexOf(b.priority),
-    );
+  // Sort each column by relevant date (newest first), with priority as tiebreaker
+  for (const [status, bucket] of Array.from(grouped)) {
+    bucket.sort((a, b) => {
+      // Primary: date sort (newest first)
+      let dateA: string | undefined;
+      let dateB: string | undefined;
+
+      if (status === "closed") {
+        dateA = a.closed_at ?? a.updated_at;
+        dateB = b.closed_at ?? b.updated_at;
+      } else if (status === "open") {
+        dateA = a.created_at;
+        dateB = b.created_at;
+      } else {
+        // in_progress, blocked
+        dateA = a.updated_at;
+        dateB = b.updated_at;
+      }
+
+      // Newest first (descending)
+      const dateCompare = (dateB ?? "").localeCompare(dateA ?? "");
+      if (dateCompare !== 0) return dateCompare;
+
+      // Tiebreaker: priority (P0 first)
+      return a.priority - b.priority;
+    });
   }
 
   // Filter columns: always-visible ones + any others that have issues
