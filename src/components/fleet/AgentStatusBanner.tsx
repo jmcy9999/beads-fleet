@@ -26,7 +26,7 @@ export function AgentStatusBanner({ session, onStop, isStopping }: AgentStatusBa
           </span>
           <div>
             <p className="text-sm font-medium text-gray-200">
-              Crew aboard{" "}
+              Agent running in{" "}
               <span className="text-amber-400">{session.repoName}</span>
             </p>
             <p className="text-xs text-gray-400 mt-0.5">
@@ -39,7 +39,7 @@ export function AgentStatusBanner({ session, onStop, isStopping }: AgentStatusBa
           disabled={isStopping}
           className="px-3 py-1.5 text-xs font-medium rounded-md text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 transition-colors disabled:opacity-50"
         >
-          {isStopping ? "Recalling..." : "Recall Crew"}
+          {isStopping ? "Stopping..." : "Stop Agent"}
         </button>
       </div>
     </div>

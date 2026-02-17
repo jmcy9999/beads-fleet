@@ -227,7 +227,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
               disabled={anyAgentRunning}
               className={BTN_BLUE}
             >
-              {anyAgentRunning ? "Crew Aboard..." : "Launch Recon"}
+              {anyAgentRunning ? "Agent Running..." : "Start Research"}
             </button>
           )}
 
@@ -238,7 +238,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
                 onClick={(e) => handleAction(e, "stop-agent")}
                 className={BTN_RED}
               >
-                Recall Crew
+                Stop Agent
               </button>
             )}
 
@@ -250,21 +250,21 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
                 disabled={anyAgentRunning}
                 className={BTN_GREEN}
               >
-                {anyAgentRunning ? "Crew Aboard..." : "Begin Construction"}
+                {anyAgentRunning ? "Agent Running..." : "Start Building"}
               </button>
               <button
                 onClick={(e) => handleAction(e, "more-research")}
                 disabled={anyAgentRunning}
                 className={BTN_AMBER}
               >
-                {anyAgentRunning ? "Crew Aboard..." : "More Recon"}
+                {anyAgentRunning ? "Agent Running..." : "More Research"}
               </button>
               <button
                 onClick={(e) => handleAction(e, "deprioritise")}
                 disabled={anyAgentRunning}
                 className={BTN_RED}
               >
-                Scuttle
+                Abandon
               </button>
             </>
           )}
@@ -277,14 +277,14 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
                 disabled={anyAgentRunning}
                 className={BTN_GREEN}
               >
-                {anyAgentRunning ? "Crew Aboard..." : "Clear for Launch"}
+                {anyAgentRunning ? "Agent Running..." : "Launch"}
               </button>
               <button
                 onClick={(e) => handleAction(e, "send-back-to-dev")}
                 disabled={anyAgentRunning}
                 className={BTN_AMBER}
               >
-                {anyAgentRunning ? "Crew Aboard..." : "Return to Dry Dock"}
+                {anyAgentRunning ? "Agent Running..." : "Send Back"}
               </button>
             </>
           )}
@@ -296,7 +296,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
               disabled={anyAgentRunning}
               className={BTN_GREEN}
             >
-              {anyAgentRunning ? "Crew Aboard..." : "Mark as Deployed"}
+              {anyAgentRunning ? "Agent Running..." : "Mark Deployed"}
             </button>
           )}
         </div>
