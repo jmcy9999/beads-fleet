@@ -296,7 +296,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
                 disabled={anyAgentRunning}
                 className={BTN_RED}
               >
-                Deprioritise
+                Abandon
               </button>
             </>
           )}
@@ -348,7 +348,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
                   disabled={anyAgentRunning}
                   className={BTN_RED}
                 >
-                  Deprioritise
+                  Abandon
                 </button>
               </>
             );
@@ -435,6 +435,19 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
               className={BTN_GREEN}
             >
               {anyAgentRunning ? "Agent Running..." : "Mark Deployed"}
+            </button>
+          )}
+
+          {/* Abandon: available at every stage except bad-idea and completed */}
+          {app.stage !== "bad-idea" && app.stage !== "completed" &&
+            /* Skip stages that already have a Deprioritise button */
+            app.stage !== "research-complete" && app.stage !== "plan-review" && (
+            <button
+              onClick={(e) => handleAction(e, "deprioritise")}
+              disabled={anyAgentRunning}
+              className={BTN_RED}
+            >
+              Abandon
             </button>
           )}
 

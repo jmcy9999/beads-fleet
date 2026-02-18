@@ -182,15 +182,17 @@ export async function POST(request: NextRequest) {
       }
 
       // -------------------------------------------------------------------
-      // DEPRIORITISE: Research Complete -> Bad Ideas
+      // ABANDON: Any stage -> Bad Ideas
       // -------------------------------------------------------------------
       case "deprioritise": {
+        // Stop any running agent before abandoning
+        await stopAgent();
         await removeAllPipelineLabels(epicId, labels, factoryPath);
-        await removeLabelsFromEpic(epicId, ["plan:pending", "plan:approved"], factoryPath);
+        await removeLabelsFromEpic(epicId, ["plan:pending", "plan:approved", "agent:running"], factoryPath);
         await addLabelsToEpic(epicId, ["pipeline:bad-idea"], factoryPath);
         const reason = typeof feedback === "string" && feedback.trim()
           ? feedback
-          : "Deprioritised from fleet board";
+          : "Abandoned from fleet board";
         await closeEpic(epicId, reason, factoryPath);
         invalidateCache();
 
