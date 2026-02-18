@@ -5,7 +5,9 @@ export type FleetStage =
   | "idea"
   | "research"
   | "research-complete"
+  | "plan-review"
   | "development"
+  | "qa"
   | "submission-prep"
   | "submitted"
   | "kit-management"
@@ -16,7 +18,9 @@ export const FLEET_STAGES: FleetStage[] = [
   "idea",
   "research",
   "research-complete",
+  "plan-review",
   "development",
+  "qa",
   "submission-prep",
   "submitted",
   "kit-management",
@@ -39,10 +43,20 @@ export const FLEET_STAGE_CONFIG: Record<
     color: "text-cyan-400",
     dotColor: "bg-cyan-400",
   },
+  "plan-review": {
+    label: "Plan Review",
+    color: "text-violet-400",
+    dotColor: "bg-violet-400",
+  },
   development: {
     label: "Building",
     color: "text-amber-400",
     dotColor: "bg-amber-400",
+  },
+  qa: {
+    label: "QA",
+    color: "text-emerald-400",
+    dotColor: "bg-emerald-400",
   },
   "submission-prep": {
     label: "Prepare for Launch",
@@ -92,7 +106,9 @@ export const PIPELINE_ORDER: FleetStage[] = [
   "idea",
   "research",
   "research-complete",
+  "plan-review",
   "development",
+  "qa",
   "submission-prep",
   "submitted",
   "kit-management",
@@ -170,8 +186,15 @@ export function detectStage(
     if (labels.includes("pipeline:kit-management")) return "kit-management";
     if (labels.includes("pipeline:submitted")) return "submitted";
     if (labels.includes("pipeline:submission-prep")) return "submission-prep";
+    if (labels.includes("pipeline:qa")) return "qa";
     if (labels.includes("pipeline:development")) return "development";
-    if (labels.includes("pipeline:research-complete")) return "research-complete";
+    if (labels.includes("pipeline:research-complete")) {
+      // Split into plan-review sub-column when plan labels are present
+      if (labels.includes("plan:pending") || labels.includes("plan:approved")) {
+        return "plan-review";
+      }
+      return "research-complete";
+    }
     if (labels.includes("pipeline:research")) return "research";
   }
 

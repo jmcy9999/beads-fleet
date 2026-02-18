@@ -490,7 +490,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("generate-plan", () => {
-    it("adds plan:pending and agent:running labels", async () => {
+    it("adds research-complete and agent:running labels (plan:pending added on agent exit)", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -501,12 +501,12 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:research-complete", "plan:pending", "agent:running"],
+        ["pipeline:research-complete", "agent:running"],
         expect.any(String),
       );
     });
 
-    it("launches planning agent in the app repo", async () => {
+    it("launches planning agent in the app repo with CLAUDE.md format prompt", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -521,7 +521,37 @@ describe("POST /api/fleet/action", () => {
           maxTurns: 200,
           pipelineStage: "planning",
           epicId: "epic-1",
-          prompt: expect.stringContaining("Plan the app"),
+          prompt: expect.stringContaining("Plan the app build for"),
+        }),
+      );
+    });
+
+    it("includes entry: from-research in the prompt", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "generate-plan",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("entry: from-research"),
+        }),
+      );
+    });
+
+    it("references the recon brief in the prompt", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "generate-plan",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("Recon brief is at"),
         }),
       );
     });
@@ -562,7 +592,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("revise-plan", () => {
-    it("removes plan:approved and adds plan:pending + agent:running", async () => {
+    it("removes plan:approved and plan:pending, adds agent:running (plan:pending added on agent exit)", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -571,8 +601,8 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["plan:approved"], expect.any(String));
-      expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["plan:pending", "agent:running"], expect.any(String));
+      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["plan:approved", "plan:pending"], expect.any(String));
+      expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["agent:running"], expect.any(String));
     });
 
     it("includes feedback in the prompt when provided", async () => {
@@ -592,7 +622,7 @@ describe("POST /api/fleet/action", () => {
       );
     });
 
-    it("launches planning agent in the app repo", async () => {
+    it("launches planning agent in the app repo with revise-plan entry point", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -604,6 +634,7 @@ describe("POST /api/fleet/action", () => {
         expect.objectContaining({
           repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
           pipelineStage: "planning",
+          prompt: expect.stringContaining("entry: revise-plan"),
         }),
       );
     });
@@ -614,7 +645,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("skip-to-plan", () => {
-    it("adds research-complete, plan:pending, agent:running labels", async () => {
+    it("adds research-complete and agent:running labels (plan:pending added on agent exit)", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -625,7 +656,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:research-complete", "plan:pending", "agent:running"],
+        ["pipeline:research-complete", "agent:running"],
         expect.any(String),
       );
     });
@@ -645,7 +676,7 @@ describe("POST /api/fleet/action", () => {
       );
     });
 
-    it("launches planning agent with no-research prompt", async () => {
+    it("launches planning agent with from-candidates entry point", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -658,7 +689,22 @@ describe("POST /api/fleet/action", () => {
           repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
           model: "opus",
           pipelineStage: "planning",
-          prompt: expect.stringContaining("no research report"),
+          prompt: expect.stringContaining("entry: from-candidates"),
+        }),
+      );
+    });
+
+    it("prompt mentions no recon brief", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "skip-to-plan",
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("No recon brief"),
         }),
       );
     });
@@ -669,7 +715,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("revise-plan-from-launch", () => {
-    it("removes submission-prep and adds research-complete + plan:pending + agent:running", async () => {
+    it("removes submission-prep and adds research-complete + agent:running (plan:pending added on agent exit)", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -681,7 +727,7 @@ describe("POST /api/fleet/action", () => {
       expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:submission-prep"], expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:research-complete", "plan:pending", "agent:running"],
+        ["pipeline:research-complete", "agent:running"],
         expect.any(String),
       );
     });
@@ -703,7 +749,7 @@ describe("POST /api/fleet/action", () => {
       );
     });
 
-    it("launches planning agent in the app repo", async () => {
+    it("launches planning agent in the app repo with revise-plan entry point", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -715,6 +761,7 @@ describe("POST /api/fleet/action", () => {
         expect.objectContaining({
           repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
           pipelineStage: "planning",
+          prompt: expect.stringContaining("entry: revise-plan"),
         }),
       );
     });

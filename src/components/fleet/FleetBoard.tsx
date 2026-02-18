@@ -22,9 +22,12 @@ export type PipelineAction =
   | "stop-agent"
   | "generate-plan"
   | "approve-plan"
+  | "approve-and-build"
   | "revise-plan"
   | "skip-to-plan"
-  | "revise-plan-from-launch";
+  | "revise-plan-from-launch"
+  | "send-for-qa"
+  | "qa-fix-and-retest";
 
 export interface PipelineActionPayload {
   epicId: string;

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { PriorityIndicator } from "@/components/ui/PriorityIndicator";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -77,6 +78,9 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
     rejected: "bg-red-500/20 text-red-300",
   };
 
+  const [feedbackAction, setFeedbackAction] = useState<PipelineActionPayload["action"] | null>(null);
+  const [feedbackText, setFeedbackText] = useState("");
+
   /** Dispatch a pipeline action, preventing the Link navigation. */
   function handleAction(
     e: React.MouseEvent,
@@ -85,6 +89,25 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
     e.preventDefault();
     e.stopPropagation();
     onPipelineAction?.({ epicId: epic.id, epicTitle: epic.title, action });
+  }
+
+  /** Open the inline feedback textarea for actions that need comments. */
+  function handleFeedbackAction(e: React.MouseEvent, action: PipelineActionPayload["action"]) {
+    e.preventDefault();
+    e.stopPropagation();
+    setFeedbackAction(action);
+    setFeedbackText("");
+  }
+
+  /** Submit the feedback-based action. */
+  function submitFeedback(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (feedbackAction) {
+      onPipelineAction?.({ epicId: epic.id, epicTitle: epic.title, action: feedbackAction, feedback: feedbackText });
+      setFeedbackAction(null);
+      setFeedbackText("");
+    }
   }
 
   /** Whether any agent is running globally (disables launch buttons). */
@@ -251,13 +274,37 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
               </button>
             )}
 
-          {/* Research Complete: buttons depend on plan sub-labels */}
-          {app.stage === "research-complete" && (() => {
-            const epicLabels = epic.labels ?? [];
-            const hasPlanPending = epicLabels.includes("plan:pending");
-            const hasPlanApproved = epicLabels.includes("plan:approved");
+          {/* Research Complete: review recon, generate plan, or request more research */}
+          {app.stage === "research-complete" && (
+            <>
+              <button
+                onClick={(e) => handleAction(e, "generate-plan")}
+                disabled={anyAgentRunning}
+                className={BTN_BLUE}
+              >
+                {anyAgentRunning ? "Agent Running..." : "Generate Plan"}
+              </button>
+              <button
+                onClick={(e) => handleFeedbackAction(e, "more-research")}
+                disabled={anyAgentRunning}
+                className={BTN_AMBER}
+              >
+                {anyAgentRunning ? "Agent Running..." : "More Research"}
+              </button>
+              <button
+                onClick={(e) => handleAction(e, "deprioritise")}
+                disabled={anyAgentRunning}
+                className={BTN_RED}
+              >
+                Deprioritise
+              </button>
+            </>
+          )}
 
-            // plan:approved -> ready to build
+          {/* Plan Review: approve & build, or revise the plan */}
+          {app.stage === "plan-review" && (() => {
+            const hasPlanApproved = (epic.labels ?? []).includes("plan:approved");
+
             if (hasPlanApproved) {
               return (
                 <>
@@ -266,79 +313,89 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
                     disabled={anyAgentRunning}
                     className={BTN_GREEN}
                   >
-                    {anyAgentRunning ? "Agent Running..." : "Start Building"}
+                    {anyAgentRunning ? "Agent Running..." : "Begin Construction"}
                   </button>
                   <button
-                    onClick={(e) => handleAction(e, "revise-plan")}
+                    onClick={(e) => handleFeedbackAction(e, "revise-plan")}
                     disabled={anyAgentRunning}
                     className={BTN_AMBER}
                   >
                     {anyAgentRunning ? "Agent Running..." : "Revise Plan"}
                   </button>
-                  <button
-                    onClick={(e) => handleAction(e, "deprioritise")}
-                    disabled={anyAgentRunning}
-                    className={BTN_RED}
-                  >
-                    Abandon
-                  </button>
                 </>
               );
             }
 
-            // plan:pending -> plan generated, awaiting review
-            if (hasPlanPending) {
-              return (
-                <>
-                  <button
-                    onClick={(e) => handleAction(e, "approve-plan")}
-                    disabled={anyAgentRunning}
-                    className={BTN_GREEN}
-                  >
-                    {anyAgentRunning ? "Agent Running..." : "Approve Plan"}
-                  </button>
-                  <button
-                    onClick={(e) => handleAction(e, "revise-plan")}
-                    disabled={anyAgentRunning}
-                    className={BTN_AMBER}
-                  >
-                    {anyAgentRunning ? "Agent Running..." : "Revise Plan"}
-                  </button>
-                  <button
-                    onClick={(e) => handleAction(e, "deprioritise")}
-                    disabled={anyAgentRunning}
-                    className={BTN_RED}
-                  >
-                    Abandon
-                  </button>
-                </>
-              );
-            }
-
-            // No plan label -> initial research review
+            // plan:pending — awaiting review
             return (
               <>
                 <button
-                  onClick={(e) => handleAction(e, "generate-plan")}
+                  onClick={(e) => handleAction(e, "approve-and-build")}
                   disabled={anyAgentRunning}
-                  className={BTN_BLUE}
+                  className={BTN_GREEN}
                 >
-                  {anyAgentRunning ? "Agent Running..." : "Generate Plan"}
+                  {anyAgentRunning ? "Agent Running..." : "Approve & Build"}
                 </button>
                 <button
-                  onClick={(e) => handleAction(e, "more-research")}
+                  onClick={(e) => handleFeedbackAction(e, "revise-plan")}
                   disabled={anyAgentRunning}
                   className={BTN_AMBER}
                 >
-                  {anyAgentRunning ? "Agent Running..." : "More Research"}
+                  {anyAgentRunning ? "Agent Running..." : "Revise Plan"}
                 </button>
                 <button
                   onClick={(e) => handleAction(e, "deprioritise")}
                   disabled={anyAgentRunning}
                   className={BTN_RED}
                 >
-                  Abandon
+                  Deprioritise
                 </button>
+              </>
+            );
+          })()}
+
+          {/* QA: Run QA, Skip to Submission, Send Back to Dev */}
+          {app.stage === "qa" && (() => {
+            // Extract QA round number from labels like qa:round-2
+            const qaRoundLabel = (epic.labels ?? []).find((l) => l.startsWith("qa:round-"));
+            const qaRound = qaRoundLabel ? parseInt(qaRoundLabel.replace("qa:round-", ""), 10) : null;
+
+            return (
+              <>
+                {qaRound != null && !isNaN(qaRound) && (
+                  <span className="inline-flex items-center rounded-full bg-green-500/20 text-green-300 px-2 py-0.5 text-[10px] font-medium self-start">
+                    QA Round {qaRound}
+                  </span>
+                )}
+                {epicAgentRunning ? (
+                  <button disabled className={BTN_GREEN}>
+                    QA in progress...
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={(e) => handleAction(e, "send-for-qa")}
+                      disabled={anyAgentRunning}
+                      className={BTN_GREEN}
+                    >
+                      {anyAgentRunning ? "Agent Running..." : "Run QA"}
+                    </button>
+                    <button
+                      onClick={(e) => handleAction(e, "approve-submission")}
+                      disabled={anyAgentRunning}
+                      className={BTN_BLUE}
+                    >
+                      {anyAgentRunning ? "Agent Running..." : "Skip to Submission"}
+                    </button>
+                    <button
+                      onClick={(e) => handleFeedbackAction(e, "send-back-to-dev")}
+                      disabled={anyAgentRunning}
+                      className={BTN_AMBER}
+                    >
+                      {anyAgentRunning ? "Agent Running..." : "Send Back to Dev"}
+                    </button>
+                  </>
+                )}
               </>
             );
           })()}
@@ -354,14 +411,14 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
                 {anyAgentRunning ? "Agent Running..." : "Launch"}
               </button>
               <button
-                onClick={(e) => handleAction(e, "send-back-to-dev")}
+                onClick={(e) => handleFeedbackAction(e, "send-back-to-dev")}
                 disabled={anyAgentRunning}
                 className={BTN_AMBER}
               >
                 {anyAgentRunning ? "Agent Running..." : "Send Back"}
               </button>
               <button
-                onClick={(e) => handleAction(e, "revise-plan-from-launch")}
+                onClick={(e) => handleFeedbackAction(e, "revise-plan-from-launch")}
                 disabled={anyAgentRunning}
                 className={BTN_AMBER}
               >
@@ -379,6 +436,52 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning }: FleetCa
             >
               {anyAgentRunning ? "Agent Running..." : "Mark Deployed"}
             </button>
+          )}
+
+          {/* Inline feedback textarea (shown when a feedback action is selected) */}
+          {feedbackAction && (
+            <div className="mt-1.5 space-y-1.5" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+              <textarea
+                value={feedbackText}
+                onChange={(e) => setFeedbackText(e.target.value)}
+                placeholder={
+                  feedbackAction === "revise-plan" || feedbackAction === "revise-plan-from-launch"
+                    ? "What needs changing in the plan?"
+                    : feedbackAction === "more-research"
+                      ? "What areas need more research?"
+                      : "Feedback for the agent..."
+                }
+                rows={3}
+                autoFocus
+                className="w-full rounded-md border border-border-default bg-surface-2 px-2 py-1.5 text-xs text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-amber-500 resize-none"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    submitFeedback(e as unknown as React.MouseEvent);
+                  }
+                  if (e.key === "Escape") {
+                    setFeedbackAction(null);
+                    setFeedbackText("");
+                  }
+                }}
+              />
+              <div className="flex gap-1.5">
+                <button
+                  onClick={submitFeedback}
+                  className={`flex-1 ${BTN_AMBER}`}
+                >
+                  Send
+                </button>
+                <button
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setFeedbackAction(null); setFeedbackText(""); }}
+                  className={`${BTN_PRIMARY} text-gray-400 hover:text-gray-300 bg-surface-2 hover:bg-surface-3 border border-border-default`}
+                >
+                  Cancel
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-600">
+                {typeof navigator !== "undefined" && navigator.platform?.includes("Mac") ? "Cmd" : "Ctrl"}+Enter to send, Esc to cancel
+              </p>
+            </div>
           )}
         </div>
       )}

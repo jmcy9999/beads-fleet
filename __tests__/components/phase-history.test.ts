@@ -18,8 +18,8 @@ import {
 // =============================================================================
 
 describe("PIPELINE_ORDER", () => {
-  it("should contain 8 linear stages (excluding bad-idea)", () => {
-    expect(PIPELINE_ORDER).toHaveLength(8);
+  it("should contain 10 linear stages (excluding bad-idea)", () => {
+    expect(PIPELINE_ORDER).toHaveLength(10);
   });
 
   it("should be ordered from idea to completed", () => {
@@ -27,7 +27,9 @@ describe("PIPELINE_ORDER", () => {
       "idea",
       "research",
       "research-complete",
+      "plan-review",
       "development",
+      "qa",
       "submission-prep",
       "submitted",
       "kit-management",
@@ -84,7 +86,7 @@ describe("getPhaseHistory -- idea stage", () => {
 
   it("marks all subsequent stages as future", () => {
     const futureStages = history.filter((h) => h.status === "future");
-    expect(futureStages).toHaveLength(7);
+    expect(futureStages).toHaveLength(9);
   });
 
   it("has no past stages", () => {
@@ -109,14 +111,15 @@ describe("getPhaseHistory -- development stage", () => {
     expect(current).toEqual({ stage: "development", status: "current" });
   });
 
-  it("marks idea, research, research-complete as past", () => {
+  it("marks idea, research, research-complete, plan-review as past", () => {
     const pastStages = history.filter((h) => h.status === "past").map((h) => h.stage);
-    expect(pastStages).toEqual(["idea", "research", "research-complete"]);
+    expect(pastStages).toEqual(["idea", "research", "research-complete", "plan-review"]);
   });
 
-  it("marks submission-prep through completed as future", () => {
+  it("marks qa through completed as future", () => {
     const futureStages = history.filter((h) => h.status === "future").map((h) => h.stage);
     expect(futureStages).toEqual([
+      "qa",
       "submission-prep",
       "submitted",
       "kit-management",
@@ -143,7 +146,7 @@ describe("getPhaseHistory -- completed stage", () => {
 
   it("marks all preceding stages as past", () => {
     const pastStages = history.filter((h) => h.status === "past");
-    expect(pastStages).toHaveLength(7);
+    expect(pastStages).toHaveLength(9);
   });
 
   it("has no future stages", () => {
@@ -169,11 +172,13 @@ describe("getPhaseHistory -- research-complete stage", () => {
     expect(current?.stage).toBe("research-complete");
   });
 
-  it("marks development through completed as future", () => {
+  it("marks plan-review through completed as future", () => {
     const history = getPhaseHistory("research-complete");
     const futureStages = history.filter((h) => h.status === "future").map((h) => h.stage);
     expect(futureStages).toEqual([
+      "plan-review",
       "development",
+      "qa",
       "submission-prep",
       "submitted",
       "kit-management",
@@ -204,7 +209,7 @@ describe("getPhaseHistory -- bad-idea stage", () => {
 
   it("marks all stages after idea as future (never reached)", () => {
     const futureStages = history.filter((h) => h.status === "future");
-    expect(futureStages).toHaveLength(7);
+    expect(futureStages).toHaveLength(9);
   });
 
   it("has no current entry (bad-idea is not in the linear pipeline)", () => {
@@ -219,7 +224,7 @@ describe("getPhaseHistory -- bad-idea stage", () => {
 
 describe("getPhaseHistory -- every linear stage has correct counts", () => {
   it.each(PIPELINE_ORDER.map((stage, idx) => [stage, idx] as [FleetStage, number]))(
-    "%s: %d past + 1 current + rest future = 8 total",
+    "%s: %d past + 1 current + rest future = 10 total",
     (stage, idx) => {
       const history = getPhaseHistory(stage);
       const past = history.filter((h) => h.status === "past").length;

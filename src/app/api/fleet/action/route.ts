@@ -9,6 +9,7 @@ import {
 import { launchAgent, stopAgent } from "@/lib/agent-launcher";
 import { getRepos } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
+import { extractAppName } from "@/lib/extract-app-name";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -24,9 +25,12 @@ type PipelineAction =
   | "stop-agent"
   | "generate-plan"
   | "approve-plan"
+  | "approve-and-build"
   | "revise-plan"
   | "skip-to-plan"
-  | "revise-plan-from-launch";
+  | "revise-plan-from-launch"
+  | "send-for-qa"
+  | "qa-fix-and-retest";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -39,9 +43,12 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "stop-agent",
   "generate-plan",
   "approve-plan",
+  "approve-and-build",
   "revise-plan",
   "skip-to-plan",
   "revise-plan-from-launch",
+  "send-for-qa",
+  "qa-fix-and-retest",
 ]);
 
 const FACTORY_REPO_PATH = "/Users/janemckay/dev/claude_projects/cycle-apps-factory";
@@ -137,7 +144,7 @@ export async function POST(request: NextRequest) {
         const session = await launchAgent({
           repoPath: appRepoPath,
           repoName: appName,
-          prompt: `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.`,
+          prompt: `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan is at /Users/janemckay/dev/claude_projects/${appName}/.beads/plans/${epicId}.md — read this first for the UX walkthrough, personas, assumption flags, and conditional logic maps.`,
           model: "opus",
           maxTurns: 500,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -268,15 +275,15 @@ export async function POST(request: NextRequest) {
       // GENERATE PLAN: Research Complete -> Planning (launch planning agent)
       // -------------------------------------------------------------------
       case "generate-plan": {
-        // Keep research-complete label, add plan:pending and agent:running
-        await addLabelsToEpic(epicId, ["pipeline:research-complete", "plan:pending", "agent:running"], factoryPath);
+        // Keep research-complete label, add agent:running (plan:pending added on agent exit)
+        await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], factoryPath);
         invalidateCache();
 
         const appRepoPath3 = `/Users/janemckay/dev/claude_projects/${appName}`;
         const session = await launchAgent({
           repoPath: appRepoPath3,
           repoName: appName,
-          prompt: `Plan the app "${epicTitle}" (epic: ${epicId}). Follow the planning workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.`,
+          prompt: `Plan the app build for "${epicTitle}" (epic: ${epicId}, entry: from-research). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Recon brief is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -299,11 +306,34 @@ export async function POST(request: NextRequest) {
       }
 
       // -------------------------------------------------------------------
+      // APPROVE & BUILD: Approve plan + immediately start development
+      // -------------------------------------------------------------------
+      case "approve-and-build": {
+        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending"], factoryPath);
+        await addLabelsToEpic(epicId, ["plan:approved", "pipeline:development", "agent:running"], factoryPath);
+        invalidateCache();
+
+        const appRepoPath7 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const session = await launchAgent({
+          repoPath: appRepoPath7,
+          repoName: appName,
+          prompt: `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan is at /Users/janemckay/dev/claude_projects/${appName}/.beads/plans/${epicId}.md — read this first for the UX walkthrough, personas, assumption flags, and conditional logic maps.`,
+          model: "opus",
+          maxTurns: 500,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          pipelineStage: "development",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session });
+      }
+
+      // -------------------------------------------------------------------
       // REVISE PLAN: Re-launch planning agent with feedback
       // -------------------------------------------------------------------
       case "revise-plan": {
-        await removeLabelsFromEpic(epicId, ["plan:approved"], factoryPath);
-        await addLabelsToEpic(epicId, ["plan:pending", "agent:running"], factoryPath);
+        await removeLabelsFromEpic(epicId, ["plan:approved", "plan:pending"], factoryPath);
+        await addLabelsToEpic(epicId, ["agent:running"], factoryPath);
         invalidateCache();
 
         const appRepoPath4 = `/Users/janemckay/dev/claude_projects/${appName}`;
@@ -314,7 +344,7 @@ export async function POST(request: NextRequest) {
         const session = await launchAgent({
           repoPath: appRepoPath4,
           repoName: appName,
-          prompt: `Revise the plan for "${epicTitle}" (epic: ${epicId}).${feedbackStr3} Review the existing plan and beads in the app repo and revise the plan. Follow the planning workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.`,
+          prompt: `Revise the build plan for "${epicTitle}" (epic: ${epicId}, entry: revise-plan). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md.${feedbackStr3}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -329,7 +359,7 @@ export async function POST(request: NextRequest) {
       // SKIP TO PLAN: Candidates -> Planning (no research, straight to plan)
       // -------------------------------------------------------------------
       case "skip-to-plan": {
-        await addLabelsToEpic(epicId, ["pipeline:research-complete", "plan:pending", "agent:running"], factoryPath);
+        await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], factoryPath);
         await updateEpicStatus(epicId, "in_progress", factoryPath);
         invalidateCache();
 
@@ -337,7 +367,7 @@ export async function POST(request: NextRequest) {
         const session = await launchAgent({
           repoPath: appRepoPath5,
           repoName: appName,
-          prompt: `Plan the app "${epicTitle}" (epic: ${epicId}). There is no research report — use the epic description as the specification. Follow the planning workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md.`,
+          prompt: `Plan the app build for "${epicTitle}" (epic: ${epicId}, entry: from-candidates). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. No recon brief -- use the epic description as the spec.`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -353,7 +383,7 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "revise-plan-from-launch": {
         await removeLabelsFromEpic(epicId, ["pipeline:submission-prep"], factoryPath);
-        await addLabelsToEpic(epicId, ["pipeline:research-complete", "plan:pending", "agent:running"], factoryPath);
+        await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], factoryPath);
         invalidateCache();
 
         const appRepoPath6 = `/Users/janemckay/dev/claude_projects/${appName}`;
@@ -364,12 +394,70 @@ export async function POST(request: NextRequest) {
         const session = await launchAgent({
           repoPath: appRepoPath6,
           repoName: appName,
-          prompt: `Revise the plan for "${epicTitle}" (epic: ${epicId}).${feedbackStr4} Review existing beads in the app repo and revise the plan. Follow the planning workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md.`,
+          prompt: `Revise the build plan for "${epicTitle}" (epic: ${epicId}, entry: revise-plan). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md.${feedbackStr4}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
           pipelineStage: "planning",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session });
+      }
+
+      // -------------------------------------------------------------------
+      // SEND FOR QA: Development Complete -> QA Verification
+      // -------------------------------------------------------------------
+      case "send-for-qa": {
+        // Determine QA round from labels
+        const roundLabels = labels.filter(l => l.startsWith("qa:round-"));
+        const currentRound = roundLabels.length > 0
+          ? Math.max(...roundLabels.map(l => parseInt(l.split("-")[1]))) + 1
+          : 1;
+
+        // Remove old labels, add QA labels
+        await removeLabelsFromEpic(epicId, ["pipeline:development", ...roundLabels], factoryPath);
+        await addLabelsToEpic(epicId, ["pipeline:qa", `qa:round-${currentRound}`, "agent:running"], factoryPath);
+        invalidateCache();
+
+        const qaAppName = extractAppName(epicTitle as string) ?? appName;
+        const qaAppPath = `/Users/janemckay/dev/claude_projects/${qaAppName}`;
+
+        const session = await launchAgent({
+          repoPath: qaAppPath,
+          repoName: qaAppName,
+          prompt: `Run QA verification for "${epicTitle}" (epic: ${epicId}, round: ${currentRound}). Follow the QA workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/.claude/agents/qa.md. App repo: ${qaAppPath}. Recon brief: /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${qaAppName}/research/report.md. Build plan: ${qaAppPath}/.beads/plans/${epicId}.md. QA round: ${currentRound}. Shipyard repo: /Users/janemckay/dev/claude_projects/cycle-apps-factory.`,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Glob,Grep,Task",
+          epicId: epicId,
+          pipelineStage: "qa",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session, qaRound: currentRound });
+      }
+
+      // -------------------------------------------------------------------
+      // QA FIX AND RETEST: QA found bugs -> Back to dev, then auto-retest
+      // -------------------------------------------------------------------
+      case "qa-fix-and-retest": {
+        // Called internally when QA finds bugs -- sends back to dev then auto-retests
+        await removeLabelsFromEpic(epicId, ["pipeline:qa"], factoryPath);
+        await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], factoryPath);
+        invalidateCache();
+
+        const fixAppName = extractAppName(epicTitle as string) ?? appName;
+        const fixAppPath = `/Users/janemckay/dev/claude_projects/${fixAppName}`;
+
+        const session = await launchAgent({
+          repoPath: fixAppPath,
+          repoName: fixAppName,
+          prompt: `Fix QA bugs for "${epicTitle}" (epic: ${epicId}). The QA crew found bugs — check bd list --status=open --type=bug for bug beads. Fix each bug, close the bead, and commit. Follow the development workflow in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. After fixing all bugs, verify end-to-end flows per step 11. Research: /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${fixAppName}/research/report.md. Plan: ${fixAppPath}/.beads/plans/${epicId}.md.`,
+          model: "opus",
+          maxTurns: 300,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          pipelineStage: "qa-fixes",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });

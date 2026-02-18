@@ -7,3 +7,8 @@ out/
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Commercially sensitive features (local-only, not pushed to public repo)
+src/app/api/monetization/
+src/app/monetization/
+src/hooks/useMonetization.ts

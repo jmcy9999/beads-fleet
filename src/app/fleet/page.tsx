@@ -78,6 +78,7 @@ export default function FleetPage() {
       {agentStatus?.running && agentStatus.session && (
         <AgentStatusBanner
           session={agentStatus.session}
+          recentLog={agentStatus.recentLog}
           onStop={() => stopAgent.mutate()}
           isStopping={stopAgent.isPending}
         />
