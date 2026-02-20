@@ -13,9 +13,10 @@ interface FleetColumnProps {
   epicCosts?: Map<string, EpicCost>;
   onPipelineAction?: (payload: PipelineActionPayload) => void;
   agentRunning?: boolean;
+  pendingEpicId?: string | null;
 }
 
-export function FleetColumn({ stage, apps, epicCosts, onPipelineAction, agentRunning }: FleetColumnProps) {
+export function FleetColumn({ stage, apps, epicCosts, onPipelineAction, agentRunning, pendingEpicId }: FleetColumnProps) {
   const config = FLEET_STAGE_CONFIG[stage];
 
   return (
@@ -46,6 +47,7 @@ export function FleetColumn({ stage, apps, epicCosts, onPipelineAction, agentRun
               cost={epicCosts?.get(app.epic.id)}
               onPipelineAction={onPipelineAction}
               agentRunning={agentRunning}
+              pendingEpicId={pendingEpicId}
             />
           ))
         )}

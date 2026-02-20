@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { FleetBoard } from "@/components/fleet/FleetBoard";
 import type { PipelineActionPayload } from "@/components/fleet/FleetBoard";
 import Link from "next/link";
@@ -19,6 +19,7 @@ export default function FleetPage() {
   const { data: agentStatus } = useAgentStatus();
   const stopAgent = useAgentStop();
   const pipelineAction = usePipelineAction();
+  const [pendingEpicId, setPendingEpicId] = useState<string | null>(null);
 
   const allIssues = useMemo(() => data?.all_issues ?? [], [data]);
   const epicCount = useMemo(
@@ -43,10 +44,16 @@ export default function FleetPage() {
     (payload: PipelineActionPayload) => {
       // Look up current labels from issue data for label-aware actions
       const epic = allIssues.find((i) => i.id === payload.epicId);
-      pipelineAction.mutate({
-        ...payload,
-        currentLabels: epic?.labels ?? [],
-      });
+      setPendingEpicId(payload.epicId);
+      pipelineAction.mutate(
+        {
+          ...payload,
+          currentLabels: epic?.labels ?? [],
+        },
+        {
+          onSettled: () => setPendingEpicId(null),
+        },
+      );
     },
     [allIssues, pipelineAction],
   );
@@ -114,6 +121,7 @@ export default function FleetPage() {
           epicCosts={epicCosts}
           onPipelineAction={handlePipelineAction}
           agentRunning={agentStatus?.running ?? false}
+          pendingEpicId={pendingEpicId}
         />
       )}
 

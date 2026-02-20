@@ -41,6 +41,7 @@ interface FleetBoardProps {
   epicCosts?: Map<string, EpicCost>;
   onPipelineAction?: (payload: PipelineActionPayload) => void;
   agentRunning?: boolean;
+  pendingEpicId?: string | null;
 }
 
 const DEFAULT_SCALE = 1;
@@ -78,7 +79,7 @@ function saveVisibleColumns(columns: Set<FleetStage>) {
 const TOOLBAR_BTN =
   "p-1.5 rounded-md text-gray-400 hover:text-gray-200 hover:bg-surface-2 transition-colors";
 
-export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning }: FleetBoardProps) {
+export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, pendingEpicId }: FleetBoardProps) {
   const [scale, setScale] = useState(DEFAULT_SCALE);
   const [visibleColumns, setVisibleColumns] = useState<Set<FleetStage>>(loadVisibleColumns);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -245,6 +246,7 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning }
               epicCosts={epicCosts}
               onPipelineAction={onPipelineAction}
               agentRunning={agentRunning}
+              pendingEpicId={pendingEpicId}
             />
           ))}
         </div>
