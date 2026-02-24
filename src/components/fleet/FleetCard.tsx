@@ -44,6 +44,20 @@ const PHASE_COLORS: Record<string, string> = {
   other: "text-gray-400",
 };
 
+function formatRelativeDate(dateStr: string | undefined): string | null {
+  if (!dateStr) return null;
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return null;
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return "today";
+  if (diffDays === 1) return "1d ago";
+  if (diffDays < 30) return `${diffDays}d ago`;
+  if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
+  return `${Math.floor(diffDays / 365)}y ago`;
+}
+
 /** Shared style for primary action buttons on fleet cards. */
 const BTN_PRIMARY =
   "w-full px-3 py-1.5 text-xs font-medium rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
@@ -148,6 +162,11 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-[10px] text-gray-400">{epic.id}</span>
+          {formatRelativeDate(epic.created_at) && (
+            <span className="text-[10px] text-gray-500" title={epic.created_at}>
+              {formatRelativeDate(epic.created_at)}
+            </span>
+          )}
           {epicAgentRunning && (
             <span className="relative flex h-2.5 w-2.5" title="Agent running">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />

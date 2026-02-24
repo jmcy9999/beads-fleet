@@ -31,6 +31,20 @@ function computeEpicProgress(epicId: string, allIssues: PlanIssue[]): { closed: 
   return { closed, total: children.length };
 }
 
+function formatRelativeDate(dateStr: string | undefined): string | null {
+  if (!dateStr) return null;
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return null;
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return "today";
+  if (diffDays === 1) return "1d ago";
+  if (diffDays < 30) return `${diffDays}d ago`;
+  if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
+  return `${Math.floor(diffDays / 365)}y ago`;
+}
+
 interface IssueCardProps {
   issue: PlanIssue;
   variant?: "card" | "row";
@@ -143,6 +157,9 @@ export function IssueCard({
             <span className="text-gray-500">{"\u2014"}</span>
           )}
         </td>
+        <td className="px-3 py-2 text-xs text-gray-500" title={issue.created_at}>
+          {formatRelativeDate(issue.created_at) ?? "\u2014"}
+        </td>
       </tr>
     );
   }
@@ -211,6 +228,11 @@ export function IssueCard({
       <div className="flex items-center justify-between">
         <StatusBadge status={issue.status} />
         <div className="flex items-center gap-2 text-xs text-gray-400">
+          {formatRelativeDate(issue.created_at) && (
+            <span className="text-gray-500" title={issue.created_at}>
+              {formatRelativeDate(issue.created_at)}
+            </span>
+          )}
           {issue.blocked_by.length > 0 && (
             <span className="text-status-blocked font-medium">
               {issue.blocked_by.length} blocked

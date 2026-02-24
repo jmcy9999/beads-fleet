@@ -8,7 +8,7 @@ import { IssueCard } from "@/components/ui/IssueCard";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { useTokenUsageSummary } from "@/hooks/useTokenUsage";
 
-type SortKey = "id" | "project" | "title" | "status" | "priority" | "owner" | "epic" | "blocked_by" | "cost";
+type SortKey = "id" | "project" | "title" | "status" | "priority" | "owner" | "epic" | "blocked_by" | "cost" | "created";
 type SortDir = "asc" | "desc";
 
 interface IssueTableProps {
@@ -30,6 +30,7 @@ const COLUMN_HEADERS: { key: SortKey; label: string }[] = [
   { key: "epic", label: "Epic" },
   { key: "blocked_by", label: "Blocked By" },
   { key: "cost", label: "Cost" },
+  { key: "created", label: "Created" },
 ];
 
 function comparePlanIssues(
@@ -60,6 +61,8 @@ function comparePlanIssues(
       const bCost = tokenSummary?.[b.id]?.total_cost_usd ?? 0;
       return aCost - bCost;
     }
+    case "created":
+      return (a.created_at ?? "").localeCompare(b.created_at ?? "");
     default:
       return 0;
   }

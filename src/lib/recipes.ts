@@ -19,6 +19,8 @@ export interface FilterCriteria {
   hasBlockers?: boolean;
   isStale?: boolean; // updated > 30 days ago
   isRecent?: boolean; // updated < 7 days ago
+  createdAfter?: string;   // ISO date string — only show issues created on/after this date
+  createdBefore?: string;  // ISO date string — only show issues created on/before this date
   labelPrefix?: string;  // match issues having any label starting with this prefix
   search?: string;
 }
@@ -90,6 +92,25 @@ export const BUILT_IN_VIEWS: SavedView[] = [
     description: "All open bugs",
     filter: {
       types: ["bug"],
+      statuses: ["open", "in_progress", "blocked"],
+    },
+    isBuiltIn: true,
+  },
+  {
+    id: "recent",
+    name: "Recent",
+    description: "Issues updated in the last 7 days",
+    filter: {
+      isRecent: true,
+    },
+    isBuiltIn: true,
+  },
+  {
+    id: "stale",
+    name: "Stale",
+    description: "Issues not updated in 30+ days",
+    filter: {
+      isStale: true,
       statuses: ["open", "in_progress", "blocked"],
     },
     isBuiltIn: true,
@@ -170,6 +191,30 @@ export function applyFilter(
     // Blocker filter
     if (filter.hasBlockers === true && issue.blocked_by.length === 0) return false;
     if (filter.hasBlockers === false && issue.blocked_by.length > 0) return false;
+
+    // Date created filter
+    if (filter.createdAfter) {
+      if (!issue.created_at || issue.created_at < filter.createdAfter) return false;
+    }
+    if (filter.createdBefore) {
+      // Compare against end-of-day by appending T23:59:59 if only a date string
+      const cutoff = filter.createdBefore.length === 10
+        ? filter.createdBefore + "T23:59:59"
+        : filter.createdBefore;
+      if (!issue.created_at || issue.created_at > cutoff) return false;
+    }
+
+    // Staleness / recency filters (based on updated_at)
+    if (filter.isStale === true) {
+      if (!issue.updated_at) return false;
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      if (issue.updated_at > thirtyDaysAgo) return false;
+    }
+    if (filter.isRecent === true) {
+      if (!issue.updated_at) return false;
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      if (issue.updated_at < sevenDaysAgo) return false;
+    }
 
     // Search filter
     if (filter.search) {

@@ -513,6 +513,81 @@ describe("applyFilter", () => {
       expect(testPlanIssues).toEqual(copy);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Date created filter (createdAfter / createdBefore)
+  // ---------------------------------------------------------------------------
+
+  describe("date created filter", () => {
+    const datedIssues: PlanIssue[] = [
+      {
+        id: "D-1",
+        title: "Old issue",
+        status: "open",
+        priority: 2,
+        issue_type: "task",
+        blocked_by: [],
+        blocks: [],
+        created_at: "2025-01-15T10:00:00Z",
+        updated_at: "2025-01-20T10:00:00Z",
+      },
+      {
+        id: "D-2",
+        title: "Mid issue",
+        status: "open",
+        priority: 2,
+        issue_type: "task",
+        blocked_by: [],
+        blocks: [],
+        created_at: "2025-06-15T10:00:00Z",
+        updated_at: "2025-06-20T10:00:00Z",
+      },
+      {
+        id: "D-3",
+        title: "Recent issue",
+        status: "open",
+        priority: 2,
+        issue_type: "task",
+        blocked_by: [],
+        blocks: [],
+        created_at: "2026-02-20T10:00:00Z",
+        updated_at: "2026-02-22T10:00:00Z",
+      },
+      {
+        id: "D-4",
+        title: "No date issue",
+        status: "open",
+        priority: 2,
+        issue_type: "task",
+        blocked_by: [],
+        blocks: [],
+      },
+    ];
+
+    it("createdAfter filters out issues before the date", () => {
+      const result = applyFilter(datedIssues, { createdAfter: "2025-06-01" });
+      expect(result.map((i) => i.id)).toEqual(["D-2", "D-3"]);
+    });
+
+    it("createdBefore filters out issues after the date", () => {
+      const result = applyFilter(datedIssues, { createdBefore: "2025-06-30" });
+      expect(result.map((i) => i.id)).toEqual(["D-1", "D-2"]);
+    });
+
+    it("createdAfter + createdBefore combines into a range", () => {
+      const result = applyFilter(datedIssues, {
+        createdAfter: "2025-06-01",
+        createdBefore: "2025-12-31",
+      });
+      expect(result.map((i) => i.id)).toEqual(["D-2"]);
+    });
+
+    it("excludes issues with no created_at when date filter is active", () => {
+      const result = applyFilter(datedIssues, { createdAfter: "2020-01-01" });
+      // D-4 has no created_at, so it's excluded
+      expect(result.map((i) => i.id)).toEqual(["D-1", "D-2", "D-3"]);
+    });
+  });
 });
 
 // =============================================================================
@@ -520,8 +595,8 @@ describe("applyFilter", () => {
 // =============================================================================
 
 describe("BUILT_IN_VIEWS", () => {
-  it("has 7 entries", () => {
-    expect(BUILT_IN_VIEWS).toHaveLength(7);
+  it("has 9 entries", () => {
+    expect(BUILT_IN_VIEWS).toHaveLength(9);
   });
 
   it("has correct ids", () => {
@@ -533,6 +608,8 @@ describe("BUILT_IN_VIEWS", () => {
       "blocked",
       "high-priority",
       "bugs",
+      "recent",
+      "stale",
       "submissions",
     ]);
   });
