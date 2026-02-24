@@ -455,7 +455,7 @@ export function FilterBar({
           />
         )}
 
-        {/* Epic filter */}
+        {/* Parent filter */}
         {availableEpics && availableEpics.size > 0 && (
           <div className="relative">
             <select
@@ -463,8 +463,8 @@ export function FilterBar({
               onChange={(e) => handleEpicChange(e.target.value || undefined)}
               className="appearance-none px-3 py-1.5 pr-7 text-sm bg-surface-2 border border-border-default rounded-md text-gray-300 hover:text-white hover:border-gray-500 transition-colors cursor-pointer focus:outline-none focus:border-gray-500"
             >
-              <option value="">All Epics</option>
-              <option value="__none__">No Epic</option>
+              <option value="">All Parents</option>
+              <option value="__none__">No Parent</option>
               {Array.from(availableEpics.entries()).map(([id, title]) => (
                 <option key={id} value={id}>{title}</option>
               ))}

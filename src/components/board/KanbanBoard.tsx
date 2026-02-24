@@ -1,15 +1,18 @@
 import { KanbanColumn } from "./KanbanColumn";
 import { KANBAN_COLUMNS, type PlanIssue, type IssueStatus } from "@/lib/types";
 
+export type KanbanSortOrder = "date" | "priority";
+
 interface KanbanBoardProps {
   issues: PlanIssue[];
   onSelectIssue: (id: string) => void;
+  sortOrder?: KanbanSortOrder;
 }
 
 /** Columns that are always shown, even when empty. */
 const ALWAYS_VISIBLE: IssueStatus[] = ["open", "in_progress"];
 
-export function KanbanBoard({ issues, onSelectIssue }: KanbanBoardProps) {
+export function KanbanBoard({ issues, onSelectIssue, sortOrder = "date" }: KanbanBoardProps) {
   const grouped = new Map<IssueStatus, PlanIssue[]>();
 
   for (const status of KANBAN_COLUMNS) {
@@ -23,10 +26,21 @@ export function KanbanBoard({ issues, onSelectIssue }: KanbanBoardProps) {
     }
   }
 
-  // Sort each column by relevant date (newest first), with priority as tiebreaker
+  // Sort each column
   for (const [status, bucket] of Array.from(grouped)) {
     bucket.sort((a, b) => {
-      // Primary: date sort (newest first)
+      if (sortOrder === "priority") {
+        // Primary: priority (P0 first)
+        const priCompare = a.priority - b.priority;
+        if (priCompare !== 0) return priCompare;
+
+        // Tiebreaker: date (newest first)
+        const dateA = a.created_at ?? a.updated_at ?? "";
+        const dateB = b.created_at ?? b.updated_at ?? "";
+        return dateB.localeCompare(dateA);
+      }
+
+      // Default: date sort (newest first), priority as tiebreaker
       let dateA: string | undefined;
       let dateB: string | undefined;
 
