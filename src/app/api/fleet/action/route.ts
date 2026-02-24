@@ -58,16 +58,37 @@ const FACTORY_REPO_PATH = "/Users/janemckay/dev/claude_projects/cycle-apps-facto
  * the PascalCase app name. Falls back to the epic ID if no clear name found.
  */
 function deriveAppName(epicTitle: string, epicId: string): string {
-  // Try to extract an AppName-style identifier (e.g., "LensCycle" from "LensCycle: ...")
-  const colonMatch = epicTitle.match(/^(\w+):/);
-  if (colonMatch) return colonMatch[1];
+  // Split on first colon to get the "name" portion
+  const beforeColon = epicTitle.split(":")[0].trim();
 
-  // Try PascalCase word
+  // If before-colon is a single PascalCase word (e.g., "LensCycle", "MindStack", "GutCycle")
+  if (/^[A-Z][a-zA-Z]+$/.test(beforeColon) && !beforeColon.includes(" ")) {
+    return beforeColon;
+  }
+
+  // If before-colon has multiple words, PascalCase them and strip non-alpha
+  // e.g., "Landing Page" -> "LandingPage", "Shipyard-as-a-Product" -> "ShipyardAsAProduct"
+  if (beforeColon.includes(" ") || beforeColon.includes("-")) {
+    const words = beforeColon.split(/[\s-]+/);
+    return words
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join("");
+  }
+
+  // Single word before colon (e.g., "Shipyard:")
+  if (epicTitle.includes(":")) {
+    return beforeColon;
+  }
+
+  // No colon — try PascalCase word in the title
   const pascalMatch = epicTitle.match(/\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b/);
   if (pascalMatch) return pascalMatch[1];
 
-  // Fallback: first meaningful word
+  // Fallback: PascalCase first two meaningful words
   const words = epicTitle.split(/\s+/).filter((w) => w.length > 2);
+  if (words.length >= 2) {
+    return words.slice(0, 2).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join("");
+  }
   return words[0] ?? epicId;
 }
 

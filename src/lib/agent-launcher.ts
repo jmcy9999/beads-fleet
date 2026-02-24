@@ -11,7 +11,7 @@
 
 import { spawn, type ChildProcess } from "child_process";
 import { promises as fs } from "fs";
-import { createWriteStream, type WriteStream } from "fs";
+import { createWriteStream, realpathSync, type WriteStream } from "fs";
 import { createInterface } from "readline";
 import path from "path";
 import os from "os";
@@ -279,13 +279,21 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     model,
   ];
 
-  // Spawn detached so it survives if the API process restarts
-  const child = spawn("claude", args, {
+  // Ensure cwd exists (planning agents run in app repos that may not exist yet)
+  await fs.mkdir(options.repoPath, { recursive: true });
+
+  // Spawn via /bin/bash to ensure claude binary resolves correctly
+  // (Node's spawn with Mach-O binaries + symlinks can fail with ENOENT)
+  const claudeBin = process.env.CLAUDE_BIN || "/Users/janemckay/.local/bin/claude";
+  const shellCmd = [claudeBin, ...args].map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
+  const child = spawn("/bin/bash", ["-c", shellCmd], {
     cwd: options.repoPath,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
+      PATH: `/Users/janemckay/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+      HOME: process.env.HOME || "/Users/janemckay",
       // Must unset CLAUDECODE to avoid "nested session" error
       CLAUDECODE: undefined,
       NO_COLOR: "1",
