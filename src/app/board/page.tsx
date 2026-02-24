@@ -23,6 +23,16 @@ export default function BoardPage() {
     [allIssues, filter],
   );
 
+  const availableEpics = useMemo(() => {
+    const epics = new Map<string, string>();
+    for (const issue of allIssues) {
+      if (issue.issue_type === "epic" && issue.status !== "closed") {
+        epics.set(issue.id, issue.title);
+      }
+    }
+    return epics;
+  }, [allIssues]);
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-4">
@@ -40,6 +50,7 @@ export default function BoardPage() {
           onFilterChange={setFilter}
           activeViewId={activeViewId}
           onViewChange={setActiveViewId}
+          availableEpics={availableEpics}
         />
       )}
 

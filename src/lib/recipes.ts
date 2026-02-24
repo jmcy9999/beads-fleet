@@ -172,12 +172,12 @@ export function applyFilter(
       }
     }
 
-    // Epic filter
+    // Epic filter — show the epic itself AND its children
     if (filter.epic) {
       if (filter.epic === "__none__") {
         if (issue.epic) return false;
       } else {
-        if (issue.epic !== filter.epic) return false;
+        if (issue.id !== filter.epic && issue.epic !== filter.epic) return false;
       }
     }
 
