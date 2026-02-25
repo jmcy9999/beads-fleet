@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { KanbanBoard, type KanbanSortOrder } from "@/components/board/KanbanBoard";
 import { FilterBar } from "@/components/filters/FilterBar";
@@ -12,17 +12,17 @@ import { applyFilter } from "@/lib/recipes";
 
 const SORT_STORAGE_KEY = "beads-web-kanban-sort";
 
-function loadSortOrder(): KanbanSortOrder {
-  if (typeof window === "undefined") return "date";
-  return (localStorage.getItem(SORT_STORAGE_KEY) as KanbanSortOrder) ?? "date";
-}
-
 export default function BoardPage() {
   const { data, isLoading, error, refetch } = useIssues();
   const router = useRouter();
   const [filter, setFilter] = useState<FilterCriteria>({});
   const [activeViewId, setActiveViewId] = useState<string>("");
-  const [sortOrder, setSortOrder] = useState<KanbanSortOrder>(loadSortOrder);
+  const [sortOrder, setSortOrder] = useState<KanbanSortOrder>("date");
+
+  useEffect(() => {
+    const stored = localStorage.getItem(SORT_STORAGE_KEY) as KanbanSortOrder | null;
+    if (stored) setSortOrder(stored);
+  }, []);
 
   const toggleSort = () => {
     const next = sortOrder === "date" ? "priority" : "date";
