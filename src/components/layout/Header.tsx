@@ -2,6 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import { useRepos, useRepoMutation } from "@/hooks/useRepos";
+import { QuickCreate } from "@/components/QuickCreate";
 
 const PAGE_NAMES: Record<string, string> = {
   "/": "Dashboard",
@@ -103,10 +104,13 @@ export function Header() {
         </div>
       </div>
 
-      {/* Right: Refresh indicator */}
-      <div className="flex items-center gap-2 text-xs text-gray-500">
-        <div className="w-1.5 h-1.5 rounded-full bg-status-open animate-pulse" />
-        <span>Live</span>
+      {/* Right: Quick create + refresh indicator */}
+      <div className="flex items-center gap-3">
+        <QuickCreate />
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <div className="w-1.5 h-1.5 rounded-full bg-status-open animate-pulse" />
+          <span>Live</span>
+        </div>
       </div>
     </header>
   );

@@ -12,6 +12,7 @@
     "postinstall": "bash scripts/install-bv.sh || true"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@beads/bd": "^0.49.6",
     "@reactflow/background": "^11.3.14",
     "@reactflow/controls": "^11.2.14",
