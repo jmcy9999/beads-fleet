@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useRepos, useRepoMutation } from "@/hooks/useRepos";
 import { QuickCreate } from "@/components/QuickCreate";
+import { useMobileSidebar } from "@/components/providers/MobileSidebarContext";
 
 const PAGE_NAMES: Record<string, string> = {
   "/": "Dashboard",
@@ -18,6 +19,7 @@ export function Header() {
   const pathname = usePathname();
   const { data: repoData } = useRepos();
   const repoMutation = useRepoMutation();
+  const { toggle: toggleMobileSidebar } = useMobileSidebar();
   const pageName = PAGE_NAMES[pathname] ?? "Beads Fleet";
 
   const repos = repoData?.repos ?? [];
@@ -41,6 +43,7 @@ export function Header() {
       <div className="flex items-center gap-4">
         {/* Hamburger button -- mobile only */}
         <button
+          onClick={toggleMobileSidebar}
           className="lg:hidden p-2 rounded-md text-gray-400 hover:text-white hover:bg-surface-2 transition-colors"
           aria-label="Open navigation"
         >

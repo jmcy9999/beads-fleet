@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useHealth } from "@/hooks/useHealth";
 import { useRepos, useRepoMutation } from "@/hooks/useRepos";
+import { useMobileSidebar } from "@/components/providers/MobileSidebarContext";
 
 const NAV_ITEMS = [
   {
@@ -98,6 +99,25 @@ const NAV_ITEMS = [
           strokeLinecap="round"
           strokeLinejoin="round"
           d="M13 10V3L4 14h7v7l9-11h-7z"
+        />
+      </svg>
+    ),
+  },
+  {
+    label: "Monetization",
+    href: "/monetization",
+    icon: (
+      <svg
+        className="w-5 h-5"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth={2}
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
         />
       </svg>
     ),
@@ -280,18 +300,17 @@ function RepoSelector() {
   );
 }
 
-export function Sidebar() {
+function SidebarContent({ collapsed, setCollapsed, onNavClick }: {
+  collapsed: boolean;
+  setCollapsed: (v: boolean) => void;
+  onNavClick?: () => void;
+}) {
   const pathname = usePathname();
   const { data: health } = useHealth();
   const bvAvailable = health?.bv_available ?? false;
-  const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <aside
-      className={`hidden lg:flex lg:flex-col bg-surface-1 border-r border-border-default z-30 transition-all duration-200 ${
-        collapsed ? "w-16" : "w-64"
-      }`}
-    >
+    <>
       {/* Logo / Brand */}
       <div className="flex items-center gap-2 px-3 h-16 border-b border-border-default">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -331,6 +350,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              onClick={onNavClick}
               title={collapsed ? item.label : undefined}
               className={`
                 flex items-center ${collapsed ? "justify-center" : "gap-3"} ${collapsed ? "px-2" : "px-3"} py-2.5 rounded-md text-sm font-medium
@@ -361,6 +381,56 @@ export function Sidebar() {
       <div className={`${collapsed ? "px-2" : "px-6"} py-4 border-t border-border-default`}>
         {!collapsed && <p className="text-xs text-gray-500">Beads Fleet v1.0</p>}
       </div>
-    </aside>
+    </>
+  );
+}
+
+export function Sidebar() {
+  const [collapsed, setCollapsed] = useState(false);
+  const { isOpen, close } = useMobileSidebar();
+
+  // Close mobile sidebar on route change
+  const pathname = usePathname();
+  useEffect(() => {
+    close();
+  }, [pathname, close]);
+
+  return (
+    <>
+      {/* Desktop sidebar */}
+      <aside
+        className={`hidden lg:flex lg:flex-col bg-surface-1 border-r border-border-default z-30 transition-all duration-200 ${
+          collapsed ? "w-16" : "w-64"
+        }`}
+      >
+        <SidebarContent collapsed={collapsed} setCollapsed={setCollapsed} />
+      </aside>
+
+      {/* Mobile sidebar overlay */}
+      {isOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 flex">
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/60"
+            onClick={close}
+            aria-label="Close navigation"
+          />
+          {/* Drawer */}
+          <aside className="relative flex flex-col w-72 max-w-[80vw] bg-surface-1 border-r border-border-default animate-slide-in-left">
+            {/* Close button */}
+            <button
+              onClick={close}
+              className="absolute top-4 right-3 p-2 rounded-md text-gray-400 hover:text-white hover:bg-surface-2 transition-colors z-10"
+              aria-label="Close navigation"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <SidebarContent collapsed={false} setCollapsed={() => {}} onNavClick={close} />
+          </aside>
+        </div>
+      )}
+    </>
   );
 }
