@@ -51,6 +51,51 @@ let activeSession: AgentSession | null = null;
 let activeProcess: ChildProcess | null = null;
 
 const LOG_DIR = path.join(os.tmpdir(), "beads-web-agent-logs");
+const SESSION_FILE = path.join(os.tmpdir(), "beads-web-agent-session.json");
+
+// ---------------------------------------------------------------------------
+// Session persistence — survives hot-reloads and server restarts
+// ---------------------------------------------------------------------------
+
+async function persistSession(session: AgentSession): Promise<void> {
+  try {
+    await fs.writeFile(SESSION_FILE, JSON.stringify(session, null, 2), "utf-8");
+  } catch {
+    // Best effort — don't break the launch
+  }
+}
+
+async function clearPersistedSession(): Promise<void> {
+  try {
+    await fs.unlink(SESSION_FILE);
+  } catch {
+    // File may not exist
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0); // Signal 0 = check if process exists
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function recoverSession(): Promise<AgentSession | null> {
+  try {
+    const data = await fs.readFile(SESSION_FILE, "utf-8");
+    const session = JSON.parse(data) as AgentSession;
+    if (session.pid && isPidAlive(session.pid)) {
+      return session;
+    }
+    // PID is dead — clean up stale file
+    await clearPersistedSession();
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Pipeline stage transitions
@@ -334,6 +379,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
 
   activeSession = session;
   activeProcess = child;
+  await persistSession(session);
 
   // Clean up when process exits and handle pipeline label transitions
   child.on("exit", async (exitCode) => {
@@ -341,6 +387,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     if (exitedSession != null && exitedSession.pid === child.pid) {
       activeSession = null;
       activeProcess = null;
+      await clearPersistedSession();
 
       // Perform pipeline label transitions if epicId and pipelineStage are set
       if (exitedSession.epicId && exitedSession.pipelineStage) {
