@@ -21,9 +21,9 @@ const APP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
  */
 export async function GET(
   _request: NextRequest,
-  { params }: { params: { appName: string } },
+  { params }: { params: Promise<{ appName: string }> },
 ) {
-  const { appName } = params;
+  const { appName } = await params;
 
   if (!appName || !APP_NAME_PATTERN.test(appName)) {
     return NextResponse.json(

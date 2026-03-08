@@ -21,9 +21,9 @@ const ISSUE_ID_PATTERN = /^[a-zA-Z0-9_.-]+$/;
  */
 export async function GET(
   _request: NextRequest,
-  { params }: { params: { issueId: string } },
+  { params }: { params: Promise<{ issueId: string }> },
 ) {
-  const { issueId } = params;
+  const { issueId } = await params;
 
   if (!issueId || !ISSUE_ID_PATTERN.test(issueId) || issueId.includes("..")) {
     return NextResponse.json(

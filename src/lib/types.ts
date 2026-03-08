@@ -52,6 +52,7 @@ export interface BeadsIssue {
   closed_at?: string;
   close_reason?: string;
   notes?: string;
+  due_at?: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -118,6 +119,7 @@ export interface PlanIssue {
   created_at?: string;
   updated_at?: string;
   closed_at?: string;
+  due_at?: string;
 }
 
 export interface PlanTrack {

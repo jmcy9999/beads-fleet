@@ -16,9 +16,9 @@ const ISSUE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
-  const issueId = params.id;
+  const { id: issueId } = await params;
 
   // Validate issue ID format
   if (!issueId || !ISSUE_ID_PATTERN.test(issueId)) {

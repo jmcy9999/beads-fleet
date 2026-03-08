@@ -5,8 +5,11 @@ import { FleetColumn } from "./FleetColumn";
 import {
   FLEET_STAGES,
   FLEET_STAGE_CONFIG,
+  IOS_ONLY_STAGES,
+  VENTURE_ONLY_STAGES,
   buildFleetApps,
   type FleetStage,
+  type ShipType,
   type EpicCost,
 } from "./fleet-utils";
 import type { PlanIssue } from "@/lib/types";
@@ -27,7 +30,10 @@ export type PipelineAction =
   | "skip-to-plan"
   | "revise-plan-from-launch"
   | "send-for-qa"
-  | "qa-fix-and-retest";
+  | "qa-fix-and-retest"
+  | "mark-ready-to-deploy"
+  | "mark-venture-live"
+  | "mark-venture-complete";
 
 export interface PipelineActionPayload {
   epicId: string;
@@ -50,6 +56,36 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 1.5;
 
 const STORAGE_KEY = "beads-fleet-visible-columns";
+const SHIP_TYPE_STORAGE_KEY = "beads-fleet-ship-type-filter";
+
+type ShipTypeFilter = "all" | ShipType;
+
+function loadShipTypeFilter(): ShipTypeFilter {
+  if (typeof window === "undefined") return "all";
+  try {
+    const raw = localStorage.getItem(SHIP_TYPE_STORAGE_KEY);
+    if (raw === "ios-app" || raw === "venture" || raw === "all") return raw;
+  } catch {
+    // ignore
+  }
+  return "all";
+}
+
+function saveShipTypeFilter(filter: ShipTypeFilter) {
+  try {
+    localStorage.setItem(SHIP_TYPE_STORAGE_KEY, filter);
+  } catch {
+    // ignore
+  }
+}
+
+/** Get relevant stages for a ship-type filter (hides irrelevant columns). */
+function getRelevantStages(filter: ShipTypeFilter): Set<FleetStage> {
+  if (filter === "all") return new Set(FLEET_STAGES);
+  if (filter === "venture") return new Set(FLEET_STAGES.filter((s) => !IOS_ONLY_STAGES.includes(s)));
+  // ios-app
+  return new Set(FLEET_STAGES.filter((s) => !VENTURE_ONLY_STAGES.includes(s)));
+}
 
 function loadVisibleColumns(): Set<FleetStage> {
   if (typeof window === "undefined") return new Set(FLEET_STAGES);
@@ -83,9 +119,15 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
   const [scale, setScale] = useState(DEFAULT_SCALE);
   const [visibleColumns, setVisibleColumns] = useState<Set<FleetStage>>(loadVisibleColumns);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [shipTypeFilter, setShipTypeFilter] = useState<ShipTypeFilter>(loadShipTypeFilter);
   const filterRef = useRef<HTMLDivElement>(null);
 
-  const apps = buildFleetApps(issues);
+  const allApps = buildFleetApps(issues);
+
+  // Filter apps by ship type
+  const apps = shipTypeFilter === "all"
+    ? allApps
+    : allApps.filter((a) => a.shipType === shipTypeFilter);
 
   const grouped = new Map<FleetStage, typeof apps>();
   for (const stage of FLEET_STAGES) {
@@ -137,12 +179,37 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
   }, [filterOpen]);
 
   const allVisible = visibleColumns.size === FLEET_STAGES.length;
-  const filteredStages = FLEET_STAGES.filter((s) => visibleColumns.has(s));
+  const relevantStages = getRelevantStages(shipTypeFilter);
+  const filteredStages = FLEET_STAGES.filter((s) => visibleColumns.has(s) && relevantStages.has(s));
 
   return (
     <div className="flex flex-col flex-1">
-      {/* Toolbar: column filter + zoom controls */}
+      {/* Toolbar: ship-type filter + column filter + zoom controls */}
       <div className="flex items-center gap-2 mb-2 justify-end">
+        {/* Ship-type filter toggle */}
+        <div className="flex items-center rounded-md border border-border-default overflow-hidden">
+          {(["all", "ios-app", "venture"] as const).map((type) => {
+            const active = shipTypeFilter === type;
+            const label = type === "all" ? "All" : type === "ios-app" ? "iOS" : "Venture";
+            return (
+              <button
+                key={type}
+                onClick={() => { setShipTypeFilter(type); saveShipTypeFilter(type); }}
+                className={`px-2 py-1 text-[10px] font-medium transition-colors ${
+                  active
+                    ? "bg-blue-500/20 text-blue-300"
+                    : "text-gray-500 hover:text-gray-300 hover:bg-surface-2"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Divider */}
+        <div className="w-px h-4 bg-border-default" />
+
         {/* Column filter */}
         <div className="relative" ref={filterRef}>
           <button

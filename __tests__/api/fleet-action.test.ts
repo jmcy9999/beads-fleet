@@ -320,7 +320,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockCloseEpic).toHaveBeenCalledWith(
         "epic-1",
-        "Deprioritised from fleet board",
+        "Abandoned from fleet board",
         expect.any(String),
       );
     });
@@ -387,7 +387,7 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:submission-prep"], expect.any(String));
+      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:submission-prep", "pipeline:deploying", "pipeline:qa"], expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["pipeline:development", "agent:running"], expect.any(String));
     });
 

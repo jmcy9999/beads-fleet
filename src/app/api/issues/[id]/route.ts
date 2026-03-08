@@ -7,21 +7,22 @@ export const runtime = "nodejs";
 
 export async function GET(
   _request: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const { id } = await params;
     let projectPath = await getActiveProjectPath();
     if (projectPath === ALL_PROJECTS_SENTINEL) {
-      const resolved = await findRepoForIssue(params.id);
+      const resolved = await findRepoForIssue(id);
       if (!resolved) {
         return NextResponse.json(
-          { error: `Issue ${params.id} not found in any configured repo` },
+          { error: `Issue ${id} not found in any configured repo` },
           { status: 404 },
         );
       }
       projectPath = resolved;
     }
-    const data = await getIssueById(params.id, projectPath);
+    const data = await getIssueById(id, projectPath);
     return NextResponse.json(data);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";

@@ -158,10 +158,19 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
       href={`/issue/${epic.id}`}
       className="card-hover p-2 cursor-pointer block"
     >
-      {/* Header: ID + Priority + Agent indicator */}
+      {/* Header: ID + Ship type badge + Priority + Agent indicator */}
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-[10px] text-gray-400">{epic.id}</span>
+          {app.shipType === "venture" ? (
+            <span className="inline-flex items-center rounded-full bg-teal-500/20 text-teal-300 px-1.5 py-0 text-[9px] font-medium leading-tight">
+              Venture
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-full bg-blue-500/20 text-blue-300 px-1.5 py-0 text-[9px] font-medium leading-tight">
+              iOS
+            </span>
+          )}
           {formatRelativeDate(epic.created_at) && (
             <span className="text-[10px] text-gray-500" title={epic.created_at}>
               {formatRelativeDate(epic.created_at)}
@@ -255,7 +264,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
 
       {/* ---- Phase history indicator ---- */}
       <div className="mt-2 pt-2 border-t border-border-default flex items-center gap-1">
-        {getPhaseHistory(app.stage).map(({ stage, status }) => {
+        {getPhaseHistory(app.stage, app.shipType).map(({ stage, status }) => {
           const cfg = FLEET_STAGE_CONFIG[stage];
           return (
             <span
@@ -322,6 +331,18 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                 {isPendingThis ? "Stopping\u2026" : "Stop Agent"}
               </button>
             )}
+
+          {/* Building + venture (no agent running): Ready to Deploy */}
+          {app.stage === "development" && app.shipType === "venture" && !epicAgentRunning && (
+            <button
+              onClick={(e) => handleAction(e, "mark-ready-to-deploy")}
+              disabled={anyAgentRunning || isPendingThis}
+              className={BTN_GREEN}
+            >
+              {isPendingThis && <Spinner />}
+              {actionLabel("Ready to Deploy")}
+            </button>
+          )}
 
           {/* Research Complete: review recon, generate plan, or request more research */}
           {app.stage === "research-complete" && (
@@ -497,6 +518,40 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             >
               {isPendingThis && <Spinner />}
               {actionLabel("Mark Deployed")}
+            </button>
+          )}
+
+          {/* Deploying (venture): Mark as Live + Send Back to Dev */}
+          {app.stage === "deploying" && (
+            <>
+              <button
+                onClick={(e) => handleAction(e, "mark-venture-live")}
+                disabled={anyAgentRunning || isPendingThis}
+                className={BTN_GREEN}
+              >
+                {isPendingThis && <Spinner />}
+                {actionLabel("Mark as Live")}
+              </button>
+              <button
+                onClick={(e) => handleFeedbackAction(e, "send-back-to-dev")}
+                disabled={anyAgentRunning || isPendingThis}
+                className={BTN_AMBER}
+              >
+                {isPendingThis && <Spinner />}
+                {actionLabel("Send Back to Dev")}
+              </button>
+            </>
+          )}
+
+          {/* Live (venture): Mark Complete */}
+          {app.stage === "live" && (
+            <button
+              onClick={(e) => handleAction(e, "mark-venture-complete")}
+              disabled={anyAgentRunning || isPendingThis}
+              className={BTN_GREEN}
+            >
+              {isPendingThis && <Spinner />}
+              {actionLabel("Mark Complete")}
             </button>
           )}
 

@@ -11,12 +11,12 @@ interface ResearchReportResponse {
  * Only fetches when appName is provided (non-empty string).
  */
 export function useResearchReport(appName: string | null) {
-  return useQuery<ResearchReportResponse>({
+  return useQuery<ResearchReportResponse | null>({
     queryKey: ["research-report", appName],
     queryFn: async () => {
       const res = await fetch(`/api/research/${encodeURIComponent(appName!)}`);
       if (!res.ok) {
-        if (res.status === 404) return { content: "", repoPath: "" };
+        if (res.status === 404) return null;
         throw new Error(`HTTP ${res.status}: ${await res.text()}`);
       }
       return res.json();

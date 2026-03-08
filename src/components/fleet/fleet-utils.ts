@@ -11,6 +11,8 @@ export type FleetStage =
   | "submission-prep"
   | "submitted"
   | "kit-management"
+  | "deploying"
+  | "live"
   | "completed"
   | "bad-idea";
 
@@ -24,9 +26,28 @@ export const FLEET_STAGES: FleetStage[] = [
   "submission-prep",
   "submitted",
   "kit-management",
+  "deploying",
+  "live",
   "completed",
   "bad-idea",
 ];
+
+/** Ship types supported by the shipyard. */
+export type ShipType = "ios-app" | "venture";
+
+/** Detect ship type from epic labels. Defaults to "ios-app" for backward compat. */
+export function getShipType(epic: PlanIssue): ShipType {
+  const labels = epic.labels ?? [];
+  const shipLabel = labels.find((l) => l.startsWith("ship-type:"));
+  if (shipLabel === "ship-type:venture") return "venture";
+  return "ios-app";
+}
+
+/** iOS-only stages that ventures skip. */
+export const IOS_ONLY_STAGES: FleetStage[] = ["qa", "submission-prep", "submitted", "kit-management"];
+
+/** Venture-only stages that iOS apps skip. */
+export const VENTURE_ONLY_STAGES: FleetStage[] = ["deploying", "live"];
 
 export const FLEET_STAGE_CONFIG: Record<
   FleetStage,
@@ -73,6 +94,16 @@ export const FLEET_STAGE_CONFIG: Record<
     color: "text-indigo-400",
     dotColor: "bg-indigo-400",
   },
+  deploying: {
+    label: "Deploying",
+    color: "text-teal-400",
+    dotColor: "bg-teal-400",
+  },
+  live: {
+    label: "Live",
+    color: "text-emerald-400",
+    dotColor: "bg-emerald-400",
+  },
   completed: {
     label: "Deployed",
     color: "text-green-400",
@@ -89,6 +120,7 @@ export interface FleetApp {
   epic: PlanIssue;
   children: PlanIssue[];
   stage: FleetStage;
+  shipType: ShipType;
   progress: { closed: number; total: number };
 }
 
@@ -100,9 +132,9 @@ export function isAgentRunning(epic: PlanIssue): boolean {
 }
 
 /**
- * Linear pipeline stages in order (excludes "bad-idea" which is terminal/separate).
+ * iOS app pipeline stages in order (excludes "bad-idea" which is terminal/separate).
  */
-export const PIPELINE_ORDER: FleetStage[] = [
+export const IOS_PIPELINE_ORDER: FleetStage[] = [
   "idea",
   "research",
   "research-complete",
@@ -114,6 +146,23 @@ export const PIPELINE_ORDER: FleetStage[] = [
   "kit-management",
   "completed",
 ];
+
+/**
+ * Venture pipeline stages in order (no QA, submission, or kit-management).
+ */
+export const VENTURE_PIPELINE_ORDER: FleetStage[] = [
+  "idea",
+  "research",
+  "research-complete",
+  "plan-review",
+  "development",
+  "deploying",
+  "live",
+  "completed",
+];
+
+/** Backward-compatible alias. */
+export const PIPELINE_ORDER = IOS_PIPELINE_ORDER;
 
 export type PhaseStatus = "past" | "current" | "future";
 
@@ -132,24 +181,25 @@ export interface PhaseHistoryEntry {
  * For "bad-idea" (terminal), only the "idea" stage is shown as "past"
  * and "bad-idea" itself is "current". The rest are "future".
  */
-export function getPhaseHistory(currentStage: FleetStage): PhaseHistoryEntry[] {
+export function getPhaseHistory(currentStage: FleetStage, shipType: ShipType = "ios-app"): PhaseHistoryEntry[] {
+  const order = shipType === "venture" ? VENTURE_PIPELINE_ORDER : IOS_PIPELINE_ORDER;
+
   if (currentStage === "bad-idea") {
-    return PIPELINE_ORDER.map((stage) => ({
+    return order.map((stage) => ({
       stage,
       status: stage === "idea" ? ("past" as const) : ("future" as const),
     }));
   }
 
-  const currentIndex = PIPELINE_ORDER.indexOf(currentStage);
-  // If stage not found in pipeline order (shouldn't happen), treat everything as future
+  const currentIndex = order.indexOf(currentStage);
   if (currentIndex === -1) {
-    return PIPELINE_ORDER.map((stage) => ({
+    return order.map((stage) => ({
       stage,
       status: "future" as const,
     }));
   }
 
-  return PIPELINE_ORDER.map((stage, index) => ({
+  return order.map((stage, index) => ({
     stage,
     status:
       index < currentIndex
@@ -183,6 +233,8 @@ export function detectStage(
   if (hasPipelineLabel) {
     if (labels.includes("pipeline:bad-idea")) return "bad-idea";
     if (labels.includes("pipeline:completed")) return "completed";
+    if (labels.includes("pipeline:live")) return "live";
+    if (labels.includes("pipeline:deploying")) return "deploying";
     if (labels.includes("pipeline:kit-management")) return "kit-management";
     if (labels.includes("pipeline:submitted")) return "submitted";
     if (labels.includes("pipeline:submission-prep")) return "submission-prep";
@@ -326,11 +378,13 @@ export function buildFleetApps(allIssues: PlanIssue[]): FleetApp[] {
   return epics.map((epic) => {
     const children = allIssues.filter((i) => i.epic === epic.id);
     const stage = detectStage(epic, children);
+    const shipType = getShipType(epic);
     const closed = children.filter((c) => c.status === "closed").length;
     return {
       epic,
       children,
       stage,
+      shipType,
       progress: { closed, total: children.length },
     };
   });

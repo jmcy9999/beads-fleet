@@ -26,9 +26,9 @@ interface CommentRow {
  */
 export async function GET(
   _request: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
-  const issueId = params.id;
+  const { id: issueId } = await params;
 
   try {
     let projectPath = await getActiveProjectPath();
@@ -79,9 +79,9 @@ export async function GET(
  */
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
-  const issueId = params.id;
+  const { id: issueId } = await params;
 
   let body: { text?: string };
   try {

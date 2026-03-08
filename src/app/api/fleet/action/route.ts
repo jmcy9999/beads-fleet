@@ -30,7 +30,10 @@ type PipelineAction =
   | "skip-to-plan"
   | "revise-plan-from-launch"
   | "send-for-qa"
-  | "qa-fix-and-retest";
+  | "qa-fix-and-retest"
+  | "mark-ready-to-deploy"
+  | "mark-venture-live"
+  | "mark-venture-complete";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -49,6 +52,9 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "revise-plan-from-launch",
   "send-for-qa",
   "qa-fix-and-retest",
+  "mark-ready-to-deploy",
+  "mark-venture-live",
+  "mark-venture-complete",
 ]);
 
 const FACTORY_REPO_PATH = "/Users/janemckay/dev/claude_projects/cycle-apps-factory";
@@ -126,6 +132,7 @@ export async function POST(request: NextRequest) {
 
   const appName = deriveAppName(epicTitle as string, epicId as string);
   const labels = Array.isArray(currentLabels) ? currentLabels as string[] : [];
+  const isVenture = labels.includes("ship-type:venture");
 
   try {
     switch (action as PipelineAction) {
@@ -137,11 +144,14 @@ export async function POST(request: NextRequest) {
         await updateEpicStatus(epicId, "in_progress", factoryPath);
         invalidateCache();
 
-        // Launch research agent
+        const researchPrompt = isVenture
+          ? `Research the venture "${epicTitle}" (epic: ${epicId}). This is a venture project (AI/crypto/web), NOT an iOS app. Follow the research workflow instructions in CLAUDE.md. Focus on: market size, competitors, revenue models, technical feasibility, and deployment platforms. Do NOT assess CycleKit fit or iOS-specific concerns.`
+          : `Research the app idea "${epicTitle}" (epic: ${epicId}). Follow the research workflow instructions in CLAUDE.md.`;
+
         const session = await launchAgent({
           repoPath: factoryPath,
           repoName: "cycle-apps-factory",
-          prompt: `Research the app idea "${epicTitle}" (epic: ${epicId}). Follow the research workflow instructions in CLAUDE.md.`,
+          prompt: researchPrompt,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch",
@@ -160,15 +170,20 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], factoryPath);
         invalidateCache();
 
-        // Launch development agent in the app's own repo
         const appRepoPath = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const devPrompt = isVenture
+          ? `Build the venture "${epicTitle}" (epic: ${epicId}). This is a venture (AI/crypto/web), NOT an iOS app. Research report: /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan: ${appRepoPath}/.beads/plans/${epicId}.md — read this first. Work through each bead in the plan. Use Python/TypeScript as appropriate. Do NOT use Xcode, Tuist, CycleKit, SwiftUI, or iOS standing orders. Commit regularly. Close each bead as you complete it.`
+          : `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan is at ${appRepoPath}/.beads/plans/${epicId}.md — read this first for the UX walkthrough, personas, assumption flags, and conditional logic maps.`;
+
         const session = await launchAgent({
           repoPath: appRepoPath,
           repoName: appName,
-          prompt: `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan is at /Users/janemckay/dev/claude_projects/${appName}/.beads/plans/${epicId}.md — read this first for the UX walkthrough, personas, assumption flags, and conditional logic maps.`,
+          prompt: devPrompt,
           model: "opus",
           maxTurns: 500,
-          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          allowedTools: isVenture
+            ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
+            : "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
           pipelineStage: "development",
         });
@@ -188,10 +203,14 @@ export async function POST(request: NextRequest) {
           ? ` Jane's feedback: "${feedback}". Revise and extend the research.`
           : "";
 
+        const moreResearchPrompt = isVenture
+          ? `Research the venture "${epicTitle}" (epic: ${epicId}). This is a venture (AI/crypto/web), NOT an iOS app. Previous research exists at apps/${appName}/research/report.md.${feedbackStr} Focus on: market size, competitors, revenue models, technical feasibility, and deployment platforms. Do NOT assess CycleKit fit or iOS-specific concerns.`
+          : `Research the app idea "${epicTitle}" (epic: ${epicId}). Previous research exists at apps/${appName}/research/report.md.${feedbackStr} Follow the research workflow instructions in CLAUDE.md.`;
+
         const session = await launchAgent({
           repoPath: factoryPath,
           repoName: "cycle-apps-factory",
-          prompt: `Research the app idea "${epicTitle}" (epic: ${epicId}). Previous research exists at apps/${appName}/research/report.md.${feedbackStr} Follow the research workflow instructions in CLAUDE.md.`,
+          prompt: moreResearchPrompt,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch",
@@ -245,7 +264,8 @@ export async function POST(request: NextRequest) {
       // SEND BACK TO DEVELOPMENT: Prepare for Submission -> In Development
       // -------------------------------------------------------------------
       case "send-back-to-dev": {
-        await removeLabelsFromEpic(epicId, ["pipeline:submission-prep"], factoryPath);
+        // Remove whichever "from" stage label is present (submission-prep, deploying, or qa)
+        await removeLabelsFromEpic(epicId, ["pipeline:submission-prep", "pipeline:deploying", "pipeline:qa"], factoryPath);
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], factoryPath);
         invalidateCache();
 
@@ -254,13 +274,19 @@ export async function POST(request: NextRequest) {
           ? ` Jane's feedback on the current build: "${feedback}". Address these issues.`
           : "";
 
+        const sendBackPrompt = isVenture
+          ? `Continue building the venture "${epicTitle}" (epic: ${epicId}). This is a venture (AI/crypto/web), NOT an iOS app. Research report: /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.${feedbackStr2} Work through remaining open beads. Use Python/TypeScript as appropriate. Do NOT use Xcode, Tuist, CycleKit, SwiftUI, or iOS standing orders.`
+          : `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.${feedbackStr2}`;
+
         const session = await launchAgent({
           repoPath: appRepoPath,
           repoName: appName,
-          prompt: `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.${feedbackStr2}`,
+          prompt: sendBackPrompt,
           model: "opus",
           maxTurns: 500,
-          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          allowedTools: isVenture
+            ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
+            : "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
           pipelineStage: "development",
         });
@@ -303,10 +329,14 @@ export async function POST(request: NextRequest) {
         invalidateCache();
 
         const appRepoPath3 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const planPrompt = isVenture
+          ? `Plan the venture project "${epicTitle}" (epic: ${epicId}, entry: from-research). This is a venture (AI/crypto/web), NOT an iOS app. Create the project repo at ${appRepoPath3} if it doesn't exist (mkdir -p, git init, bd init). Read the research report at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Decompose the venture into granular beads: infrastructure setup, core implementation, integrations, deployment, and monitoring. Use Python/TypeScript as appropriate. Do NOT reference Xcode, Tuist, CycleKit, SwiftUI, or iOS standing orders. Write the plan summary to .beads/plans/${epicId}.md.`
+          : `Plan the app build for "${epicTitle}" (epic: ${epicId}, entry: from-research). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Recon brief is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.`;
+
         const session = await launchAgent({
           repoPath: appRepoPath3,
           repoName: appName,
-          prompt: `Plan the app build for "${epicTitle}" (epic: ${epicId}, entry: from-research). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Recon brief is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md.`,
+          prompt: planPrompt,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -337,13 +367,19 @@ export async function POST(request: NextRequest) {
         invalidateCache();
 
         const appRepoPath7 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const approveDevPrompt = isVenture
+          ? `Build the venture "${epicTitle}" (epic: ${epicId}). This is a venture (AI/crypto/web), NOT an iOS app. Research report: /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan: ${appRepoPath7}/.beads/plans/${epicId}.md — read this first. Work through each bead in the plan. Use Python/TypeScript as appropriate. Do NOT use Xcode, Tuist, CycleKit, SwiftUI, or iOS standing orders. Commit regularly. Close each bead as you complete it.`
+          : `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan is at ${appRepoPath7}/.beads/plans/${epicId}.md — read this first for the UX walkthrough, personas, assumption flags, and conditional logic maps.`;
+
         const session = await launchAgent({
           repoPath: appRepoPath7,
           repoName: appName,
-          prompt: `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan is at /Users/janemckay/dev/claude_projects/${appName}/.beads/plans/${epicId}.md — read this first for the UX walkthrough, personas, assumption flags, and conditional logic maps.`,
+          prompt: approveDevPrompt,
           model: "opus",
           maxTurns: 500,
-          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          allowedTools: isVenture
+            ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
+            : "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
           pipelineStage: "development",
         });
@@ -364,10 +400,14 @@ export async function POST(request: NextRequest) {
           ? ` Jane's feedback: "${feedback}".`
           : "";
 
+        const revisePlanPrompt = isVenture
+          ? `Revise the venture plan for "${epicTitle}" (epic: ${epicId}, entry: revise-plan). This is a venture (AI/crypto/web), NOT an iOS app.${feedbackStr3} Read existing beads and the plan at .beads/plans/${epicId}.md. Revise the decomposition. Do NOT reference Xcode, Tuist, CycleKit, or iOS standing orders.`
+          : `Revise the build plan for "${epicTitle}" (epic: ${epicId}, entry: revise-plan). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md.${feedbackStr3}`;
+
         const session = await launchAgent({
           repoPath: appRepoPath4,
           repoName: appName,
-          prompt: `Revise the build plan for "${epicTitle}" (epic: ${epicId}, entry: revise-plan). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md.${feedbackStr3}`,
+          prompt: revisePlanPrompt,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -387,10 +427,14 @@ export async function POST(request: NextRequest) {
         invalidateCache();
 
         const appRepoPath5 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const skipPlanPrompt = isVenture
+          ? `Plan the venture project "${epicTitle}" (epic: ${epicId}, entry: from-candidates). This is a venture (AI/crypto/web), NOT an iOS app. No recon brief -- use the epic description as the spec. Create the project repo at ${appRepoPath5} if it doesn't exist (mkdir -p, git init, bd init). Decompose into granular beads: infrastructure, implementation, integrations, deployment, monitoring. Use Python/TypeScript as appropriate. Do NOT reference Xcode, Tuist, CycleKit, SwiftUI, or iOS standing orders. Write the plan to .beads/plans/${epicId}.md.`
+          : `Plan the app build for "${epicTitle}" (epic: ${epicId}, entry: from-candidates). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. No recon brief -- use the epic description as the spec.`;
+
         const session = await launchAgent({
           repoPath: appRepoPath5,
           repoName: appName,
-          prompt: `Plan the app build for "${epicTitle}" (epic: ${epicId}, entry: from-candidates). Follow the planning workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. No recon brief -- use the epic description as the spec.`,
+          prompt: skipPlanPrompt,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -484,6 +528,37 @@ export async function POST(request: NextRequest) {
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
+      }
+
+      // -------------------------------------------------------------------
+      // MARK READY TO DEPLOY: Building -> Deploying (venture only, label swap)
+      // -------------------------------------------------------------------
+      case "mark-ready-to-deploy": {
+        await removeLabelsFromEpic(epicId, ["pipeline:development"], factoryPath);
+        await addLabelsToEpic(epicId, ["pipeline:deploying"], factoryPath);
+        invalidateCache();
+        return NextResponse.json({ success: true, action, epicId });
+      }
+
+      // -------------------------------------------------------------------
+      // MARK VENTURE LIVE: Deploying -> Live (venture only, label swap)
+      // -------------------------------------------------------------------
+      case "mark-venture-live": {
+        await removeLabelsFromEpic(epicId, ["pipeline:deploying"], factoryPath);
+        await addLabelsToEpic(epicId, ["pipeline:live"], factoryPath);
+        invalidateCache();
+        return NextResponse.json({ success: true, action, epicId });
+      }
+
+      // -------------------------------------------------------------------
+      // MARK VENTURE COMPLETE: Live -> Completed (venture only, close epic)
+      // -------------------------------------------------------------------
+      case "mark-venture-complete": {
+        await removeLabelsFromEpic(epicId, ["pipeline:live"], factoryPath);
+        await addLabelsToEpic(epicId, ["pipeline:completed"], factoryPath);
+        await closeEpic(epicId, "Venture complete", factoryPath);
+        invalidateCache();
+        return NextResponse.json({ success: true, action, epicId });
       }
 
       // -------------------------------------------------------------------

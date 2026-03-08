@@ -167,7 +167,7 @@ const NAV_ITEMS = [
   },
 ];
 
-function RepoSelector() {
+function RepoSelector({ onSelect }: { onSelect?: () => void }) {
   const { data } = useRepos();
   const mutation = useRepoMutation();
   const [open, setOpen] = useState(false);
@@ -239,6 +239,7 @@ function RepoSelector() {
                 mutation.mutate({ action: "set-active", path: "__all__" });
               }
               setOpen(false);
+              onSelect?.();
             }}
             className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2
               ${
@@ -271,6 +272,7 @@ function RepoSelector() {
                     mutation.mutate({ action: "set-active", path: repo.path });
                   }
                   setOpen(false);
+                  onSelect?.();
                 }}
                 className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2
                   ${
@@ -336,7 +338,7 @@ function SidebarContent({ collapsed, setCollapsed, onNavClick }: {
       </div>
 
       {/* Repo Selector */}
-      {!collapsed && <RepoSelector />}
+      {!collapsed && <RepoSelector onSelect={onNavClick} />}
 
       {/* Navigation Links */}
       <nav className={`flex-1 ${collapsed ? "px-2" : "px-3"} py-4 space-y-1`}>

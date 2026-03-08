@@ -64,8 +64,8 @@ function makeFleetApp(epic: PlanIssue, children: PlanIssue[]): FleetApp {
 // =============================================================================
 
 describe("FLEET_STAGES", () => {
-  it("should have 11 stages", () => {
-    expect(FLEET_STAGES).toHaveLength(11);
+  it("should have 13 stages", () => {
+    expect(FLEET_STAGES).toHaveLength(13);
   });
 
   it("should include all expected stages in order", () => {
@@ -79,6 +79,8 @@ describe("FLEET_STAGES", () => {
       "submission-prep",
       "submitted",
       "kit-management",
+      "deploying",
+      "live",
       "completed",
       "bad-idea",
     ];

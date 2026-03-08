@@ -3,8 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState, useMemo } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { useIssueDetail } from "@/hooks/useIssueDetail";
 import { useIssues } from "@/hooks/useIssues";
 import { useTokenUsage, useTokenUsageSummary } from "@/hooks/useTokenUsage";
@@ -16,6 +15,8 @@ import { usePipelineAction } from "@/hooks/usePipelineAction";
 import type { PipelineActionType } from "@/hooks/usePipelineAction";
 import { buildFleetApps, computeEpicCosts } from "@/components/fleet/fleet-utils";
 import { ActivityTimeline } from "@/components/fleet/ActivityTimeline";
+import { VenturePlan } from "@/components/fleet/VenturePlan";
+import { useVenturePlan, useUpdateVenturePlan } from "@/hooks/useVenturePlan";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { PriorityIndicator } from "@/components/ui/PriorityIndicator";
 import { IssueTypeIcon } from "@/components/ui/IssueTypeIcon";
@@ -760,6 +761,13 @@ export default function IssueDetailPage() {
   // Fetch plan if one exists (API returns 404 gracefully for issues without plans)
   const { data: planReport } = usePlanReport(issueId);
 
+  // Venture plan — for epics with ship-type:venture label
+  const issueLabels = rawIssue?.labels ?? issue?.labels ?? [];
+  const isVentureEpic = issue?.issue_type === "epic" && issueLabels.includes("ship-type:venture");
+  const ventureAppName = isVentureEpic ? extractAppName(issue?.title) : null;
+  const { data: venturePlanData } = useVenturePlan(ventureAppName);
+  const updateVenturePlan = useUpdateVenturePlan(ventureAppName);
+
   // --- Loading ---
   if (detailLoading) {
     return <DetailSkeleton />;
@@ -893,24 +901,7 @@ export default function IssueDetailPage() {
               <h2 className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-3">
                 Research Report
               </h2>
-              <div className="prose prose-invert prose-sm max-w-none
-                prose-headings:text-gray-200 prose-headings:font-semibold
-                prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
-                prose-p:text-gray-300 prose-p:leading-relaxed
-                prose-a:text-blue-400 prose-a:no-underline hover:prose-a:underline
-                prose-strong:text-gray-200
-                prose-code:text-amber-300 prose-code:bg-surface-2 prose-code:rounded prose-code:px-1
-                prose-pre:bg-surface-0 prose-pre:border prose-pre:border-border-default
-                prose-table:text-sm
-                prose-th:text-gray-400 prose-th:border-border-default
-                prose-td:border-border-default
-                prose-li:text-gray-300
-                prose-blockquote:border-blue-500/50 prose-blockquote:text-gray-400
-                prose-hr:border-border-default">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {researchReport.content}
-                </ReactMarkdown>
-              </div>
+              <MarkdownRenderer content={researchReport.content} accentColor="blue" />
             </section>
           )}
 
@@ -924,26 +915,19 @@ export default function IssueDetailPage() {
                   </svg>
                   Plan
                 </summary>
-                <div className="prose prose-invert prose-sm max-w-none
-                  prose-headings:text-gray-200 prose-headings:font-semibold
-                  prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
-                  prose-p:text-gray-300 prose-p:leading-relaxed
-                  prose-a:text-blue-400 prose-a:no-underline hover:prose-a:underline
-                  prose-strong:text-gray-200
-                  prose-code:text-amber-300 prose-code:bg-surface-2 prose-code:rounded prose-code:px-1
-                  prose-pre:bg-surface-0 prose-pre:border prose-pre:border-border-default
-                  prose-table:text-sm
-                  prose-th:text-gray-400 prose-th:border-border-default
-                  prose-td:border-border-default
-                  prose-li:text-gray-300
-                  prose-blockquote:border-purple-500/50 prose-blockquote:text-gray-400
-                  prose-hr:border-border-default">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {planReport.content}
-                  </ReactMarkdown>
-                </div>
+                <MarkdownRenderer content={planReport.content} accentColor="purple" />
               </details>
             </section>
+          )}
+
+          {/* Venture Plan (for venture epics with venture-plan.json) */}
+          {isVentureEpic && venturePlanData?.plan && (
+            <VenturePlan
+              plan={venturePlanData.plan}
+              onUpdate={(updated) => updateVenturePlan.mutate(updated)}
+              isUpdating={updateVenturePlan.isPending}
+              epicChildren={epicChildren}
+            />
           )}
 
           {/* Dependency Tree */}
