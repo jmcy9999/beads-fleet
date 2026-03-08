@@ -200,6 +200,18 @@ Or add it directly to `~/.beads-web.json`:
 - **Styled for dark mode:** Custom Tailwind prose classes for dark theme rendering
 - **Security:** App name validated against `^[a-zA-Z0-9_-]+$` to prevent path traversal
 
+### Venture Plan Dashboard
+- **API endpoints:** `GET /PUT /api/venture-plan/[appName]` reads/writes `venture-plan.json` from factory repo at `apps/<appName>/venture-plan.json`
+- **Multi-repo search:** Same pattern as research API — searches all configured repos, returns first match
+- **Data model:** `venture-plan.json` defines revenue streams, monthly milestones, projected revenue, and actual revenue entries. Types in `venture-plan-types.ts`
+- **Revenue chart:** Pure SVG line chart with one colored line per stream, dashed target line, stacked area for cumulative total, and actual revenue dots
+- **Monthly milestones grid:** 6-column grid (one per month) with stream rows, current month highlighted, checkmarks for met targets
+- **Daily bead progress:** GitHub-style contribution heatmap per stream, grouping child beads by `stream:<id>` labels and counting daily closures
+- **Inline revenue edit:** Click actual amounts to edit inline, "+" button to add new entries with date/stream/amount/note. Saves to `venture-plan.json` via PUT API
+- **Integration:** Appears on issue detail page between Plan and Dependencies sections, only for venture epics (`ship-type:venture` label) that have a `venture-plan.json`
+- **Hook:** `useVenturePlan(appName)` (GET) and `useUpdateVenturePlan(appName)` (PUT mutation) — mirrors `useResearchReport` structure
+- **Security:** App name validated against `^[a-zA-Z0-9_-]+$` to prevent path traversal
+
 ### Plan Viewer
 - **API endpoint:** `GET /api/plan/[issueId]` reads markdown plan documents from `.beads/plans/<issueId>.md` in configured repos
 - **Multi-repo search:** Searches all configured repos for the plan file, returns first match
@@ -238,6 +250,7 @@ Or add it directly to `~/.beads-web.json`:
 - Dependency tree: blocked by / unblocks (with titles resolved)
 - **Epic children with progress:** For epic issues, lists all child issues with a progress bar showing completion percentage (closed/total)
 - **Parent epic link:** For child issues, sidebar shows clickable link to parent epic
+- **Venture Plan section:** For venture epics (`ship-type:venture` label) with a `venture-plan.json`, shows revenue chart, milestone grid, bead progress heatmap, and inline actual revenue editor. Appears between Plan and Dependencies sections.
 - **App Cost section:** For epic-type issues, shows aggregated cost across the epic and all children, with per-phase breakdown bars (research/development/submission/other)
 - Token usage sessions table
 - Timestamps (created, updated, closed) and close reason
@@ -256,18 +269,20 @@ Or add it directly to `~/.beads-web.json`:
 - Factory agent labels issues via `bd label add <id> submission:ready` etc.
 
 ### App Fleet Dashboard
-- **Pipeline view:** Epics displayed as "ships" in a fleet voyage kanban with 9 stages: Harbour | Recon | Charted | Under Construction | Sea Trials | Launched | Refit | Deployed | Scuttled
+- **Pipeline view:** Epics displayed as "ships" in a fleet voyage kanban. iOS apps use 10 stages: Candidates | In Research | Research Complete | Plan Review | Under Construction | QA | Prepare for Launch | Launched | Kit Management | Deployed. Ventures use 8 stages: Candidates | In Research | Research Complete | Plan Review | Under Construction | Deploying | Live | Deployed. A "Scuttled" column appears for deprioritised ships of either type.
+- **Ship types:** Each epic has a `ShipType` (`"ios-app"` or `"venture"`), detected from `ship-type:venture` label (defaults to `"ios-app"`). Ship type determines which pipeline stages apply and which actions are available on each card.
+- **Ship-type filter toggle:** Toolbar shows three buttons — iOS / Venture / All — filtering both the visible apps and the visible columns. When "iOS" is selected, venture-only stages (Deploying, Live) are hidden. When "Venture" is selected, iOS-only stages (QA, Prepare for Launch, Launched, Kit Management) are hidden. "All" shows everything. Persisted in localStorage (`beads-fleet-ship-type-filter`).
 - **Compact layout:** Columns are 180-220px wide with tight gaps (gap-2), small card padding (p-2), 10px IDs, xs-size titles, uppercase column headers — optimized for fitting all stages on screen
-- **Stage detection:** Automatic based on `pipeline:*` labels on epics — `pipeline:idea`, `pipeline:research`, `pipeline:research-complete`, `pipeline:development`, `pipeline:submission-prep`, `pipeline:submitted`, `pipeline:kit-management`, `pipeline:completed`, `pipeline:bad-idea`
+- **Stage detection:** Automatic based on `pipeline:*` labels on epics — `pipeline:idea`, `pipeline:research`, `pipeline:research-complete`, `pipeline:plan-review`, `pipeline:development`, `pipeline:qa`, `pipeline:submission-prep`, `pipeline:submitted`, `pipeline:kit-management`, `pipeline:deploying`, `pipeline:live`, `pipeline:completed`, `pipeline:bad-idea`
 - **Fleet cards:** Each app shows epic title, progress bar (closed/total children), priority, active/blocked task counts, submission status badges, cost breakdown by phase, phase history dots, stage-specific action buttons, and owner
 - **Zoom controls:** User-controlled CSS transform scaling (50%-150%) via magnifying glass +/-/reset buttons in the toolbar. Uses `transform: scale(X)` with `transformOrigin: "top left"` and compensating `width: ${100/scale}%`
 - **Column filter:** Funnel icon dropdown with checkboxes for each pipeline stage. Toggle individual columns on/off (minimum one must remain visible). "Show all" link when filtered. Filter state persisted in localStorage (`beads-fleet-visible-columns`). Funnel icon turns blue when columns are hidden
-- **Pipeline actions:** Stage-specific action buttons on each card — Start Research / Skip to Plan (Candidates), Stop Agent (Research/Development/Refit when agent running), Generate Plan / More Research / Deprioritise (Research Complete, no plan), Approve Plan / Revise Plan / Deprioritise (Research Complete, plan:pending), Begin Construction / Revise Plan / Deprioritise (Research Complete, plan:approved), Launch / Send Back / Revise Plan (Prepare for Launch), Mark Deployed (Launched). Actions dispatched via `onPipelineAction` callback to the fleet page
+- **Pipeline actions:** Stage-specific action buttons on each card — Start Research / Skip to Plan (Candidates), Stop Agent (Research/Development/Refit when agent running), Generate Plan / More Research / Deprioritise (Research Complete, no plan), Approve Plan / Revise Plan / Deprioritise (Research Complete, plan:pending), Begin Construction / Revise Plan / Deprioritise (Research Complete, plan:approved), Launch / Send Back / Revise Plan (Prepare for Launch), Mark Deployed (Launched). **Venture-specific actions:** Ready to Deploy (Development, venture only — moves to Deploying), Mark Live (Deploying — moves to Live), Mark Complete (Live — moves to Deployed and closes epic). Actions dispatched via `onPipelineAction` callback to the fleet page
 - **Planning phase:** At Research Complete, the card shows three sub-states based on `plan:pending` and `plan:approved` labels. "Generate Plan" launches a planning agent in the app repo; `plan:pending` is added automatically on agent exit (not at launch). "Approve Plan" is a label-only change (removes `plan:pending`, adds `plan:approved`). "Revise Plan" re-launches the planning agent with optional feedback (clears plan labels, `plan:pending` re-added on exit). "Skip to Plan" from Candidates bypasses research entirely. "Revise Plan" from Prepare for Launch returns to the planning phase
 - **Phase history:** Each card shows a row of colored dots representing all pipeline stages — past stages solid, current stage pulsing, future stages dimmed
 - **Empty state:** Guidance on how to create epics and label children to use the fleet view
 - **Navigation:** Sidebar link + keyboard shortcut `f`
-- **Components:** `FleetBoard` (client component with zoom/filter state) -> `FleetColumn` -> `FleetCard`, with `fleet-utils.ts` for stage detection, fleet data extraction, and phase history
+- **Components:** `FleetBoard` (client component with zoom/filter/ship-type state) -> `FleetColumn` -> `FleetCard`, with `fleet-utils.ts` for stage detection, ship type classification, fleet data extraction, and phase history
 
 ### Research Completion Signals (Polling API)
 - **`GET /api/signals`** — Polling endpoint for detecting issue state changes
@@ -314,6 +329,7 @@ Or add it directly to `~/.beads-web.json`:
 - **Collapsed mode:** Icon-only navigation with tooltip titles on each nav link. Brand text, nav labels, version text, and bv status text are hidden
 - **Smooth animation:** CSS `transition-all duration-200` for width change
 - **Logo:** Always visible in both states (icon only in collapsed mode)
+- **Mobile drawer:** Below `lg` (1024px), sidebar is hidden and replaced by a slide-in drawer overlay. Hamburger button in Header toggles it via `MobileSidebarContext`. Drawer includes backdrop, close button, auto-closes on route change, and has touch-friendly tap targets (44px+). RepoSelector and all nav items are accessible in the drawer.
 - **Tests:** 17 tests in `__tests__/components/Sidebar.test.tsx` covering expanded state, collapsed state, toggle round-trip, and logo visibility
 
 ### System Health & Setup
@@ -363,7 +379,7 @@ bv CLI (--robot-plan/insights/priority/diff)                            │
 |-------|------|---------------|
 | `/` | Dashboard | Summary cards (open/in_progress/blocked/closed counts), token usage totals, highest-impact issue, priority misalignment alerts, full issue table with sort/filter, recent activity feed |
 | `/board` | Kanban Board | Issues grouped by status columns (open, in_progress, blocked, closed), click-to-open detail panel |
-| `/fleet` | App Fleet | Fleet voyage kanban — epics as ships across 9 stages (Harbour through Deployed), with zoom controls, column filter, and pipeline action buttons |
+| `/fleet` | App Fleet | Fleet voyage kanban — epics as ships across pipeline stages (10 for iOS apps, 8 for ventures), with ship-type filter toggle, zoom controls, column filter, and pipeline action buttons |
 | `/insights` | Graph Analytics | Bottlenecks, keystones, influencers, hubs, authorities (top-5 bar charts), dependency cycles, graph density, interactive ReactFlow dependency graph |
 | `/diff` | Time Travel | Compare current state against a git ref (HEAD~1/5/10/20 or custom), shows new/closed/modified/reopened issues with field-level diffs |
 | `/settings` | Settings | Add/remove/switch repos, stored in `~/.beads-web.json` |
@@ -385,10 +401,12 @@ bv CLI (--robot-plan/insights/priority/diff)                            │
 | `/api/token-usage` | GET | `TokenUsageRecord[]` or summary | Params: `summary=true`, `issue_id=X`. Supports `__all__` |
 | `/api/research/[appName]` | GET | `{ content, repoPath }` | Reads `apps/<appName>/research/report.md` from configured repos. 404 if not found |
 | `/api/plan/[issueId]` | GET | `{ content, repoPath }` | Reads `.beads/plans/<issueId>.md` from configured repos. 404 if not found |
+| `/api/venture-plan/[appName]` | GET | `{ plan, repoPath, planPath }` | Reads `venture-plan.json` from `apps/<appName>/`. 404 if not found |
+| `/api/venture-plan/[appName]` | PUT | `{ success: true }` | Writes updated `venture-plan.json`. Full JSON body, validates shape |
 | `/api/signals` | GET | `{ signals[], count, since }` | Params: `since` (required), `label`, `status`, `field`. Polling for state changes. Supports `__all__` |
 | `/api/agent` | GET | `AgentStatus` (running, session, recentLog) | Current agent process status |
 | `/api/agent` | POST | `{ launched, session }` or `{ stopped, pid }` | Body: `{ action: "launch", repoPath, prompt, model?, maxTurns?, allowedTools? }` or `{ action: "stop" }`. 409 if already running |
-| `/api/fleet/action` | POST | `{ success, action, epicId, session? }` | Body: `{ epicId, epicTitle, action, feedback?, currentLabels? }`. Actions: `start-research`, `send-for-development`, `more-research`, `deprioritise`, `approve-submission`, `send-back-to-dev`, `mark-as-live`, `stop-agent`, `generate-plan`, `approve-plan`, `revise-plan`, `skip-to-plan`, `revise-plan-from-launch` |
+| `/api/fleet/action` | POST | `{ success, action, epicId, session? }` | Body: `{ epicId, epicTitle, action, feedback?, currentLabels? }`. Actions: `start-research`, `send-for-development`, `more-research`, `deprioritise`, `approve-submission`, `send-back-to-dev`, `mark-as-live`, `stop-agent`, `generate-plan`, `approve-plan`, `approve-and-build`, `revise-plan`, `skip-to-plan`, `revise-plan-from-launch`, `mark-ready-to-deploy`, `mark-venture-live`, `mark-venture-complete` |
 
 ## Core Library Modules
 
@@ -433,9 +451,11 @@ Simple TTL cache (10-second default). Used by bv-client to avoid redundant subpr
 
 ### `src/lib/types.ts`
 All TypeScript types:
-- **Core:** `BeadsIssue`, `IssueDependency`, `IssueStatus`, `IssueType`, `Priority` (0-4)
-- **Robot protocol:** `RobotPlan`, `RobotInsights`, `RobotPriority`, `RobotDiff`, `PlanIssue`, `PlanSummary`, `PlanTrack`
+- **Core:** `BeadsIssue` (includes `due_at`), `IssueDependency`, `IssueStatus`, `IssueType`, `Priority` (0-4)
+- **Robot protocol:** `RobotPlan`, `RobotInsights`, `RobotPriority`, `RobotDiff`, `PlanIssue` (includes `due_at`), `PlanSummary`, `PlanTrack`
+- **Venture plan:** `VenturePlan`, `VenturePlanStream`, `VentureMilestone`, `VentureActual` — defined in `venture-plan-types.ts`
 - **UI config:** `STATUS_CONFIG`, `PRIORITY_CONFIG`, `KANBAN_COLUMNS`
+- **Fleet:** `FleetStage`, `ShipType` (`"ios-app" | "venture"`), `FleetApp` (includes `shipType` field) — defined in `fleet-utils.ts`
 - **Token:** `TokenUsageRecord`, `IssueTokenSummary`
 
 ## React Hooks
@@ -458,7 +478,9 @@ All TypeScript types:
 | `useAgentStatus()` | GET `/api/agent` | 5s (while agent may be running) |
 | `useAgentLaunch()` | POST `/api/agent` (launch) | invalidates agent-status |
 | `useAgentStop()` | POST `/api/agent` (stop) | invalidates agent-status |
-| `usePipelineAction()` | POST `/api/fleet/action` | Pipeline stage transitions (start-research, send-for-development, generate-plan, approve-plan, revise-plan, skip-to-plan, revise-plan-from-launch, etc.) |
+| `useVenturePlan(appName)` | `/api/venture-plan/[appName]` | 60s stale, enabled only when appName non-null |
+| `useUpdateVenturePlan(appName)` | PUT `/api/venture-plan/[appName]` | Mutation, invalidates venture-plan query |
+| `usePipelineAction()` | POST `/api/fleet/action` | Pipeline stage transitions (start-research, send-for-development, generate-plan, approve-plan, revise-plan, skip-to-plan, revise-plan-from-launch, mark-ready-to-deploy, mark-venture-live, mark-venture-complete, etc.) |
 | `useKeyboardShortcuts()` | -- | d/b/f/i/t/s navigation, / search, ? help |
 
 ## Component Tree
@@ -466,16 +488,17 @@ All TypeScript types:
 ```
 layout.tsx (server)
   QueryProvider
-    ClientShell (ErrorBoundary + SetupWizard + ShortcutsHelp)
-      Sidebar (collapsible: nav links, RepoSelector, health indicator; collapsed = icon-only with tooltips)
-      Header (breadcrumb with project selector dropdown)
+    ClientShell (ErrorBoundary + MobileSidebarProvider + SetupWizard + ShortcutsHelp)
+      Sidebar (desktop: collapsible aside; mobile: slide-in drawer overlay via MobileSidebarContext)
+      Header (breadcrumb with project selector; hamburger button toggles mobile sidebar)
       <main> (page content)
 ```
 
 ### Key Components
 - **Dashboard:** `SummaryCards`, `TokenUsageSummary`, `WhatsNext`, `PriorityAlerts`, `IssueTable` (with `FilterBar`), `ActivityFeed`
 - **Board:** `KanbanBoard` -> `KanbanColumn` -> `IssueCard`, `IssueDetailPanel` (slide-in)
-- **Fleet:** `FleetBoard` (client component: zoom controls, column filter, compact layout) -> `FleetColumn` (compact 180-220px, uppercase headers) -> `FleetCard` (compact p-2, pipeline actions, phase history dots, cost breakdown), `AgentStatusBanner` (running agent indicator), `ActivityTimeline` (agent session visualization), `fleet-utils.ts` (stage detection, data extraction, phase history), `timeline-utils.ts` (timeline data processing)
+- **Fleet:** `FleetBoard` (client component: zoom controls, column filter, ship-type filter toggle, compact layout) -> `FleetColumn` (compact 180-220px, uppercase headers) -> `FleetCard` (compact p-2, pipeline actions, phase history dots, cost breakdown), `AgentStatusBanner` (running agent indicator), `ActivityTimeline` (agent session visualization), `fleet-utils.ts` (stage detection, ship type, data extraction, phase history — see exports below), `timeline-utils.ts` (timeline data processing)
+  - **`fleet-utils.ts` key exports:** `FleetStage` (union type of all stage IDs), `ShipType` (`"ios-app" | "venture"`), `FleetApp` (includes `shipType` field), `getShipType(epic)` (detects ship type from `ship-type:venture` label, defaults to `"ios-app"`), `IOS_PIPELINE_ORDER` (10 stages: idea through completed), `VENTURE_PIPELINE_ORDER` (8 stages: idea through completed, skipping QA/submission/kit-management, adding deploying/live), `IOS_ONLY_STAGES` (`["qa", "submission-prep", "submitted", "kit-management"]`), `VENTURE_ONLY_STAGES` (`["deploying", "live"]`), `PIPELINE_ORDER` (backward-compatible alias for `IOS_PIPELINE_ORDER`), `getPhaseHistory(stage, shipType?)` (uses ship-type-aware ordering)
 - **Insights:** `MetricPanel` (bar charts), `CyclesPanel`, `GraphDensityBadge`, `DependencyGraph` (ReactFlow)
 - **Filters:** `FilterBar`, `RecipeSelector`
 - **UI primitives:** `StatusBadge`, `PriorityIndicator`, `IssueTypeIcon`, `SummaryCard`, `IssueCard` (row/card variants), `EmptyState`, `ErrorState`, `LoadingSkeleton`
@@ -569,13 +592,15 @@ src/
       token-usage/route.ts  # GET token usage (supports __all__)
       research/[appName]/route.ts  # GET research report markdown
       plan/[issueId]/route.ts     # GET plan document markdown
+      venture-plan/[appName]/route.ts  # GET/PUT venture plan JSON
       signals/route.ts      # GET polling endpoint for state changes
       agent/route.ts        # GET/POST agent launch/stop/status
       fleet/action/route.ts # POST pipeline actions (plan, research, dev transitions)
   lib/
     bv-client.ts            # Central data layer (bv CLI wrapper)
     types.ts                # All TypeScript types
-    sqlite-reader.ts        # SQLite DB reader
+    venture-plan-types.ts   # Venture plan types (VenturePlan, VenturePlanStream, etc.)
+    sqlite-reader.ts        # SQLite DB reader (includes due_at column detection)
     jsonl-fallback.ts       # JSONL fallback + issuesToPlan
     graph-metrics.ts        # Fallback graph analytics
     repo-config.ts          # Multi-repo config (~/.beads-web.json)
@@ -594,15 +619,16 @@ src/
     useTokenUsage.ts        # Token usage hooks
     useResearchReport.ts    # Research report fetcher
     usePlanReport.ts        # Plan document fetcher
+    useVenturePlan.ts       # Venture plan fetch/mutate hooks
     useAgent.ts             # Agent launch/stop/status hooks
     usePipelineAction.ts    # Fleet pipeline stage transition mutation
     useKeyboardShortcuts.ts # Keyboard navigation
   components/
-    providers/              # QueryProvider, ClientShell
+    providers/              # QueryProvider, ClientShell, MobileSidebarContext
     layout/                 # Sidebar, Header
     dashboard/              # SummaryCards, WhatsNext, PriorityAlerts, IssueTable, ActivityFeed, TokenUsageSummary
     board/                  # KanbanBoard, KanbanColumn, IssueDetailPanel
-    fleet/                  # FleetBoard, FleetColumn, FleetCard, AgentStatusBanner, ActivityTimeline, fleet-utils, timeline-utils
+    fleet/                  # FleetBoard, FleetColumn, FleetCard, AgentStatusBanner, ActivityTimeline, VenturePlan, fleet-utils, timeline-utils
     insights/               # MetricPanel, CyclesPanel, GraphDensityBadge, DependencyGraph
     filters/                # FilterBar, RecipeSelector
     ui/                     # StatusBadge, PriorityIndicator, IssueTypeIcon, SummaryCard, IssueCard, EmptyState, ErrorState, LoadingSkeleton, ErrorBoundary, ShortcutsHelp, SetupWizard
