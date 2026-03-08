@@ -501,6 +501,7 @@ layout.tsx (server)
   - **`fleet-utils.ts` key exports:** `FleetStage` (union type of all stage IDs), `ShipType` (`"ios-app" | "venture"`), `FleetApp` (includes `shipType` field), `getShipType(epic)` (detects ship type from `ship-type:venture` label, defaults to `"ios-app"`), `IOS_PIPELINE_ORDER` (10 stages: idea through completed), `VENTURE_PIPELINE_ORDER` (8 stages: idea through completed, skipping QA/submission/kit-management, adding deploying/live), `IOS_ONLY_STAGES` (`["qa", "submission-prep", "submitted", "kit-management"]`), `VENTURE_ONLY_STAGES` (`["deploying", "live"]`), `PIPELINE_ORDER` (backward-compatible alias for `IOS_PIPELINE_ORDER`), `getPhaseHistory(stage, shipType?)` (uses ship-type-aware ordering)
 - **Insights:** `MetricPanel` (bar charts), `CyclesPanel`, `GraphDensityBadge`, `DependencyGraph` (ReactFlow)
 - **Filters:** `FilterBar`, `RecipeSelector`
+- **Shared:** `MarkdownRenderer` (shared markdown renderer with `accentColor` prop — `"blue"` or `"purple"` — used by issue detail page for research and plan sections; renders via react-markdown + remark-gfm with dark-mode prose styling)
 - **UI primitives:** `StatusBadge`, `PriorityIndicator`, `IssueTypeIcon`, `SummaryCard`, `IssueCard` (row/card variants), `EmptyState`, `ErrorState`, `LoadingSkeleton`
 
 ## Multi-Repo Support
@@ -624,6 +625,7 @@ src/
     usePipelineAction.ts    # Fleet pipeline stage transition mutation
     useKeyboardShortcuts.ts # Keyboard navigation
   components/
+    MarkdownRenderer.tsx    # Shared markdown renderer (accentColor: blue|purple), used by issue detail
     providers/              # QueryProvider, ClientShell, MobileSidebarContext
     layout/                 # Sidebar, Header
     dashboard/              # SummaryCards, WhatsNext, PriorityAlerts, IssueTable, ActivityFeed, TokenUsageSummary
