@@ -1,5 +1,5 @@
 "use client";
-import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 interface ResearchReportResponse {
   content: string;
@@ -23,6 +23,5 @@ export function useResearchReport(appName: string | null) {
     },
     enabled: !!appName,
     staleTime: 60_000,
-    placeholderData: keepPreviousData,
   });
 }
