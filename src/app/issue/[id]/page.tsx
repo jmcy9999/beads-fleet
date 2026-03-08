@@ -897,7 +897,7 @@ export default function IssueDetailPage() {
 
           {/* Research Report (markdown from factory repo) */}
           {researchReport?.content && (
-            <section className="card p-5">
+            <section id="research" className="card p-5">
               <h2 className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-3">
                 Research Report
               </h2>
@@ -907,7 +907,7 @@ export default function IssueDetailPage() {
 
           {/* Plan (markdown from .beads/plans/) */}
           {planReport?.content && (
-            <section className="card p-5">
+            <section id="plan" className="card p-5">
               <details open>
                 <summary className="text-xs font-medium uppercase tracking-wider text-purple-400 mb-3 cursor-pointer select-none list-none flex items-center gap-1.5 [&::-webkit-details-marker]:hidden">
                   <svg className="w-3 h-3 transition-transform [[open]>summary>&]:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>

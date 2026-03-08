@@ -218,6 +218,24 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
         </div>
       )}
 
+      {/* Quick links to research/plan sections */}
+      {app.stage !== "idea" && (
+        <div className="flex gap-2 mb-2">
+          <span
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.location.href = `/issue/${epic.id}#research`; }}
+            className="text-[10px] text-blue-400 hover:text-blue-300 cursor-pointer hover:underline"
+          >
+            Research
+          </span>
+          <span
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.location.href = `/issue/${epic.id}#plan`; }}
+            className="text-[10px] text-purple-400 hover:text-purple-300 cursor-pointer hover:underline"
+          >
+            Plan
+          </span>
+        </div>
+      )}
+
       {/* Cost breakdown */}
       {cost && cost.totalCost > 0 && (
         <div className="mb-2 py-1.5 border-t border-border-default">
