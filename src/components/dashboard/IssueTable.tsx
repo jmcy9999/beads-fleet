@@ -108,6 +108,23 @@ export function IssueTable({ issues }: IssueTableProps) {
     return epics;
   }, [issues]);
 
+  const availableReleases = useMemo(() => {
+    const releases = new Set<string>();
+    for (const issue of issues) {
+      for (const label of issue.labels ?? []) {
+        if (label.startsWith("release:") && !label.startsWith("release-status:")) {
+          releases.add(label);
+        }
+      }
+    }
+    return Array.from(releases).sort((a, b) => {
+      // Sort by version descending (newest first)
+      const va = a.replace("release:", "");
+      const vb = b.replace("release:", "");
+      return vb.localeCompare(va, undefined, { numeric: true });
+    });
+  }, [issues]);
+
   const sortedIssues = useMemo(() => {
     const filtered = applyFilter(issues, filter);
 
@@ -142,6 +159,7 @@ export function IssueTable({ issues }: IssueTableProps) {
         onViewChange={setActiveViewId}
         availableProjects={availableProjects}
         availableEpics={availableEpics}
+        availableReleases={availableReleases}
       />
 
       {/* Desktop table */}

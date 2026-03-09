@@ -22,6 +22,7 @@ export interface FilterCriteria {
   createdAfter?: string;   // ISO date string — only show issues created on/after this date
   createdBefore?: string;  // ISO date string — only show issues created on/before this date
   labelPrefix?: string;  // match issues having any label starting with this prefix
+  release?: string;      // match issues with a specific release:<version> label
   search?: string;
 }
 
@@ -184,6 +185,13 @@ export function applyFilter(
     // Label prefix filter (e.g. "submission:" matches submission:ready, submission:approved)
     if (filter.labelPrefix) {
       if (!issue.labels || !issue.labels.some((l) => l.startsWith(filter.labelPrefix!))) {
+        return false;
+      }
+    }
+
+    // Release filter (matches a specific release:<version> label)
+    if (filter.release) {
+      if (!issue.labels || !issue.labels.includes(filter.release)) {
         return false;
       }
     }

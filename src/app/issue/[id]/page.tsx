@@ -701,6 +701,173 @@ function PipelineActionButtons({
 }
 
 // ---------------------------------------------------------------------------
+// Label section with autocomplete
+// ---------------------------------------------------------------------------
+
+const RELEASE_STATUS_SUGGESTIONS = [
+  "release-status:planning",
+  "release-status:in-progress",
+  "release-status:in-review",
+  "release-status:live",
+];
+
+function LabelSection({ issueId, labels, allIssues }: { issueId: string; labels: string[]; allIssues: PlanIssue[] }) {
+  const [inputValue, setInputValue] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const labelAction = useIssueAction();
+
+  // Collect all existing release:* labels from all issues for autocomplete
+  const existingReleaseLabels = useMemo(() => {
+    const set = new Set<string>();
+    for (const issue of allIssues) {
+      for (const label of issue.labels ?? []) {
+        if (label.startsWith("release:") && !label.startsWith("release-status:")) {
+          set.add(label);
+        }
+      }
+    }
+    return Array.from(set).sort((a, b) => {
+      const va = a.replace("release:", "");
+      const vb = b.replace("release:", "");
+      return vb.localeCompare(va, undefined, { numeric: true });
+    });
+  }, [allIssues]);
+
+  // Build suggestions based on input
+  const suggestions = useMemo(() => {
+    const val = inputValue.toLowerCase();
+    if (!val) return [];
+
+    const candidates: string[] = [];
+
+    // release: prefix — suggest existing release labels
+    if ("release:".startsWith(val) || val.startsWith("release:")) {
+      for (const rl of existingReleaseLabels) {
+        if (rl.toLowerCase().includes(val) && !labels.includes(rl)) {
+          candidates.push(rl);
+        }
+      }
+      // If user is typing a new version, suggest it
+      if (val.startsWith("release:") && val.length > 8) {
+        const typed = `release:${val.slice(8)}`;
+        if (!candidates.includes(typed) && !labels.includes(typed)) {
+          candidates.push(typed);
+        }
+      }
+    }
+
+    // release-status: prefix
+    if ("release-status:".startsWith(val) || val.startsWith("release-status:")) {
+      for (const rs of RELEASE_STATUS_SUGGESTIONS) {
+        if (rs.toLowerCase().includes(val) && !labels.includes(rs)) {
+          candidates.push(rs);
+        }
+      }
+    }
+
+    // Generic: just filter if nothing specific matched
+    if (candidates.length === 0 && val.length > 0) {
+      // Suggest the typed value as-is
+      if (!labels.includes(val)) {
+        candidates.push(val);
+      }
+    }
+
+    return candidates.slice(0, 8);
+  }, [inputValue, existingReleaseLabels, labels]);
+
+  const addLabel = (label: string) => {
+    labelAction.mutate({ issueId, action: "label-add", reason: label });
+    setInputValue("");
+    setShowSuggestions(false);
+  };
+
+  const removeLabel = (label: string) => {
+    labelAction.mutate({ issueId, action: "label-rm", reason: label });
+  };
+
+  return (
+    <div>
+      <h3 className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-1">
+        Labels
+      </h3>
+      {labels.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {labels.map((label) => (
+            <span
+              key={label}
+              className="inline-flex items-center rounded-full bg-surface-2 pl-2.5 pr-1 py-0.5 text-xs font-medium text-gray-300 group"
+            >
+              {label}
+              <button
+                type="button"
+                onClick={() => removeLabel(label)}
+                className="ml-1 p-0.5 rounded-full text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                title={`Remove ${label}`}
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-gray-500 mb-2">None</p>
+      )}
+
+      {/* Add label input with autocomplete */}
+      <div className="relative">
+        <input
+          type="text"
+          value={inputValue}
+          onChange={(e) => {
+            setInputValue(e.target.value);
+            setShowSuggestions(true);
+          }}
+          onFocus={() => setShowSuggestions(true)}
+          onBlur={() => {
+            // Delay to allow click on suggestion
+            setTimeout(() => setShowSuggestions(false), 200);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && inputValue.trim()) {
+              addLabel(inputValue.trim());
+            }
+            if (e.key === "Escape") {
+              setShowSuggestions(false);
+              setInputValue("");
+            }
+          }}
+          placeholder="Add label..."
+          className="w-full px-2.5 py-1.5 text-xs bg-surface-2 border border-border-default rounded-md text-gray-300 placeholder-gray-500 focus:outline-none focus:border-gray-500 transition-colors"
+        />
+
+        {showSuggestions && suggestions.length > 0 && (
+          <div className="absolute top-full left-0 right-0 mt-1 bg-surface-1 border border-border-default rounded-lg shadow-xl z-50 py-1 max-h-48 overflow-y-auto">
+            {suggestions.map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => addLabel(suggestion)}
+                className="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-2 hover:text-white transition-colors"
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {labelAction.isError && (
+        <p className="text-xs text-red-400 mt-1">{labelAction.error.message}</p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page component
 // ---------------------------------------------------------------------------
 
@@ -1163,25 +1330,7 @@ export default function IssueDetailPage() {
             </div>
 
             {/* Labels */}
-            <div>
-              <h3 className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-1">
-                Labels
-              </h3>
-              {labels.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {labels.map((label) => (
-                    <span
-                      key={label}
-                      className="inline-flex items-center rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-gray-300"
-                    >
-                      {label}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-gray-500">None</p>
-              )}
-            </div>
+            <LabelSection issueId={issue.id} labels={labels} allIssues={allIssues?.issues ?? []} />
 
             {/* Epic */}
             {issue.epic && (

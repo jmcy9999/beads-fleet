@@ -9,9 +9,9 @@ const execFile = promisify(execFileCb);
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-type IssueAction = "start" | "close" | "reopen" | "comment";
+type IssueAction = "start" | "close" | "reopen" | "comment" | "label-add" | "label-rm";
 
-const VALID_ACTIONS = new Set<IssueAction>(["start", "close", "reopen", "comment"]);
+const VALID_ACTIONS = new Set<IssueAction>(["start", "close", "reopen", "comment", "label-add", "label-rm"]);
 const ISSUE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 export async function POST(
@@ -43,7 +43,7 @@ export async function POST(
   // Validate action
   if (!action || !VALID_ACTIONS.has(action as IssueAction)) {
     return NextResponse.json(
-      { error: `Invalid action: ${action}. Must be one of: start, close, reopen, comment` },
+      { error: `Invalid action: ${action}. Must be one of: start, close, reopen, comment, label-add, label-rm` },
       { status: 400 },
     );
   }
@@ -52,6 +52,14 @@ export async function POST(
   if (action === "comment" && !reason) {
     return NextResponse.json(
       { error: "Comment text is required" },
+      { status: 400 },
+    );
+  }
+
+  // Label actions require label value
+  if ((action === "label-add" || action === "label-rm") && !reason) {
+    return NextResponse.json(
+      { error: "Label value is required" },
       { status: 400 },
     );
   }
@@ -73,6 +81,12 @@ export async function POST(
       break;
     case "comment":
       args = ["comment", issueId, reason!];
+      break;
+    case "label-add":
+      args = ["label", "add", issueId, reason!];
+      break;
+    case "label-rm":
+      args = ["label", "rm", issueId, reason!];
       break;
   }
 
