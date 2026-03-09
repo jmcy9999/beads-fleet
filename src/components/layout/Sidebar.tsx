@@ -250,7 +250,7 @@ function RepoSelector({ onSelect }: { onSelect?: () => void }) {
       </button>
 
       {open && (
-        <div className="mt-1 py-1 rounded-md bg-surface-0 border border-border-default shadow-lg">
+        <div className="mt-1 py-1 rounded-md bg-surface-0 border border-border-default shadow-lg max-h-[60vh] overflow-y-auto">
           {/* All Projects aggregation option */}
           <button
             onClick={() => {
