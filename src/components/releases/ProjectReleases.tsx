@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { ReleaseIssueList } from "./ReleaseIssueList";
 import { AddBeadsModal } from "./AddBeadsModal";
 import { buildReleaseGroups, getStatusColor, getStatusLabel } from "./types";
+import { computePriorityWeights, computeVelocity, estimateRelease } from "./estimate";
 import type { PlanIssue } from "@/lib/types";
 
 interface ProjectReleasesProps {
@@ -18,6 +19,10 @@ export function ProjectReleases({ projectName, issues }: ProjectReleasesProps) {
   const [newVersionInput, setNewVersionInput] = useState("");
 
   const releases = useMemo(() => buildReleaseGroups(issues), [issues]);
+
+  // Compute ETA data from project history
+  const weights = useMemo(() => computePriorityWeights(issues), [issues]);
+  const velocity = useMemo(() => computeVelocity(issues), [issues]);
 
   // Collect all known release labels for the move-to dropdown
   const allReleaseLabels = useMemo(
@@ -100,6 +105,7 @@ export function ProjectReleases({ projectName, issues }: ProjectReleasesProps) {
           {releases.map((release) => {
             const pct = release.total > 0 ? Math.round((release.closed / release.total) * 100) : 0;
             const isExpanded = expanded.has(release.version);
+            const eta = release.label ? estimateRelease(release.issues, weights, velocity) : null;
             return (
               <div
                 key={release.version}
@@ -161,6 +167,24 @@ export function ProjectReleases({ projectName, issues }: ProjectReleasesProps) {
                       <span className="text-gray-500 ml-1">({release.open} open)</span>
                     )}
                   </div>
+
+                  {/* ETA */}
+                  {eta && eta.hasEstimate && eta.calendarDays !== 0 && (
+                    <span
+                      className={`text-xs whitespace-nowrap shrink-0 ${
+                        eta.calendarDays === null
+                          ? "text-gray-500"
+                          : (eta.calendarDays ?? 0) <= 3
+                            ? "text-green-400"
+                            : (eta.calendarDays ?? 0) <= 14
+                              ? "text-yellow-400"
+                              : "text-orange-400"
+                      }`}
+                      title={`${Math.round(eta.beadDays * 10) / 10} bead-days at ${Math.round(velocity * 10) / 10} beads/day`}
+                    >
+                      {eta.display}
+                    </span>
+                  )}
 
                   {/* Add beads button (on versioned releases only) */}
                   {release.label && (
