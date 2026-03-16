@@ -33,6 +33,7 @@ interface IssueRow {
   story_points: number | null;
   notes: string | null;
   due_at: string | null;
+  estimated_minutes: number | null;
 }
 
 interface DepRow {
@@ -61,6 +62,7 @@ export function readIssuesFromDB(projectPath: string): BeadsIssue[] | null {
     const hasStoryPoints = columnNames.has("story_points");
     const hasNotes = columnNames.has("notes");
     const hasDueAt = columnNames.has("due_at");
+    const hasEstimatedMinutes = columnNames.has("estimated_minutes");
 
     // Read all non-deleted, non-tombstone issues
     const issueStmt = db.prepare(`
@@ -81,6 +83,7 @@ export function readIssuesFromDB(projectPath: string): BeadsIssue[] | null {
         ${hasStoryPoints ? ", i.story_points" : ""}
         ${hasNotes ? ", i.notes" : ""}
         ${hasDueAt ? ", i.due_at" : ""}
+        ${hasEstimatedMinutes ? ", i.estimated_minutes" : ""}
       FROM issues i
       LEFT JOIN labels l ON l.issue_id = i.id
       WHERE i.deleted_at IS NULL AND i.status <> 'tombstone'
@@ -130,6 +133,7 @@ export function readIssuesFromDB(projectPath: string): BeadsIssue[] | null {
       story_points: row.story_points ?? undefined,
       notes: row.notes || undefined,
       due_at: row.due_at || undefined,
+      estimated_minutes: row.estimated_minutes ?? undefined,
     }));
   } catch {
     // If anything fails reading SQLite, return null so caller falls back

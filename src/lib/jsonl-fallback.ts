@@ -120,6 +120,7 @@ export function issuesToPlan(
     blocked_by: Array.from(blockedByMap.get(issue.id) ?? []),
     blocks: Array.from(blocksMap.get(issue.id) ?? []),
     story_points: issue.story_points,
+    estimated_minutes: issue.estimated_minutes,
     epic: parentMap.get(issue.id),
     epic_title: parentMap.has(issue.id) ? titleMap.get(parentMap.get(issue.id)!) : undefined,
     created_at: issue.created_at,

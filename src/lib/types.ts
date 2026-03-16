@@ -53,6 +53,7 @@ export interface BeadsIssue {
   close_reason?: string;
   notes?: string;
   due_at?: string;
+  estimated_minutes?: number;
 }
 
 // -----------------------------------------------------------------------------
@@ -120,6 +121,7 @@ export interface PlanIssue {
   updated_at?: string;
   closed_at?: string;
   due_at?: string;
+  estimated_minutes?: number;
 }
 
 export interface PlanTrack {

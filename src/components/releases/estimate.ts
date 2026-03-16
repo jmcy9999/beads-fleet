@@ -100,8 +100,14 @@ export function estimateRelease(
 
   let beadDays = 0;
   for (const issue of openIssues) {
-    const p = issue.priority ?? 2;
-    beadDays += weights[p] ?? weights[2] ?? 0.5;
+    if (issue.estimated_minutes != null && issue.estimated_minutes > 0) {
+      // Prefer explicit estimate (converted from minutes to days)
+      beadDays += issue.estimated_minutes / (24 * 60);
+    } else {
+      // Fall back to priority-weight lookup
+      const p = issue.priority ?? 2;
+      beadDays += weights[p] ?? weights[2] ?? 0.5;
+    }
   }
 
   if (velocity <= 0) {

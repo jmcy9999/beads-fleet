@@ -227,6 +227,7 @@ function normalizePlanItem(item: any): PlanIssue {
     created_at: item.created_at ?? undefined,
     updated_at: item.updated_at ?? undefined,
     closed_at: item.closed_at ?? undefined,
+    estimated_minutes: item.estimated_minutes ?? undefined,
   };
 }
 

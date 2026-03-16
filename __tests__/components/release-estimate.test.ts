@@ -271,4 +271,60 @@ describe("estimateRelease", () => {
     // Should use weights[2] = 0.4 as fallback
     expect(result.beadDays).toBeCloseTo(0.4, 5);
   });
+
+  // --- estimated_minutes support ---
+
+  it("prefers estimated_minutes over priority weight", () => {
+    // 480 minutes = 8 hours = 0.333 days
+    const issues = [
+      makeIssue({ id: "A", priority: 4, estimated_minutes: 480 }),
+    ];
+    const result = estimateRelease(issues, defaultWeights, 1);
+    // Should use 480min / 1440min-per-day = 0.333 days, NOT P4 weight of 7.0
+    expect(result.beadDays).toBeCloseTo(480 / 1440, 3);
+    expect(result.calendarDays).toBe(1); // ceil(0.333)
+  });
+
+  it("falls back to priority weight when estimated_minutes is null", () => {
+    const issues = [
+      makeIssue({ id: "A", priority: 1 }), // no estimated_minutes
+    ];
+    const result = estimateRelease(issues, defaultWeights, 1);
+    expect(result.beadDays).toBeCloseTo(0.5, 5); // P1 default weight
+  });
+
+  it("falls back to priority weight when estimated_minutes is 0", () => {
+    const issues = [
+      makeIssue({ id: "A", priority: 1, estimated_minutes: 0 }),
+    ];
+    const result = estimateRelease(issues, defaultWeights, 1);
+    expect(result.beadDays).toBeCloseTo(0.5, 5); // P1 default, not 0
+  });
+
+  it("handles mixed beads — some with estimates, some without", () => {
+    const issues = [
+      makeIssue({ id: "A", priority: 2, estimated_minutes: 1440 }), // 1 day
+      makeIssue({ id: "B", priority: 2 }),                          // P2 weight = 0.4 days
+      makeIssue({ id: "C", priority: 0, estimated_minutes: 720 }),  // 0.5 days
+    ];
+    const result = estimateRelease(issues, defaultWeights, 1);
+    // 1.0 + 0.4 + 0.5 = 1.9 bead-days
+    expect(result.beadDays).toBeCloseTo(1.9, 2);
+    expect(result.calendarDays).toBe(2); // ceil(1.9)
+  });
+
+  it("estimated_minutes gives more accurate ETA than priority alone", () => {
+    // A P4 bead that's actually quick (30 min estimate)
+    const withEstimate = [
+      makeIssue({ id: "A", priority: 4, estimated_minutes: 30 }),
+    ];
+    const withoutEstimate = [
+      makeIssue({ id: "A", priority: 4 }),
+    ];
+    const rWith = estimateRelease(withEstimate, defaultWeights, 1);
+    const rWithout = estimateRelease(withoutEstimate, defaultWeights, 1);
+    // With estimate: 30/1440 = 0.021 days. Without: 7.0 days (P4 weight).
+    expect(rWith.beadDays).toBeLessThan(0.1);
+    expect(rWithout.beadDays).toBe(7.0);
+  });
 });
