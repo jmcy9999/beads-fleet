@@ -88,7 +88,7 @@ export function buildReleaseGroups(issues: PlanIssue[]): ReleaseGroup[] {
   const sorted = Array.from(groups.entries()).sort(([a], [b]) => {
     const va = extractReleaseVersion(a);
     const vb = extractReleaseVersion(b);
-    return vb.localeCompare(va, undefined, { numeric: true });
+    return va.localeCompare(vb, undefined, { numeric: true });
   });
 
   for (const [label, groupIssues] of sorted) {
