@@ -1,4 +1,5 @@
 import { applyRiskModifiers } from "@/lib/estimate-rules";
+import { applyCalibratedEstimate, type CalibrationFactors } from "@/lib/calibration";
 import type { PlanIssue } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -91,7 +92,8 @@ export interface ReleaseEstimate {
 export function estimateRelease(
   releaseIssues: PlanIssue[],
   weights: Record<number, number>,
-  velocity: number
+  velocity: number,
+  calibration?: CalibrationFactors
 ): ReleaseEstimate {
   const openIssues = releaseIssues.filter((i) => i.status !== "closed");
 
@@ -112,6 +114,15 @@ export function estimateRelease(
     }
     // Apply label-based risk modifiers
     minutes = applyRiskModifiers(minutes, issue.labels ?? []);
+    // Apply historical calibration if available
+    if (calibration) {
+      minutes = applyCalibratedEstimate(
+        minutes,
+        issue.issue_type,
+        issue.priority ?? 2,
+        calibration
+      );
+    }
     beadDays += minutes / (24 * 60);
   }
 

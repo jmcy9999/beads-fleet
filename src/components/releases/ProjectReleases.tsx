@@ -5,6 +5,7 @@ import { ReleaseIssueList } from "./ReleaseIssueList";
 import { AddBeadsModal } from "./AddBeadsModal";
 import { buildReleaseGroups, getStatusColor, getStatusLabel } from "./types";
 import { computePriorityWeights, computeVelocity, estimateRelease } from "./estimate";
+import { computeCalibration, hasCalibrationData } from "@/lib/calibration";
 import type { PlanIssue } from "@/lib/types";
 
 interface ProjectReleasesProps {
@@ -23,6 +24,8 @@ export function ProjectReleases({ projectName, issues }: ProjectReleasesProps) {
   // Compute ETA data from project history
   const weights = useMemo(() => computePriorityWeights(issues), [issues]);
   const velocity = useMemo(() => computeVelocity(issues), [issues]);
+  const calibration = useMemo(() => computeCalibration(issues), [issues]);
+  const hasCalibration = hasCalibrationData(calibration);
 
   // Collect all known release labels for the move-to dropdown
   const allReleaseLabels = useMemo(
@@ -105,7 +108,7 @@ export function ProjectReleases({ projectName, issues }: ProjectReleasesProps) {
           {releases.map((release) => {
             const pct = release.total > 0 ? Math.round((release.closed / release.total) * 100) : 0;
             const isExpanded = expanded.has(release.version);
-            const eta = release.label ? estimateRelease(release.issues, weights, velocity) : null;
+            const eta = release.label ? estimateRelease(release.issues, weights, velocity, hasCalibration ? calibration : undefined) : null;
             return (
               <div
                 key={release.version}
@@ -180,7 +183,7 @@ export function ProjectReleases({ projectName, issues }: ProjectReleasesProps) {
                               ? "text-yellow-400"
                               : "text-orange-400"
                       }`}
-                      title={`${Math.round(eta.beadDays * 10) / 10} bead-days at ${Math.round(velocity * 10) / 10} beads/day`}
+                      title={`${Math.round(eta.beadDays * 10) / 10} bead-days at ${Math.round(velocity * 10) / 10} beads/day${hasCalibration ? " (calibrated)" : ""}`}
                     >
                       {eta.display}
                     </span>
