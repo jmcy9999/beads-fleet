@@ -8,6 +8,7 @@ import { IssueTypeIcon } from "@/components/ui/IssueTypeIcon";
 import { useIssueAction } from "@/hooks/useIssueAction";
 import { BulkReleaseToolbar } from "./BulkReleaseToolbar";
 import { sortIssuesForRelease, getReleaseLabel } from "./types";
+import { computeEstimate, RISK_MODIFIERS } from "@/lib/estimate-rules";
 import type { PlanIssue } from "@/lib/types";
 
 interface ReleaseIssueListProps {
@@ -151,6 +152,7 @@ export function ReleaseIssueList({
             <th className="text-left px-2 py-1 font-medium w-24">Status</th>
             <th className="text-left px-2 py-1 font-medium w-16">Priority</th>
             <th className="text-left px-2 py-1 font-medium w-20">Type</th>
+            <th className="text-right px-2 py-1 font-medium w-16">Est.</th>
             <th className="text-right px-2 py-1 font-medium w-20"></th>
           </tr>
         </thead>
@@ -192,6 +194,9 @@ export function ReleaseIssueList({
                 {issue.issue_type}
               </td>
               <td className="px-2 py-1.5 text-right">
+                <EstimateCell issue={issue} />
+              </td>
+              <td className="px-2 py-1.5 text-right">
                 <QuickActions
                   issueId={issue.id}
                   releaseLabel={releaseLabel}
@@ -206,6 +211,47 @@ export function ReleaseIssueList({
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Estimate cell with tooltip breakdown
+// ---------------------------------------------------------------------------
+
+function EstimateCell({ issue }: { issue: PlanIssue }) {
+  const labels = issue.labels ?? [];
+  const riskLabels = labels.filter((l) => l in RISK_MODIFIERS);
+  const totalMinutes = computeEstimate(
+    issue.estimated_minutes,
+    issue.issue_type,
+    labels
+  );
+  const hours = Math.round(totalMinutes / 60 * 10) / 10;
+
+  // Build tooltip breakdown
+  const parts: string[] = [];
+  if (issue.estimated_minutes != null && issue.estimated_minutes > 0) {
+    parts.push(`Planner: ${Math.round(issue.estimated_minutes / 60 * 10) / 10}h`);
+  } else {
+    parts.push(`Base (${issue.issue_type}): ${Math.round(totalMinutes / 60 * 10) / 10}h`);
+  }
+  for (const label of riskLabels) {
+    parts.push(`+${Math.round(RISK_MODIFIERS[label] / 60)}h (${label})`);
+  }
+
+  if (issue.status === "closed") {
+    return <span className="text-xs text-gray-600">--</span>;
+  }
+
+  return (
+    <span
+      className={`text-xs font-mono ${
+        hours <= 4 ? "text-gray-400" : hours <= 24 ? "text-yellow-400" : "text-orange-400"
+      }`}
+      title={parts.join("\n")}
+    >
+      {hours}h
+    </span>
   );
 }
 
