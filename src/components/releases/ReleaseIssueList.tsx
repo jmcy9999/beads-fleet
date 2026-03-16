@@ -143,7 +143,7 @@ export function ReleaseIssueList({
                 type="checkbox"
                 checked={allChecked}
                 onChange={toggleAll}
-                className="rounded border-gray-500 bg-surface-0 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+                className="appearance-auto w-3.5 h-3.5 cursor-pointer accent-blue-500"
               />
             </th>
             <th className="text-left px-2 py-1 font-medium w-8"></th>
@@ -167,7 +167,7 @@ export function ReleaseIssueList({
                   type="checkbox"
                   checked={selected.has(issue.id)}
                   onChange={() => toggleSelect(issue.id)}
-                  className="rounded border-gray-500 bg-surface-0 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+                  className="appearance-auto w-3.5 h-3.5 cursor-pointer accent-blue-500"
                 />
               </td>
               <td className="px-2 py-1.5">
