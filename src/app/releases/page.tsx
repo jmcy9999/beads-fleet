@@ -197,10 +197,10 @@ export default function ReleasesPage() {
 
   // Group issues by project
   const projectGroups = useMemo(() => {
-    if (!issuesData?.issues) return new Map<string, PlanIssue[]>();
+    if (!issuesData?.all_issues) return new Map<string, PlanIssue[]>();
 
     const groups = new Map<string, PlanIssue[]>();
-    for (const issue of issuesData.issues) {
+    for (const issue of issuesData.all_issues) {
       const projectLabel = (issue.labels ?? []).find((l) => l.startsWith("project:"));
       const project = projectLabel ? projectLabel.slice(8) : "Unknown";
       const existing = groups.get(project) ?? [];
