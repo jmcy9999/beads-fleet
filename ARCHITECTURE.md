@@ -255,6 +255,22 @@ Or add it directly to `~/.beads-web.json`:
 - Token usage sessions table
 - Timestamps (created, updated, closed) and close reason
 
+### Quick Create with Auto-Estimation
+- **Cmd+K shortcut:** Opens inline quick-create bar in the header with project selector, note input, and submit button
+- **Shorthand syntax:** `fix login crash -p 0 -t bug -e 60` parses into structured `bd create` args (priority, type, estimate in minutes)
+- **AI title cleanup + effort estimation:** Single Haiku call cleans up the title and estimates effort in minutes based on title, type, and priority. Returns JSON `{"title": "...", "estimated_minutes": N}`
+- **Estimate priority:** Explicit `-e` flag from user takes precedence over AI estimate. AI estimate used as fallback when no manual estimate provided
+- **Data flow:** `QuickCreate.tsx` -> `POST /api/issues` -> `parseQuickNote()` -> Haiku API -> `bd create --title --estimate` -> cache invalidation
+
+### Release Estimation Pipeline
+- **Priority weights:** `computePriorityWeights()` learns average days-to-close per priority bucket from closed issues, falling back to hardcoded defaults
+- **Velocity:** `computeVelocity()` computes beads-closed-per-day over a 14-day window
+- **Per-issue estimates:** Prefers `estimated_minutes` (from planner or AI), falls back to priority-based weights
+- **Risk modifiers:** `applyRiskModifiers()` adds time buffers for labels like `external-api` (+36h), `architecture-change` (+24h), `ui-polish` (+48h), `needs-testing` (+24h)
+- **Historical calibration:** `computeCalibration()` compares estimated vs actual minutes for closed beads, produces per-bucket (type x priority) multipliers to correct systematic bias
+- **Display:** `ReleaseIssueList` shows per-issue estimate with tooltip breakdown (planner/base + risk modifiers). Color-coded: gray (<4h), yellow (<24h), orange (>24h)
+- **Files:** `estimate.ts`, `estimate-rules.ts`, `calibration.ts`, `ReleaseIssueList.tsx`
+
 ### Epic Progress Bars
 - **IssueCard (card variant):** Epic-type issues show a progress bar below the title (closed/total children)
 - **IssueCard (row variant):** Epic column shows progress bar below the epic link

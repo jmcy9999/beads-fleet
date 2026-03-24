@@ -15,6 +15,7 @@ export interface ParsedNote {
   priority?: number;
   type?: string;
   parent?: string;
+  estimate?: number; // minutes
 }
 
 const PRIORITY_MAP: Record<string, number> = {
@@ -31,6 +32,7 @@ export function parseQuickNote(raw: string): ParsedNote {
   let priority: number | undefined;
   let type: string | undefined;
   let parent: string | undefined;
+  let estimate: number | undefined;
 
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
@@ -49,6 +51,13 @@ export function parseQuickNote(raw: string): ParsedNote {
       } else {
         titleParts.push(tok, val);
       }
+    } else if ((tok === "-e" || tok === "--estimate") && i + 1 < tokens.length) {
+      const val = parseInt(tokens[++i], 10);
+      if (!isNaN(val) && val > 0) {
+        estimate = val;
+      } else {
+        titleParts.push(tok, tokens[i]);
+      }
     } else if (tok === "--parent" && i + 1 < tokens.length) {
       parent = tokens[++i];
     } else {
@@ -61,5 +70,6 @@ export function parseQuickNote(raw: string): ParsedNote {
     ...(priority !== undefined && { priority }),
     ...(type && { type }),
     ...(parent && { parent }),
+    ...(estimate !== undefined && { estimate }),
   };
 }
