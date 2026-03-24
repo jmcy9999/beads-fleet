@@ -6,6 +6,7 @@ import { IssueTable } from "@/components/dashboard/IssueTable";
 import { PriorityAlerts } from "@/components/dashboard/PriorityAlerts";
 import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
 import { TokenUsageSummary } from "@/components/dashboard/TokenUsageSummary";
+import { EfficiencyPanel } from "@/components/dashboard/EfficiencyPanel";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { SummaryCardSkeleton } from "@/components/ui/LoadingSkeleton";
 import { useIssues } from "@/hooks/useIssues";
@@ -67,6 +68,8 @@ export default function Home() {
       <SummaryCards summary={plan.summary} />
 
       <TokenUsageSummary />
+
+      <EfficiencyPanel />
 
       {plan.summary.highest_impact && (
         <WhatsNext impact={plan.summary.highest_impact} />

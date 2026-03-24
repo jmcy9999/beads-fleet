@@ -511,9 +511,9 @@ layout.tsx (server)
 ```
 
 ### Key Components
-- **Dashboard:** `SummaryCards`, `TokenUsageSummary`, `WhatsNext`, `PriorityAlerts`, `IssueTable` (with `FilterBar`), `ActivityFeed`
+- **Dashboard:** `SummaryCards`, `TokenUsageSummary`, `EfficiencyPanel` (tokens-per-story-point metrics + bar chart), `WhatsNext`, `PriorityAlerts`, `IssueTable` (with `FilterBar`, sortable SP column), `ActivityFeed`
 - **Board:** `KanbanBoard` -> `KanbanColumn` -> `IssueCard`, `IssueDetailPanel` (slide-in)
-- **Fleet:** `FleetBoard` (client component: zoom controls, column filter, ship-type filter toggle, compact layout) -> `FleetColumn` (compact 180-220px, uppercase headers) -> `FleetCard` (compact p-2, pipeline actions, phase history dots, cost breakdown), `AgentStatusBanner` (running agent indicator), `ActivityTimeline` (agent session visualization), `fleet-utils.ts` (stage detection, ship type, data extraction, phase history — see exports below), `timeline-utils.ts` (timeline data processing)
+- **Fleet:** `FleetBoard` (client component: zoom controls, column filter, ship-type filter toggle, compact layout) -> `FleetColumn` (compact 180-220px, uppercase headers) -> `FleetCard` (compact p-2, pipeline actions, phase history dots, cost breakdown, research snippet preview), `AgentStatusBanner` (running agent indicator), `ActivityTimeline` (agent session visualization), `fleet-utils.ts` (stage detection, ship type, data extraction, phase history — see exports below), `timeline-utils.ts` (timeline data processing)
   - **`fleet-utils.ts` key exports:** `FleetStage` (union type of all stage IDs), `ShipType` (`"ios-app" | "venture"`), `FleetApp` (includes `shipType` field), `getShipType(epic)` (detects ship type from `ship-type:venture` label, defaults to `"ios-app"`), `IOS_PIPELINE_ORDER` (10 stages: idea through completed), `VENTURE_PIPELINE_ORDER` (8 stages: idea through completed, skipping QA/submission/kit-management, adding deploying/live), `IOS_ONLY_STAGES` (`["qa", "submission-prep", "submitted", "kit-management"]`), `VENTURE_ONLY_STAGES` (`["deploying", "live"]`), `PIPELINE_ORDER` (backward-compatible alias for `IOS_PIPELINE_ORDER`), `getPhaseHistory(stage, shipType?)` (uses ship-type-aware ordering)
 - **Insights:** `MetricPanel` (bar charts), `CyclesPanel`, `GraphDensityBadge`, `DependencyGraph` (ReactFlow)
 - **Filters:** `FilterBar`, `RecipeSelector`
@@ -644,7 +644,7 @@ src/
     MarkdownRenderer.tsx    # Shared markdown renderer (accentColor: blue|purple), used by issue detail
     providers/              # QueryProvider, ClientShell, MobileSidebarContext
     layout/                 # Sidebar, Header
-    dashboard/              # SummaryCards, WhatsNext, PriorityAlerts, IssueTable, ActivityFeed, TokenUsageSummary
+    dashboard/              # SummaryCards, WhatsNext, PriorityAlerts, IssueTable, ActivityFeed, TokenUsageSummary, EfficiencyPanel
     board/                  # KanbanBoard, KanbanColumn, IssueDetailPanel
     fleet/                  # FleetBoard, FleetColumn, FleetCard, AgentStatusBanner, ActivityTimeline, VenturePlan, fleet-utils, timeline-utils
     insights/               # MetricPanel, CyclesPanel, GraphDensityBadge, DependencyGraph
