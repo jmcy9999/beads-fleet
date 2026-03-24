@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import Link from "next/link";
 import { PriorityIndicator } from "@/components/ui/PriorityIndicator";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { useResearchReport } from "@/hooks/useResearchReport";
+import { extractAppName } from "@/lib/extract-app-name";
 import {
   isAgentRunning,
   getPhaseHistory,
@@ -12,6 +14,27 @@ import {
   type EpicCost,
 } from "./fleet-utils";
 import type { PipelineActionPayload } from "./FleetBoard";
+
+/**
+ * Extract the first 2-3 sentences from the Executive Summary section
+ * of a markdown research report.
+ */
+function extractSnippet(content: string): string | null {
+  // Find the Executive Summary heading
+  const match = content.match(/##\s*Executive\s+Summary\s*\n+([\s\S]*?)(?=\n##\s|\n---|\z)/i);
+  if (!match) return null;
+  const body = match[1].trim();
+  if (!body) return null;
+  // Take first 2-3 sentences (up to ~200 chars)
+  const sentences = body.match(/[^.!?]*[.!?]+/g);
+  if (!sentences) return body.slice(0, 200);
+  let snippet = "";
+  for (let i = 0; i < Math.min(3, sentences.length); i++) {
+    if (snippet.length + sentences[i].length > 250) break;
+    snippet += sentences[i];
+  }
+  return snippet.trim() || null;
+}
 
 /** Inline spinner shown on buttons while a pipeline action is in flight. */
 function Spinner() {
@@ -88,6 +111,17 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
 
   // Extract app name from epic title
   const appName = epic.title;
+
+  // Research report snippet — only fetch for epics past the idea stage
+  const researchAppName = useMemo(() => {
+    if (app.stage === "idea") return null;
+    return extractAppName(epic.title);
+  }, [app.stage, epic.title]);
+  const { data: researchReport } = useResearchReport(researchAppName);
+  const snippet = useMemo(
+    () => (researchReport?.content ? extractSnippet(researchReport.content) : null),
+    [researchReport?.content],
+  );
 
   // Check if this epic has an agent currently running
   const epicAgentRunning = isAgentRunning(epic);
@@ -234,6 +268,13 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             Plan
           </span>
         </div>
+      )}
+
+      {/* Research report snippet */}
+      {snippet && (
+        <p className="text-[10px] text-gray-400 leading-relaxed line-clamp-3 mb-2">
+          {snippet}
+        </p>
       )}
 
       {/* Cost breakdown */}
