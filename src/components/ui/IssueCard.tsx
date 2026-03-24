@@ -151,6 +151,13 @@ export function IssueCard({
           )}
         </td>
         <td className="px-3 py-2 text-sm text-right font-mono">
+          {issue.story_points != null ? (
+            <span className="text-cyan-400">{issue.story_points}</span>
+          ) : (
+            <span className="text-gray-500">{"\u2014"}</span>
+          )}
+        </td>
+        <td className="px-3 py-2 text-sm text-right font-mono">
           {tokenCost != null && tokenCost > 0 ? (
             <span className="text-amber-400">${tokenCost.toFixed(2)}</span>
           ) : (

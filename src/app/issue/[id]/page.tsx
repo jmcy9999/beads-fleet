@@ -1350,6 +1350,18 @@ export default function IssueDetailPage() {
               </div>
             )}
 
+            {/* Story Points */}
+            {issue.story_points != null && (
+              <div>
+                <h3 className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-1">
+                  Story Points
+                </h3>
+                <p className="text-sm font-medium text-cyan-400">
+                  {issue.story_points}
+                </p>
+              </div>
+            )}
+
             {/* Impact Score */}
             {issue.impact_score != null && (
               <div>

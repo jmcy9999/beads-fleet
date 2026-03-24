@@ -8,7 +8,7 @@ import { IssueCard } from "@/components/ui/IssueCard";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { useTokenUsageSummary } from "@/hooks/useTokenUsage";
 
-type SortKey = "id" | "project" | "title" | "status" | "priority" | "owner" | "epic" | "blocked_by" | "cost" | "created";
+type SortKey = "id" | "project" | "title" | "status" | "priority" | "owner" | "epic" | "blocked_by" | "story_points" | "cost" | "created";
 type SortDir = "asc" | "desc";
 
 interface IssueTableProps {
@@ -29,6 +29,7 @@ const COLUMN_HEADERS: { key: SortKey; label: string }[] = [
   { key: "owner", label: "Owner" },
   { key: "epic", label: "Epic" },
   { key: "blocked_by", label: "Blocked By" },
+  { key: "story_points", label: "SP" },
   { key: "cost", label: "Cost" },
   { key: "created", label: "Created" },
 ];
@@ -56,6 +57,8 @@ function comparePlanIssues(
       return (a.epic ?? "").localeCompare(b.epic ?? "");
     case "blocked_by":
       return a.blocked_by.length - b.blocked_by.length;
+    case "story_points":
+      return (a.story_points ?? 0) - (b.story_points ?? 0);
     case "cost": {
       const aCost = tokenSummary?.[a.id]?.total_cost_usd ?? 0;
       const bCost = tokenSummary?.[b.id]?.total_cost_usd ?? 0;
