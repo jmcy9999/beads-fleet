@@ -10,6 +10,8 @@ import { launchAgent, stopAgent } from "@/lib/agent-launcher";
 import { getRepos } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import { extractAppName } from "@/lib/extract-app-name";
+import { promises as fs } from "fs";
+import path from "path";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -367,9 +369,36 @@ export async function POST(request: NextRequest) {
         invalidateCache();
 
         const appRepoPath7 = `/Users/janemckay/dev/claude_projects/${appName}`;
+
+        // Read feature approval state if it exists, to scope the build
+        let featureScopeNote = "";
+        try {
+          const approvalPath = path.join(appRepoPath7, ".beads", "plans", `${epicId}.approval.json`);
+          const raw = await fs.readFile(approvalPath, "utf-8");
+          const approval = JSON.parse(raw);
+          const approved = (approval.features ?? []).filter((f: { status: string }) => f.status === "approved");
+          const rejected = (approval.features ?? []).filter((f: { status: string }) => f.status === "rejected");
+          const deferred = (approval.features ?? []).filter((f: { status: string }) => f.status === "deferred");
+          if (approved.length > 0 || rejected.length > 0) {
+            const parts: string[] = [];
+            if (approved.length > 0) {
+              parts.push(`APPROVED features (build these): ${approved.map((f: { name: string }) => f.name).join(", ")}`);
+            }
+            if (rejected.length > 0) {
+              parts.push(`REJECTED features (do NOT build): ${rejected.map((f: { name: string }) => f.name).join(", ")}`);
+            }
+            if (deferred.length > 0) {
+              parts.push(`DEFERRED features (skip for now): ${deferred.map((f: { name: string }) => f.name).join(", ")}`);
+            }
+            featureScopeNote = ` Feature scope decisions: ${parts.join(". ")}.`;
+          }
+        } catch {
+          // No approval file — build everything in the plan
+        }
+
         const approveDevPrompt = isVenture
-          ? `Build the venture "${epicTitle}" (epic: ${epicId}). This is a venture (AI/crypto/web), NOT an iOS app. Research report: /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan: ${appRepoPath7}/.beads/plans/${epicId}.md — read this first. Work through each bead in the plan. Use Python/TypeScript as appropriate. Do NOT use Xcode, Tuist, CycleKit, SwiftUI, or iOS standing orders. Commit regularly. Close each bead as you complete it.`
-          : `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan is at ${appRepoPath7}/.beads/plans/${epicId}.md — read this first for the UX walkthrough, personas, assumption flags, and conditional logic maps.`;
+          ? `Build the venture "${epicTitle}" (epic: ${epicId}). This is a venture (AI/crypto/web), NOT an iOS app. Research report: /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan: ${appRepoPath7}/.beads/plans/${epicId}.md — read this first. Work through each bead in the plan.${featureScopeNote} Use Python/TypeScript as appropriate. Do NOT use Xcode, Tuist, CycleKit, SwiftUI, or iOS standing orders. Commit regularly. Close each bead as you complete it.`
+          : `Develop the app "${epicTitle}" (epic: ${epicId}). Follow the development workflow instructions in /Users/janemckay/dev/claude_projects/cycle-apps-factory/CLAUDE.md. Research report is at /Users/janemckay/dev/claude_projects/cycle-apps-factory/apps/${appName}/research/report.md. Build plan is at ${appRepoPath7}/.beads/plans/${epicId}.md — read this first for the UX walkthrough, personas, assumption flags, and conditional logic maps.${featureScopeNote}`;
 
         const session = await launchAgent({
           repoPath: appRepoPath7,

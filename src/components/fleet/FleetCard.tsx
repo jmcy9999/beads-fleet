@@ -14,6 +14,7 @@ import {
   type EpicCost,
 } from "./fleet-utils";
 import type { PipelineActionPayload } from "./FleetBoard";
+import { FeatureApprovalPanel } from "./FeatureApprovalPanel";
 
 /**
  * Extract the first 2-3 sentences from the Executive Summary section
@@ -144,6 +145,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
 
   const [feedbackAction, setFeedbackAction] = useState<PipelineActionPayload["action"] | null>(null);
   const [feedbackText, setFeedbackText] = useState("");
+  const [showFeatureApproval, setShowFeatureApproval] = useState(false);
 
   /** Dispatch a pipeline action, preventing the Link navigation. */
   function handleAction(
@@ -432,7 +434,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             </>
           )}
 
-          {/* Plan Review: approve & build, or revise the plan */}
+          {/* Plan Review: feature approval, approve & build, or revise the plan */}
           {app.stage === "plan-review" && (() => {
             const hasPlanApproved = (epic.labels ?? []).includes("plan:approved");
 
@@ -459,32 +461,56 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               );
             }
 
-            // plan:pending — awaiting review
+            // plan:pending — awaiting review with feature approval
             return (
               <>
                 <button
-                  onClick={(e) => handleAction(e, "approve-and-build")}
-                  disabled={anyAgentRunning || isPendingThis}
-                  className={BTN_GREEN}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setShowFeatureApproval(!showFeatureApproval);
+                  }}
+                  className={BTN_BLUE}
                 >
-                  {isPendingThis && <Spinner />}
-                  {actionLabel("Approve & Build")}
+                  {showFeatureApproval ? "Hide Features" : "Review Features"}
                 </button>
-                <button
-                  onClick={(e) => handleFeedbackAction(e, "revise-plan")}
-                  disabled={anyAgentRunning || isPendingThis}
-                  className={BTN_AMBER}
-                >
-                  {isPendingThis && <Spinner />}
-                  {actionLabel("Revise Plan")}
-                </button>
-                <button
-                  onClick={(e) => handleAction(e, "deprioritise")}
-                  disabled={anyAgentRunning || isPendingThis}
-                  className={BTN_RED}
-                >
-                  Abandon
-                </button>
+                {showFeatureApproval && (
+                  <FeatureApprovalPanel
+                    epicId={epic.id}
+                    onApproveAll={() => {
+                      setShowFeatureApproval(false);
+                      onPipelineAction?.({ epicId: epic.id, epicTitle: epic.title, action: "approve-and-build" });
+                    }}
+                    onClose={() => setShowFeatureApproval(false)}
+                  />
+                )}
+                {!showFeatureApproval && (
+                  <>
+                    <button
+                      onClick={(e) => handleAction(e, "approve-and-build")}
+                      disabled={anyAgentRunning || isPendingThis}
+                      className={BTN_GREEN}
+                    >
+                      {isPendingThis && <Spinner />}
+                      {actionLabel("Approve & Build")}
+                    </button>
+                    <button
+                      onClick={(e) => handleFeedbackAction(e, "revise-plan")}
+                      disabled={anyAgentRunning || isPendingThis}
+                      className={BTN_AMBER}
+                    >
+                      {isPendingThis && <Spinner />}
+                      {actionLabel("Revise Plan")}
+                    </button>
+                    <button
+                      onClick={(e) => handleAction(e, "deprioritise")}
+                      disabled={anyAgentRunning || isPendingThis}
+                      className={BTN_RED}
+                    >
+                      Abandon
+                    </button>
+                  </>
+                )}
               </>
             );
           })()}

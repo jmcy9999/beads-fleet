@@ -222,6 +222,15 @@ Or add it directly to `~/.beads-web.json`:
 - **Security:** Issue ID validated against `^[a-zA-Z0-9_.-]+$` to prevent path traversal
 - **Hook:** `usePlanReport(issueId)` — mirrors `useResearchReport` structure with TanStack Query, 60s staleTime, `keepPreviousData`
 
+### Feature Approval Workflow
+- **API endpoint:** `GET/POST /api/fleet/approval?epicId=xxx` reads/saves feature approval state as `.beads/plans/<epicId>.approval.json`
+- **Plan parsing:** `lib/plan-features.ts` extracts features from plan markdown using multiple heuristics: section-based bullet/numbered lists (under "Features"/"Scope"/"Tasks" headings), H3 headings, and top-level bullet items as fallback
+- **Feature decisions:** Each feature has a status: `pending`, `approved`, `rejected`, or `deferred`
+- **Fleet card integration:** In the plan-review stage (plan:pending), a "Review Features" button toggles an inline `FeatureApprovalPanel` showing extracted features with per-feature approve/reject/defer buttons, bulk actions (Approve All, Reject All, Reset), and a "Build (N features)" button
+- **Build scope propagation:** When "Approve & Build" is triggered, the `approve-and-build` API action reads the `.approval.json` file and includes approved/rejected/deferred feature lists in the dev agent prompt, scoping the build to only approved features
+- **Hook:** `useFeatureApproval(epicId)` — TanStack Query hook for GET + useMutation for POST, 30s staleTime
+- **Data model:** `FeatureApprovalState { epicId, features: FeatureDecision[], updatedAt }` stored as JSON alongside the plan file
+
 ### Token Usage Tracking
 - Dashboard summary: total tokens, total cost, session count, total turns
 - Per-issue detail: sessions table with model, tokens, cost, duration, turns
@@ -300,7 +309,7 @@ Or add it directly to `~/.beads-web.json`:
 - **Phase history:** Each card shows a row of colored dots representing all pipeline stages — past stages solid, current stage pulsing, future stages dimmed
 - **Empty state:** Guidance on how to create epics and label children to use the fleet view
 - **Navigation:** Sidebar link + keyboard shortcut `f`
-- **Components:** `FleetBoard` (client component with zoom/filter/ship-type state) -> `FleetColumn` -> `FleetCard`, with `fleet-utils.ts` for stage detection, ship type classification, fleet data extraction, and phase history
+- **Components:** `FleetBoard` (client component with zoom/filter/ship-type state) -> `FleetColumn` -> `FleetCard`, with `fleet-utils.ts` for stage detection, ship type classification, fleet data extraction, and phase history. `HelpSidebar` provides a collapsible guide with pipeline flow diagrams (iOS and Venture), stage descriptions, and available actions per stage
 
 ### Research Completion Signals (Polling API)
 - **`GET /api/signals`** — Polling endpoint for detecting issue state changes
@@ -648,7 +657,7 @@ src/
     layout/                 # Sidebar, Header
     dashboard/              # SummaryCards, WhatsNext, PriorityAlerts, IssueTable, ActivityFeed, TokenUsageSummary, EfficiencyPanel
     board/                  # KanbanBoard, KanbanColumn, IssueDetailPanel
-    fleet/                  # FleetBoard, FleetColumn, FleetCard, AgentStatusBanner, ActivityTimeline, VenturePlan, fleet-utils, timeline-utils
+    fleet/                  # FleetBoard, FleetColumn, FleetCard, HelpSidebar, AgentStatusBanner, ActivityTimeline, VenturePlan, fleet-utils, timeline-utils
     insights/               # MetricPanel, CyclesPanel, GraphDensityBadge, DependencyGraph
     filters/                # FilterBar, RecipeSelector
     ui/                     # StatusBadge, PriorityIndicator, IssueTypeIcon, SummaryCard, IssueCard, EmptyState, ErrorState, LoadingSkeleton, ErrorBoundary, ShortcutsHelp, SetupWizard
