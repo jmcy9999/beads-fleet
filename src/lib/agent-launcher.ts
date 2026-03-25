@@ -145,10 +145,16 @@ async function recoverSessions(): Promise<AgentSession[]> {
 /**
  * Maps the pipeline stage the agent was launched for to the next stage
  * label that should be applied when the agent exits successfully.
+ *
+ * Stages handled by handleChainAction (auto-chaining) are NOT listed here:
+ *   research → auto-chains to planning
+ *   planning → auto-chains to build
+ *   development → auto-chains to QA
+ *   qa → auto-chains to fix loop or submission-prep
+ *   qa-fixes → auto-chains back to QA
  */
 const NEXT_STAGE: Record<string, string> = {
-  research: "pipeline:research-complete",
-  // development -> qa is handled by handleChainAction, not NEXT_STAGE
+  // QA with no bugs falls through chain action → advances to submission-prep
   qa: "pipeline:submission-prep",
   "submission-prep": "pipeline:submitted",
   "kit-management": "pipeline:completed",
@@ -156,11 +162,11 @@ const NEXT_STAGE: Record<string, string> = {
 
 /**
  * Pipeline stages that get special label handling on agent exit rather
- * than advancing to the next stage. The planning agent adds `plan:pending`
- * so the card shows "Approve Plan" / "Revise Plan" buttons.
+ * than advancing to the next stage. Currently unused — planning now
+ * auto-chains to build instead of waiting for plan approval.
  */
 const EXIT_LABELS: Record<string, string[]> = {
-  planning: ["plan:pending"],
+  // planning used to add plan:pending here, but now auto-chains to build
 };
 
 // ---------------------------------------------------------------------------
@@ -178,6 +184,58 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
 
   const stage = session.pipelineStage;
 
+  // -------------------------------------------------------------------------
+  // research -> planning: auto-generate plan after research completes
+  // -------------------------------------------------------------------------
+  if (stage === "research") {
+    try {
+      // First apply the research-complete label (replacing research)
+      const { addLabelsToEpic, removeLabelsFromEpic } = await import("./pipeline-labels");
+      await removeLabelsFromEpic(session.epicId!, ["pipeline:research"]);
+      await addLabelsToEpic(session.epicId!, ["pipeline:research-complete"]);
+
+      // Auto-chain to planning
+      await fetch("http://localhost:3000/api/fleet/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "generate-plan",
+          epicId: session.epicId,
+          epicTitle: session.repoName,
+        }),
+      });
+      return true; // Chain handled (research -> planning)
+    } catch (err) {
+      console.error("Failed to chain planning after research:", err);
+      return false;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // planning -> build: auto-start build after planning completes
+  // (skips plan approval gate — agent proceeds, Jane reviews async)
+  // -------------------------------------------------------------------------
+  if (stage === "planning") {
+    try {
+      await fetch("http://localhost:3000/api/fleet/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "approve-and-build",
+          epicId: session.epicId,
+          epicTitle: session.repoName,
+        }),
+      });
+      return true; // Chain handled (planning -> build)
+    } catch (err) {
+      console.error("Failed to chain build after planning:", err);
+      return false;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // development -> QA: auto-send to QA after build completes
+  // -------------------------------------------------------------------------
   if (stage === "development") {
     // After build crew finishes, auto-send to QA
     try {
