@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { launchAgent, getAgentStatus, stopAgent } from "@/lib/agent-launcher";
+import { launchAgent, getAgentStatus, getFleetAgentStatus, stopAgent } from "@/lib/agent-launcher";
 import { getAllRepoPaths, getRepos } from "@/lib/repo-config";
 import { addLabelsToEpic, removeLabelsFromEpic } from "@/lib/pipeline-labels";
 import { invalidateCache } from "@/lib/bv-client";
@@ -8,11 +8,24 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * GET /api/agent -- Get current agent status
+ * GET /api/agent -- Get agent status
+ * Query params:
+ *   ?repoPath=... — status of agent in specific repo
+ *   ?fleet=true   — status of all running agents
+ *   (none)        — backwards-compat: first running agent
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const status = await getAgentStatus();
+    const searchParams = request.nextUrl.searchParams;
+    const fleet = searchParams.get("fleet");
+    const repoPath = searchParams.get("repoPath");
+
+    if (fleet === "true") {
+      const status = await getFleetAgentStatus();
+      return NextResponse.json(status);
+    }
+
+    const status = await getAgentStatus(repoPath || undefined);
     return NextResponse.json(status);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -54,7 +67,9 @@ export async function POST(request: NextRequest) {
           // Label removal failure should not block the stop
         }
       }
-      const result = await stopAgent();
+      // Pass repoPath to stop a specific repo's agent (or "all" to stop all)
+      const targetRepo = typeof stopRepoPath === "string" ? stopRepoPath : undefined;
+      const result = await stopAgent(targetRepo);
       return NextResponse.json(result);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Unknown error";

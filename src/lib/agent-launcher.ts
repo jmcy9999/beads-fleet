@@ -44,30 +44,47 @@ export interface LaunchOptions {
 }
 
 // ---------------------------------------------------------------------------
-// State -- in-memory singleton (process lifetime)
+// State -- per-repo map (allows parallel agents in different repos)
 // ---------------------------------------------------------------------------
 
-let activeSession: AgentSession | null = null;
-let activeProcess: ChildProcess | null = null;
+interface ActiveAgent {
+  session: AgentSession;
+  process: ChildProcess;
+}
+
+const activeAgents = new Map<string, ActiveAgent>();
 
 const LOG_DIR = path.join(os.tmpdir(), "beads-web-agent-logs");
-const SESSION_FILE = path.join(os.tmpdir(), "beads-web-agent-session.json");
+const SESSIONS_DIR = path.join(os.tmpdir(), "beads-web-agent-sessions");
+
+// Backwards-compat: old single-session file (cleaned up on first use)
+const LEGACY_SESSION_FILE = path.join(os.tmpdir(), "beads-web-agent-session.json");
 
 // ---------------------------------------------------------------------------
 // Session persistence — survives hot-reloads and server restarts
 // ---------------------------------------------------------------------------
 
+function sessionFileFor(repoPath: string): string {
+  const safe = repoPath.replace(/\//g, "_");
+  return path.join(SESSIONS_DIR, `agent-${safe}.json`);
+}
+
 async function persistSession(session: AgentSession): Promise<void> {
   try {
-    await fs.writeFile(SESSION_FILE, JSON.stringify(session, null, 2), "utf-8");
+    await fs.mkdir(SESSIONS_DIR, { recursive: true });
+    await fs.writeFile(
+      sessionFileFor(session.repoPath),
+      JSON.stringify(session, null, 2),
+      "utf-8",
+    );
   } catch {
     // Best effort — don't break the launch
   }
 }
 
-async function clearPersistedSession(): Promise<void> {
+async function clearPersistedSession(repoPath: string): Promise<void> {
   try {
-    await fs.unlink(SESSION_FILE);
+    await fs.unlink(sessionFileFor(repoPath));
   } catch {
     // File may not exist
   }
@@ -82,19 +99,43 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-async function recoverSession(): Promise<AgentSession | null> {
+async function recoverSessions(): Promise<AgentSession[]> {
+  const recovered: AgentSession[] = [];
+
+  // Clean up legacy single-session file
   try {
-    const data = await fs.readFile(SESSION_FILE, "utf-8");
+    const data = await fs.readFile(LEGACY_SESSION_FILE, "utf-8");
     const session = JSON.parse(data) as AgentSession;
     if (session.pid && isPidAlive(session.pid)) {
-      return session;
+      recovered.push(session);
     }
-    // PID is dead — clean up stale file
-    await clearPersistedSession();
-    return null;
+    await fs.unlink(LEGACY_SESSION_FILE).catch(() => {});
   } catch {
-    return null;
+    // No legacy file
   }
+
+  // Read per-repo session files
+  try {
+    const files = await fs.readdir(SESSIONS_DIR);
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const data = await fs.readFile(path.join(SESSIONS_DIR, file), "utf-8");
+        const session = JSON.parse(data) as AgentSession;
+        if (session.pid && isPidAlive(session.pid)) {
+          recovered.push(session);
+        } else {
+          await fs.unlink(path.join(SESSIONS_DIR, file)).catch(() => {});
+        }
+      } catch {
+        // Skip corrupt files
+      }
+    }
+  } catch {
+    // Sessions dir may not exist yet
+  }
+
+  return recovered;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,9 +337,11 @@ function formatToolDetail(name: string, input: any): string {
 // ---------------------------------------------------------------------------
 
 export async function launchAgent(options: LaunchOptions): Promise<AgentSession> {
-  if (activeSession && activeProcess && !activeProcess.killed) {
+  const repoKey = realpathSync(options.repoPath);
+  const existing = activeAgents.get(repoKey);
+  if (existing && !existing.process.killed && existing.process.exitCode === null) {
     throw new Error(
-      `Agent already running (PID ${activeSession.pid}) in ${activeSession.repoName}. Stop it first.`,
+      `Agent already running (PID ${existing.session.pid}) in ${existing.session.repoName}. Stop it first.`,
     );
   }
 
@@ -377,17 +420,16 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     pipelineStage: options.pipelineStage,
   };
 
-  activeSession = session;
-  activeProcess = child;
+  activeAgents.set(repoKey, { session, process: child });
   await persistSession(session);
 
   // Clean up when process exits and handle pipeline label transitions
   child.on("exit", async (exitCode) => {
-    const exitedSession = activeSession;
+    const exitedAgent = activeAgents.get(repoKey);
+    const exitedSession = exitedAgent?.session;
     if (exitedSession != null && exitedSession.pid === child.pid) {
-      activeSession = null;
-      activeProcess = null;
-      await clearPersistedSession();
+      activeAgents.delete(repoKey);
+      await clearPersistedSession(repoKey);
 
       // Perform pipeline label transitions if epicId and pipelineStage are set
       if (exitedSession.epicId && exitedSession.pipelineStage) {
@@ -444,65 +486,131 @@ export interface AgentStatus {
   recentLog?: string;
 }
 
-export async function getAgentStatus(): Promise<AgentStatus> {
-  if (!activeSession || !activeProcess) {
-    return { running: false, session: null };
-  }
+/** Status of all agents across repos */
+export interface FleetStatus {
+  agents: AgentStatus[];
+  totalRunning: number;
+}
 
-  // Check if process is still alive
-  if (activeProcess.killed || activeProcess.exitCode !== null) {
-    activeSession = null;
-    activeProcess = null;
-    return { running: false, session: null };
-  }
-
-  // Read recent log output (last 8KB)
-  let recentLog: string | undefined;
+async function readRecentLog(logFile: string): Promise<string | undefined> {
   try {
-    const stat = await fs.stat(activeSession.logFile);
+    const stat = await fs.stat(logFile);
     const readSize = Math.min(stat.size, 8192);
     const offset = Math.max(0, stat.size - readSize);
-    const fh = await fs.open(activeSession.logFile, "r");
+    const fh = await fs.open(logFile, "r");
     const buf = Buffer.alloc(readSize);
     await fh.read(buf, 0, readSize, offset);
     await fh.close();
-    recentLog = buf.toString("utf-8");
+    return buf.toString("utf-8");
   } catch {
-    // Log file not readable yet
+    return undefined;
+  }
+}
+
+/**
+ * Get status of a specific agent by repoPath, or the first running agent
+ * (backwards-compatible for existing callers that expect a single agent).
+ */
+export async function getAgentStatus(repoPath?: string): Promise<AgentStatus> {
+  if (repoPath) {
+    const key = realpathSync(repoPath);
+    const agent = activeAgents.get(key);
+    if (!agent) return { running: false, session: null };
+    if (agent.process.killed || agent.process.exitCode !== null) {
+      activeAgents.delete(key);
+      return { running: false, session: null };
+    }
+    return {
+      running: true,
+      session: agent.session,
+      recentLog: await readRecentLog(agent.session.logFile),
+    };
   }
 
-  return {
-    running: true,
-    session: activeSession,
-    recentLog,
-  };
+  // No repoPath: return first running agent (backwards compat)
+  for (const [key, agent] of activeAgents) {
+    if (agent.process.killed || agent.process.exitCode !== null) {
+      activeAgents.delete(key);
+      continue;
+    }
+    return {
+      running: true,
+      session: agent.session,
+      recentLog: await readRecentLog(agent.session.logFile),
+    };
+  }
+  return { running: false, session: null };
+}
+
+/** Get status of all running agents */
+export async function getFleetAgentStatus(): Promise<FleetStatus> {
+  const agents: AgentStatus[] = [];
+
+  for (const [key, agent] of activeAgents) {
+    if (agent.process.killed || agent.process.exitCode !== null) {
+      activeAgents.delete(key);
+      continue;
+    }
+    agents.push({
+      running: true,
+      session: agent.session,
+      recentLog: await readRecentLog(agent.session.logFile),
+    });
+  }
+
+  return { agents, totalRunning: agents.length };
 }
 
 // ---------------------------------------------------------------------------
 // Stop
 // ---------------------------------------------------------------------------
 
-export async function stopAgent(): Promise<{ stopped: boolean; pid?: number }> {
-  if (!activeSession || !activeProcess) {
-    return { stopped: false };
+/**
+ * Stop an agent by repoPath. If no repoPath, stops the first running agent
+ * (backwards compat). Pass "all" to stop all agents.
+ */
+export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; pid?: number; stoppedCount?: number }> {
+  if (repoPath === "all") {
+    let count = 0;
+    for (const [key, agent] of activeAgents) {
+      killAgent(agent);
+      activeAgents.delete(key);
+      await clearPersistedSession(agent.session.repoPath);
+      count++;
+    }
+    return { stopped: count > 0, stoppedCount: count };
   }
 
-  const pid = activeSession.pid;
+  if (repoPath) {
+    const key = realpathSync(repoPath);
+    const agent = activeAgents.get(key);
+    if (!agent) return { stopped: false };
+    const pid = agent.session.pid;
+    killAgent(agent);
+    activeAgents.delete(key);
+    await clearPersistedSession(repoPath);
+    return { stopped: true, pid };
+  }
 
+  // No repoPath: stop first running agent (backwards compat)
+  for (const [key, agent] of activeAgents) {
+    const pid = agent.session.pid;
+    killAgent(agent);
+    activeAgents.delete(key);
+    await clearPersistedSession(agent.session.repoPath);
+    return { stopped: true, pid };
+  }
+  return { stopped: false };
+}
+
+function killAgent(agent: ActiveAgent): void {
   try {
-    // Send SIGTERM to the process group (negative PID kills the group)
-    process.kill(-pid, "SIGTERM");
+    process.kill(-agent.session.pid, "SIGTERM");
   } catch {
-    // Process may already be dead
     try {
-      activeProcess.kill("SIGTERM");
+      agent.process.kill("SIGTERM");
     } catch {
       // Already dead
     }
   }
-
-  activeSession = null;
-  activeProcess = null;
-
-  return { stopped: true, pid };
 }

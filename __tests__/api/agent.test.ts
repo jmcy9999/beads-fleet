@@ -12,10 +12,13 @@ const mockLaunchAgent = jest.fn();
 const mockGetAgentStatus = jest.fn();
 const mockStopAgent = jest.fn();
 
+const mockGetFleetAgentStatus = jest.fn();
+
 jest.mock("@/lib/agent-launcher", () => ({
   launchAgent: (...args: unknown[]) => mockLaunchAgent(...args),
-  getAgentStatus: () => mockGetAgentStatus(),
-  stopAgent: () => mockStopAgent(),
+  getAgentStatus: (...args: unknown[]) => mockGetAgentStatus(...args),
+  getFleetAgentStatus: () => mockGetFleetAgentStatus(),
+  stopAgent: (...args: unknown[]) => mockStopAgent(...args),
 }));
 
 jest.mock("@/lib/repo-config", () => ({
@@ -42,6 +45,16 @@ function makePostRequest(body: object): NextRequest {
   });
 }
 
+function makeGetRequest(params?: Record<string, string>): NextRequest {
+  const url = new URL("http://localhost:3000/api/agent");
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
+    }
+  }
+  return new NextRequest(url);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -52,7 +65,7 @@ describe("GET /api/agent", () => {
   it("returns agent status when no agent running", async () => {
     mockGetAgentStatus.mockResolvedValue({ running: false, session: null });
 
-    const response = await GET();
+    const response = await GET(makeGetRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -75,7 +88,7 @@ describe("GET /api/agent", () => {
       recentLog: "Working...",
     });
 
-    const response = await GET();
+    const response = await GET(makeGetRequest());
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -84,10 +97,24 @@ describe("GET /api/agent", () => {
     expect(body.recentLog).toBe("Working...");
   });
 
+  it("returns fleet status when fleet=true", async () => {
+    mockGetFleetAgentStatus.mockResolvedValue({
+      agents: [],
+      totalRunning: 0,
+    });
+
+    const response = await GET(makeGetRequest({ fleet: "true" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.totalRunning).toBe(0);
+    expect(body.agents).toEqual([]);
+  });
+
   it("returns 500 when getAgentStatus throws", async () => {
     mockGetAgentStatus.mockRejectedValue(new Error("disk error"));
 
-    const response = await GET();
+    const response = await GET(makeGetRequest());
     const body = await response.json();
 
     expect(response.status).toBe(500);
