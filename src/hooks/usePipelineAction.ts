@@ -1,5 +1,6 @@
 "use client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/components/ui/Toast";
 
 /**
  * Pipeline actions corresponding to buttons on the fleet board and issue
@@ -51,6 +52,7 @@ function normalizeAction(action: PipelineActionType): string {
 
 export function usePipelineAction() {
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
 
   return useMutation<PipelineActionResult, Error, PipelineActionParams>({
     mutationFn: async ({ epicId, epicTitle, action, feedback, currentLabels }) => {
@@ -71,11 +73,19 @@ export function usePipelineAction() {
       }
       return res.json() as Promise<PipelineActionResult>;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      const label = variables.action.replace(/-/g, " ");
+      const title = variables.epicTitle ?? variables.epicId;
+      addToast(`${title}: ${label} completed`, "success");
       queryClient.invalidateQueries({ queryKey: ["issues"] });
       queryClient.invalidateQueries({ queryKey: ["issue"] });
       queryClient.invalidateQueries({ queryKey: ["agent-status"] });
       queryClient.invalidateQueries({ queryKey: ["insights"] });
+    },
+    onError: (err, variables) => {
+      const label = variables.action.replace(/-/g, " ");
+      const title = variables.epicTitle ?? variables.epicId;
+      addToast(`${title}: ${label} failed \u2014 ${err.message}`, "error");
     },
   });
 }

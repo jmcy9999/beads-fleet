@@ -1,5 +1,6 @@
 "use client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/components/ui/Toast";
 
 interface IssueActionParams {
   issueId: string;
@@ -15,6 +16,7 @@ interface IssueActionResult {
 
 export function useIssueAction() {
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
 
   return useMutation<IssueActionResult, Error, IssueActionParams>({
     mutationFn: async ({ issueId, action, reason }) => {
@@ -29,11 +31,15 @@ export function useIssueAction() {
       }
       return res.json() as Promise<IssueActionResult>;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      addToast(`Issue ${variables.issueId}: ${variables.action} completed`, "success");
       queryClient.invalidateQueries({ queryKey: ["issues"] });
       queryClient.invalidateQueries({ queryKey: ["issue"] });
       queryClient.invalidateQueries({ queryKey: ["insights"] });
       queryClient.invalidateQueries({ queryKey: ["priority"] });
+    },
+    onError: (err, variables) => {
+      addToast(`Issue ${variables.issueId}: ${variables.action} failed \u2014 ${err.message}`, "error");
     },
   });
 }

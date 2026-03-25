@@ -1,6 +1,7 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AgentSession, AgentStatus } from "@/lib/agent-launcher";
+import { useToast } from "@/components/ui/Toast";
 
 interface LaunchParams {
   repoPath: string;
@@ -27,6 +28,7 @@ export function useAgentStatus() {
 
 export function useAgentLaunch() {
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
 
   return useMutation<{ launched: boolean; session: AgentSession }, Error, LaunchParams>({
     mutationFn: async (params) => {
@@ -42,14 +44,19 @@ export function useAgentLaunch() {
       return res.json();
     },
     onSuccess: () => {
+      addToast("Agent launched", "success");
       queryClient.invalidateQueries({ queryKey: ["agent-status"] });
       queryClient.invalidateQueries({ queryKey: ["issues"] });
+    },
+    onError: (err) => {
+      addToast(`Agent launch failed \u2014 ${err.message}`, "error");
     },
   });
 }
 
 export function useAgentStop() {
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
 
   return useMutation<{ stopped: boolean; pid?: number }, Error>({
     mutationFn: async () => {
@@ -65,8 +72,12 @@ export function useAgentStop() {
       return res.json();
     },
     onSuccess: () => {
+      addToast("Agent stopped", "info");
       queryClient.invalidateQueries({ queryKey: ["agent-status"] });
       queryClient.invalidateQueries({ queryKey: ["issues"] });
+    },
+    onError: (err) => {
+      addToast(`Failed to stop agent \u2014 ${err.message}`, "error");
     },
   });
 }
