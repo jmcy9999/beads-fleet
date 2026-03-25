@@ -1032,6 +1032,28 @@ export default function IssueDetailPage() {
         <h1 className="text-2xl font-bold text-white">{issue.title}</h1>
       </div>
 
+      {/* Jump links for long sections */}
+      {(researchReport?.content || planReport?.content || (isVentureEpic && venturePlanData?.plan)) && (
+        <nav className="flex items-center gap-2 text-xs">
+          <span className="text-gray-500 uppercase tracking-wider font-medium">Jump to:</span>
+          {researchReport?.content && (
+            <a href="#research" className="px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors">
+              Research Report
+            </a>
+          )}
+          {planReport?.content && (
+            <a href="#plan" className="px-2.5 py-1 rounded-full bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 transition-colors">
+              Build Plan
+            </a>
+          )}
+          {isVentureEpic && venturePlanData?.plan && (
+            <a href="#venture-plan" className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors">
+              Venture Plan
+            </a>
+          )}
+        </nav>
+      )}
+
       {/* Two-column layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* ---- Left column (main content) ---- */}
@@ -1065,17 +1087,22 @@ export default function IssueDetailPage() {
           {/* Research Report (markdown from factory repo) */}
           {researchReport?.content && (
             <section id="research" className="card p-5">
-              <h2 className="text-xs font-medium uppercase tracking-wider text-gray-500 mb-3">
-                Research Report
-              </h2>
-              <MarkdownRenderer content={researchReport.content} accentColor="blue" />
+              <details>
+                <summary className="text-xs font-medium uppercase tracking-wider text-blue-400 mb-3 cursor-pointer select-none list-none flex items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+                  <svg className="w-3 h-3 transition-transform [[open]>summary>&]:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                  Research Report
+                </summary>
+                <MarkdownRenderer content={researchReport.content} accentColor="blue" />
+              </details>
             </section>
           )}
 
           {/* Plan (markdown from .beads/plans/) */}
           {planReport?.content && (
             <section id="plan" className="card p-5">
-              <details open>
+              <details>
                 <summary className="text-xs font-medium uppercase tracking-wider text-purple-400 mb-3 cursor-pointer select-none list-none flex items-center gap-1.5 [&::-webkit-details-marker]:hidden">
                   <svg className="w-3 h-3 transition-transform [[open]>summary>&]:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -1089,12 +1116,14 @@ export default function IssueDetailPage() {
 
           {/* Venture Plan (for venture epics with venture-plan.json) */}
           {isVentureEpic && venturePlanData?.plan && (
-            <VenturePlan
-              plan={venturePlanData.plan}
-              onUpdate={(updated) => updateVenturePlan.mutate(updated)}
-              isUpdating={updateVenturePlan.isPending}
-              epicChildren={epicChildren}
-            />
+            <div id="venture-plan">
+              <VenturePlan
+                plan={venturePlanData.plan}
+                onUpdate={(updated) => updateVenturePlan.mutate(updated)}
+                isUpdating={updateVenturePlan.isPending}
+                epicChildren={epicChildren}
+              />
+            </div>
           )}
 
           {/* Dependency Tree */}

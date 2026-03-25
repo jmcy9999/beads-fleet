@@ -242,8 +242,10 @@ Or add it directly to `~/.beads-web.json`:
 
 ### Issue Detail Page
 - Full description, status, priority, owner, labels, type
+- **Jump links:** When research report, build plan, or venture plan sections exist, a mini-nav bar appears below the header with pill-shaped anchor links to jump directly to each section
 - **Notes section:** Displays research reports and extended notes from `notes` field (only when non-empty)
-- **Plan section:** Displays plan documents from `.beads/plans/<issueId>.md` with purple-themed heading. Shown for any issue with a matching plan file, gracefully hidden otherwise
+- **Research Report section:** Collapsible (`<details>`, collapsed by default) with blue-themed heading. Fetched from factory repo's `apps/<appName>/research/report.md`
+- **Plan section:** Collapsible (`<details>`, collapsed by default) with purple-themed heading. Displays plan documents from `.beads/plans/<issueId>.md`. Shown for any issue with a matching plan file, gracefully hidden otherwise
 - **Workflow action buttons:** Start Work (open), Close with reason (in_progress/blocked/deferred), Reopen (closed), Comment (adds comment to issue)
 - **Factory research workflow:** When an issue has the `research` label, additional buttons appear: "Approve & Send to Development" (closes with approval reason) and "Request More Research" (adds a comment with feedback text). Available on both the issue detail page and kanban slide-in panel.
 - **Planning phase buttons:** At Research Complete, the issue detail page shows the same three-state button logic as FleetCard based on `plan:pending`/`plan:approved` labels: Generate Plan / More Research / Deprioritise (no plan), Approve Plan / Revise Plan / Deprioritise (plan:pending), Begin Construction / Revise Plan / Deprioritise (plan:approved). At Candidates, "Skip to Plan" is available. At Prepare for Launch, "Revise Plan" sends the app back to planning with feedback.
