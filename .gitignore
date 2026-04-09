@@ -12,3 +12,8 @@ out/
 src/app/api/monetization/
 src/app/monetization/
 src/hooks/useMonetization.ts
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
