@@ -10,6 +10,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 
+import { readIssuesFromDolt } from "./dolt-reader";
 import { readIssuesFromDB } from "./sqlite-reader";
 import type {
   BeadsIssue,
@@ -29,7 +30,11 @@ import type {
 export async function readIssuesFromJSONL(
   projectPath: string,
 ): Promise<BeadsIssue[]> {
-  // Try SQLite first (source of truth)
+  // Try Dolt first (live, no sync lag)
+  const doltIssues = await readIssuesFromDolt(projectPath);
+  if (doltIssues !== null) return doltIssues;
+
+  // Try SQLite next
   const dbIssues = readIssuesFromDB(projectPath);
   if (dbIssues !== null) return dbIssues;
 
