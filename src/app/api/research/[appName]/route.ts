@@ -11,8 +11,8 @@ const APP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 /**
  * GET /api/research/[appName]
  *
- * Reads a markdown research report from the factory repo at
- * apps/<appName>/research/report.md. Searches all configured repos
+ * Reads a markdown research report from the shipyard repo at
+ * products/<appName>/research/report.md. Searches all configured repos
  * for the file, returns the first match.
  *
  * Returns: { content: string, repoPath: string } on success
@@ -36,7 +36,7 @@ export async function GET(
     const repoPaths = await getAllRepoPaths();
 
     for (const repoPath of repoPaths) {
-      const reportPath = path.join(repoPath, "apps", appName, "research", "report.md");
+      const reportPath = path.join(repoPath, "products", appName, "research", "report.md");
       try {
         const content = await fs.readFile(reportPath, "utf-8");
         return NextResponse.json({ content, repoPath });

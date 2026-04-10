@@ -12,8 +12,8 @@ const APP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 /**
  * GET /api/venture-plan/[appName]
  *
- * Reads venture-plan.json from the factory repo at
- * apps/<appName>/venture-plan.json. Searches all configured repos
+ * Reads venture-plan.json from the shipyard repo at
+ * products/<appName>/venture-plan.json. Searches all configured repos
  * for the file, returns the first match.
  */
 export async function GET(
@@ -33,7 +33,7 @@ export async function GET(
     const repoPaths = await getAllRepoPaths();
 
     for (const repoPath of repoPaths) {
-      const planPath = path.join(repoPath, "apps", appName, "venture-plan.json");
+      const planPath = path.join(repoPath, "products", appName, "venture-plan.json");
       try {
         const content = await fs.readFile(planPath, "utf-8");
         const plan = JSON.parse(content) as VenturePlan;
@@ -90,7 +90,7 @@ export async function PUT(
 
     // Find existing file to update
     for (const repoPath of repoPaths) {
-      const planPath = path.join(repoPath, "apps", appName, "venture-plan.json");
+      const planPath = path.join(repoPath, "products", appName, "venture-plan.json");
       try {
         await fs.access(planPath);
         // File exists — write atomically via temp file

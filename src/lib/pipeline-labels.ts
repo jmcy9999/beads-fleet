@@ -2,7 +2,7 @@
 // Beads Fleet -- Pipeline Label Management
 // =============================================================================
 //
-// Manages pipeline labels on factory epics via the `bd` CLI.
+// Manages pipeline labels on fleet-core epics via the `bd` CLI.
 // Used by the agent launcher (on exit transitions) and the fleet action API
 // (on button clicks).
 // =============================================================================
@@ -16,11 +16,11 @@ const execFile = promisify(execFileCb);
 const BD_TIMEOUT = 15_000;
 
 /**
- * Resolve the repo path for a given issue. If factoryPath is provided,
+ * Resolve the repo path for a given issue. If epicRepoPath is provided,
  * use it directly. Otherwise, search all configured repos.
  */
-async function resolveRepoPath(issueId: string, factoryPath?: string): Promise<string> {
-  if (factoryPath) return factoryPath;
+async function resolveRepoPath(issueId: string, epicRepoPath?: string): Promise<string> {
+  if (epicRepoPath) return epicRepoPath;
 
   const resolved = await findRepoForIssue(issueId);
   if (!resolved) {
@@ -35,11 +35,11 @@ async function resolveRepoPath(issueId: string, factoryPath?: string): Promise<s
 export async function addLabelsToEpic(
   issueId: string,
   labels: string[],
-  factoryPath?: string,
+  epicRepoPath?: string,
 ): Promise<void> {
   if (labels.length === 0) return;
 
-  const repoPath = await resolveRepoPath(issueId, factoryPath);
+  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
 
   for (const label of labels) {
     try {
@@ -64,11 +64,11 @@ export async function addLabelsToEpic(
 export async function removeLabelsFromEpic(
   issueId: string,
   labels: string[],
-  factoryPath?: string,
+  epicRepoPath?: string,
 ): Promise<void> {
   if (labels.length === 0) return;
 
-  const repoPath = await resolveRepoPath(issueId, factoryPath);
+  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
 
   for (const label of labels) {
     try {
@@ -94,10 +94,10 @@ export async function removeLabelsFromEpic(
 export async function removeAllPipelineLabels(
   issueId: string,
   currentLabels: string[],
-  factoryPath?: string,
+  epicRepoPath?: string,
 ): Promise<void> {
   const pipelineLabels = currentLabels.filter((l) => l.startsWith("pipeline:"));
-  await removeLabelsFromEpic(issueId, pipelineLabels, factoryPath);
+  await removeLabelsFromEpic(issueId, pipelineLabels, epicRepoPath);
 }
 
 /**
@@ -106,9 +106,9 @@ export async function removeAllPipelineLabels(
 export async function closeEpic(
   issueId: string,
   reason: string,
-  factoryPath?: string,
+  epicRepoPath?: string,
 ): Promise<void> {
-  const repoPath = await resolveRepoPath(issueId, factoryPath);
+  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
 
   await execFile("bd", ["close", issueId, "--reason", reason], {
     cwd: repoPath,
@@ -123,9 +123,9 @@ export async function closeEpic(
 export async function updateEpicStatus(
   issueId: string,
   status: string,
-  factoryPath?: string,
+  epicRepoPath?: string,
 ): Promise<void> {
-  const repoPath = await resolveRepoPath(issueId, factoryPath);
+  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
 
   await execFile("bd", ["update", issueId, `--status=${status}`], {
     cwd: repoPath,

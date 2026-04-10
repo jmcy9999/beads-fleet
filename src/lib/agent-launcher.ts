@@ -173,7 +173,7 @@ const EXIT_LABELS: Record<string, string[]> = {
 // Chain actions -- when an agent exits, optionally trigger the next step
 // ---------------------------------------------------------------------------
 
-const FACTORY_REPO_PATH = "/Users/janemckay/dev/claude_projects/cycle-apps-factory";
+const FLEET_CORE_PATH = "/Users/janemckay/dev/fleet/fleet-core";
 
 /**
  * Returns true if the chain action handled the stage transition (so NEXT_STAGE
@@ -267,7 +267,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       if (hasBugs) {
         // Check round count -- max 3 rounds
         const roundResult = execSync(
-          `cd ${FACTORY_REPO_PATH} && bd show ${session.epicId} 2>/dev/null | grep -o "qa:round-[0-9]*" | sort -t- -k2 -n | tail -1 || echo ""`,
+          `cd ${FLEET_CORE_PATH} && bd show ${session.epicId} 2>/dev/null | grep -o "qa:round-[0-9]*" | sort -t- -k2 -n | tail -1 || echo ""`,
           { encoding: "utf-8" },
         ).trim();
 

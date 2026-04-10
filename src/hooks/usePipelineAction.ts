@@ -24,7 +24,10 @@ export type PipelineActionType =
   | "skip-to-plan"
   | "revise-plan-from-launch"
   | "send-for-qa"
-  | "qa-fix-and-retest";
+  | "qa-fix-and-retest"
+  | "mark-ready-to-deploy"
+  | "mark-venture-live"
+  | "mark-venture-complete";
 
 export interface PipelineActionParams {
   epicId: string;

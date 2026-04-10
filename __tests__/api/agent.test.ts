@@ -22,11 +22,11 @@ jest.mock("@/lib/agent-launcher", () => ({
 }));
 
 jest.mock("@/lib/repo-config", () => ({
-  getAllRepoPaths: jest.fn().mockResolvedValue(["/tmp/test-project", "/tmp/factory"]),
+  getAllRepoPaths: jest.fn().mockResolvedValue(["/tmp/test-project", "/tmp/fleet-core"]),
   getRepos: jest.fn().mockResolvedValue({
     repos: [
       { name: "test-project", path: "/tmp/test-project" },
-      { name: "factory", path: "/tmp/factory" },
+      { name: "fleet-core", path: "/tmp/fleet-core" },
     ],
   }),
 }));
@@ -75,8 +75,8 @@ describe("GET /api/agent", () => {
   it("returns agent status with session when running", async () => {
     const session = {
       pid: 12345,
-      repoPath: "/tmp/factory",
-      repoName: "factory",
+      repoPath: "/tmp/fleet-core",
+      repoName: "fleet-core",
       prompt: "Research LensCycle",
       model: "sonnet",
       startedAt: "2026-02-15T10:00:00Z",
@@ -128,8 +128,8 @@ describe("POST /api/agent — launch", () => {
   it("launches agent with valid params", async () => {
     const session = {
       pid: 99999,
-      repoPath: "/tmp/factory",
-      repoName: "factory",
+      repoPath: "/tmp/fleet-core",
+      repoName: "fleet-core",
       prompt: "Research app",
       model: "sonnet",
       startedAt: "2026-02-15T10:00:00Z",
@@ -140,7 +140,7 @@ describe("POST /api/agent — launch", () => {
     const response = await POST(
       makePostRequest({
         action: "launch",
-        repoPath: "/tmp/factory",
+        repoPath: "/tmp/fleet-core",
         prompt: "Research app",
         model: "sonnet",
       }),
@@ -152,8 +152,8 @@ describe("POST /api/agent — launch", () => {
     expect(body.session.pid).toBe(99999);
     expect(mockLaunchAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        repoPath: "/tmp/factory",
-        repoName: "factory",
+        repoPath: "/tmp/fleet-core",
+        repoName: "fleet-core",
         prompt: "Research app",
         model: "sonnet",
       }),
@@ -172,7 +172,7 @@ describe("POST /api/agent — launch", () => {
 
   it("returns 400 when prompt is missing", async () => {
     const response = await POST(
-      makePostRequest({ action: "launch", repoPath: "/tmp/factory" }),
+      makePostRequest({ action: "launch", repoPath: "/tmp/fleet-core" }),
     );
     const body = await response.json();
 
@@ -202,7 +202,7 @@ describe("POST /api/agent — launch", () => {
     const response = await POST(
       makePostRequest({
         action: "launch",
-        repoPath: "/tmp/factory",
+        repoPath: "/tmp/fleet-core",
         prompt: "Research app",
       }),
     );

@@ -59,9 +59,9 @@ export async function POST(request: NextRequest) {
       // If we have an epicId, remove the agent:running label
       const { epicId, repoPath: stopRepoPath } = body;
       if (epicId && typeof epicId === "string") {
-        const factoryPath = typeof stopRepoPath === "string" ? stopRepoPath : undefined;
+        const epicRepoPath = typeof stopRepoPath === "string" ? stopRepoPath : undefined;
         try {
-          await removeLabelsFromEpic(epicId, ["agent:running"], factoryPath);
+          await removeLabelsFromEpic(epicId, ["agent:running"], epicRepoPath);
           invalidateCache();
         } catch {
           // Label removal failure should not block the stop
@@ -103,13 +103,13 @@ export async function POST(request: NextRequest) {
     // If epicId and pipelineStage are provided, manage labels on the epic
     if (epicId && typeof epicId === "string" && pipelineStage && typeof pipelineStage === "string") {
       try {
-        // Find the factory repo for label management (the repo containing the epic)
-        const factoryRepo = store.repos.find((r) => r.name.includes("factory"));
-        const factoryPath = factoryRepo?.path;
+        // Find the fleet-core repo for label management (the repo containing the epic)
+        const fleetCoreRepo = store.repos.find((r) => r.name.includes("fleet-core") || r.name.includes("factory"));
+        const fleetCorePath = fleetCoreRepo?.path;
 
         // Add pipeline stage label and agent:running
         const labelsToAdd = [`pipeline:${pipelineStage}`, "agent:running"];
-        await addLabelsToEpic(epicId, labelsToAdd, factoryPath);
+        await addLabelsToEpic(epicId, labelsToAdd, fleetCorePath);
         invalidateCache();
       } catch (err) {
         // Log but don't block agent launch

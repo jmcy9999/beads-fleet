@@ -38,7 +38,7 @@ function makeRequest(appName: string): [NextRequest, { params: { appName: string
   return [request, { params: { appName } }];
 }
 
-const TEST_REPOS = ["/home/user/factory-alpha", "/home/user/factory-beta"];
+const TEST_REPOS = ["/home/user/shipyard-alpha", "/home/user/shipyard-beta"];
 
 const SAMPLE_REPORT = `# Research Report\n\nThis is a sample research report for testing.`;
 
@@ -124,7 +124,7 @@ describe("GET /api/research/[appName]", () => {
     // Should stop after first successful read
     expect(mockReadFile).toHaveBeenCalledTimes(1);
     expect(mockReadFile).toHaveBeenCalledWith(
-      expect.stringContaining("apps/PatchCycle/research/report.md"),
+      expect.stringContaining("products/PatchCycle/research/report.md"),
       "utf-8",
     );
   });
@@ -150,12 +150,12 @@ describe("GET /api/research/[appName]", () => {
     // Verify paths searched in order
     expect(mockReadFile).toHaveBeenNthCalledWith(
       1,
-      expect.stringContaining("factory-alpha/apps/LensCycle/research/report.md"),
+      expect.stringContaining("shipyard-alpha/products/LensCycle/research/report.md"),
       "utf-8",
     );
     expect(mockReadFile).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining("factory-beta/apps/LensCycle/research/report.md"),
+      expect.stringContaining("shipyard-beta/products/LensCycle/research/report.md"),
       "utf-8",
     );
   });

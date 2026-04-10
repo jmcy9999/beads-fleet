@@ -19,7 +19,7 @@ See `ARCHITECTURE.md` for full system documentation: pages, API routes, data flo
 
 ## Dev Server Rules
 
-1. **ALWAYS start from the beads_web directory.** Run `cd /Users/janemckay/dev/claude_projects/beads_web` before `npx next dev`. Starting from another directory (e.g., cycle-apps-factory) picks up a global Next.js version instead of the project's Next.js 14, and fails with "Couldn't find any `pages` or `app` directory".
+1. **ALWAYS start from the beads_web directory.** Run `cd /Users/janemckay/dev/claude_projects/beads_web` before `npx next dev`. Starting from another directory (e.g., fleet-core) picks up a global Next.js version instead of the project's Next.js 14, and fails with "Couldn't find any `pages` or `app` directory".
 2. **NEVER run `npx next build` while the dev server is running.** This corrupts `.next/server/webpack-runtime.js` module references, causing "Cannot find module './682.js'" or similar errors on every page load.
 3. **If webpack module errors appear:** Kill the server (`lsof -ti :3000 | xargs kill -9`) → delete cache (`rm -rf .next`) → restart from beads_web directory (`npx next dev --port 3000`).
 4. **Port conflicts:** If port 3000 is in use, kill the stale process first: `lsof -ti :3000 | xargs kill -9`.

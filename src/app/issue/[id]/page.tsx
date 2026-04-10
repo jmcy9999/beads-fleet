@@ -1084,7 +1084,7 @@ export default function IssueDetailPage() {
             </section>
           )}
 
-          {/* Research Report (markdown from factory repo) */}
+          {/* Research Report (markdown from shipyard repo) */}
           {researchReport?.content && (
             <section id="research" className="card p-5">
               <details>

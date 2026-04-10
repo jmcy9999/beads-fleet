@@ -13,7 +13,7 @@ export const runtime = "nodejs";
 /**
  * GET /api/signals — Polling endpoint for detecting issue state changes.
  *
- * The factory agent polls this to detect when research tasks close, submissions
+ * The fleet agent polls this to detect when research tasks close, submissions
  * get approved, etc. Returns issues that changed since a given timestamp.
  *
  * Query params:

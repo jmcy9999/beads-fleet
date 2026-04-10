@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import Anthropic from "@anthropic-ai/sdk";
+import { startActiveObservation, propagateAttributes } from "@langfuse/tracing";
 import { getPlan, getAllProjectsPlan, invalidateCache } from "@/lib/bv-client";
 import { getActiveProjectPath, getAllRepoPaths, getRepos, ALL_PROJECTS_SENTINEL } from "@/lib/repo-config";
 import { parseQuickNote } from "@/lib/parse-quick-note";
@@ -30,14 +31,26 @@ async function cleanupTitleAndEstimate(
   if (!process.env.ANTHROPIC_API_KEY) return { title: raw, estimatedMinutes: null };
 
   try {
-    const client = new Anthropic();
-    const typeHint = issueType ? ` (type: ${issueType})` : "";
-    const priorityHint = priority !== undefined ? ` (priority: P${priority})` : "";
+    return await startActiveObservation("cleanup-title-and-estimate", async (span) => {
+      span.update({
+        input: { raw, issueType, priority },
+      });
 
-    const msg = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 200,
-      system: `You process issue tracker titles. Do two things:
+      const client = new Anthropic();
+      const typeHint = issueType ? ` (type: ${issueType})` : "";
+      const priorityHint = priority !== undefined ? ` (priority: P${priority})` : "";
+
+      const msg = await propagateAttributes(
+        {
+          traceName: "issue-title-cleanup",
+          tags: ["quick-create", "haiku"],
+          metadata: { issueType, priority },
+        },
+        () =>
+          client.messages.create({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 200,
+            system: `You process issue tracker titles. Do two things:
 1. Clean the title: fix spelling/grammar, make it concise and professional. Keep as a short title (no full stop). Preserve technical terms.
 2. Estimate effort in minutes based on the title, type, and priority. Use these ranges as guidance:
    - bug: 15-120 min (typo/config: 15-30, logic fix: 30-90, complex: 90-120)
@@ -47,28 +60,33 @@ async function cleanupTitleAndEstimate(
    - chore: 15-120 min
 
 Return ONLY valid JSON: {"title": "cleaned title", "estimated_minutes": N}`,
-      messages: [
-        {
-          role: "user",
-          content: `${raw}${typeHint}${priorityHint}`,
-        },
-      ],
+            messages: [
+              {
+                role: "user",
+                content: `${raw}${typeHint}${priorityHint}`,
+              },
+            ],
+          })
+      );
+
+      const text =
+        msg.content[0].type === "text" ? msg.content[0].text.trim() : "";
+
+      let result: TitleAndEstimate;
+      try {
+        const parsed = JSON.parse(text);
+        const title = typeof parsed.title === "string" && parsed.title ? parsed.title : raw;
+        const minutes = typeof parsed.estimated_minutes === "number" && parsed.estimated_minutes > 0
+          ? Math.round(parsed.estimated_minutes)
+          : null;
+        result = { title, estimatedMinutes: minutes };
+      } catch {
+        result = { title: text || raw, estimatedMinutes: null };
+      }
+
+      span.update({ output: result });
+      return result;
     });
-
-    const text =
-      msg.content[0].type === "text" ? msg.content[0].text.trim() : "";
-
-    try {
-      const parsed = JSON.parse(text);
-      const title = typeof parsed.title === "string" && parsed.title ? parsed.title : raw;
-      const minutes = typeof parsed.estimated_minutes === "number" && parsed.estimated_minutes > 0
-        ? Math.round(parsed.estimated_minutes)
-        : null;
-      return { title, estimatedMinutes: minutes };
-    } catch {
-      // If JSON parsing fails, treat the whole response as a cleaned title
-      return { title: text || raw, estimatedMinutes: null };
-    }
   } catch (err) {
     console.warn("[QuickCreate] Title cleanup + estimate failed, using raw:", err);
     return { title: raw, estimatedMinutes: null };
@@ -177,7 +195,7 @@ export async function POST(request: NextRequest) {
 
     invalidateCache();
 
-    // Try to extract the issue ID from bd output (e.g. "Created issue: cycle-apps-factory-abc")
+    // Try to extract the issue ID from bd output (e.g. "Created issue: fleet-core-abc")
     const idMatch = stdout.match(/([a-zA-Z0-9_-]+-[a-zA-Z0-9]+)/);
     const issueId = idMatch ? idMatch[1] : undefined;
 

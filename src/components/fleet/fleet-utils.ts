@@ -1,6 +1,6 @@
 import type { PlanIssue, IssueTokenSummary } from "@/lib/types";
 
-/** Pipeline stages for the factory fleet view. */
+/** Pipeline stages for the fleet board view. */
 export type FleetStage =
   | "idea"
   | "research"

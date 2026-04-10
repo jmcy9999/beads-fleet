@@ -43,8 +43,8 @@ jest.mock("@/lib/repo-config", () => ({
   getRepos: jest.fn().mockResolvedValue({
     repos: [
       {
-        name: "cycle-apps-factory",
-        path: "/Users/janemckay/dev/claude_projects/cycle-apps-factory",
+        name: "fleet-core",
+        path: "/Users/janemckay/dev/fleet/fleet-core",
       },
     ],
   }),
