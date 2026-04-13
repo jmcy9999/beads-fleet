@@ -198,15 +198,24 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-[10px] text-gray-400">{epic.id}</span>
-          {app.shipType === "venture" ? (
-            <span className="inline-flex items-center rounded-full bg-teal-500/20 text-teal-300 px-1.5 py-0 text-[9px] font-medium leading-tight">
-              Venture
-            </span>
-          ) : (
-            <span className="inline-flex items-center rounded-full bg-blue-500/20 text-blue-300 px-1.5 py-0 text-[9px] font-medium leading-tight">
-              iOS
-            </span>
-          )}
+          {(() => {
+            const BADGE: Record<string, { label: string; bg: string; text: string }> = {
+              "ios-app":          { label: "iOS",      bg: "bg-blue-500/20",   text: "text-blue-300" },
+              "macos-app":        { label: "macOS",    bg: "bg-blue-500/20",   text: "text-blue-300" },
+              "web-app":          { label: "Web",      bg: "bg-green-500/20",  text: "text-green-300" },
+              "wordpress-plugin": { label: "WP",       bg: "bg-indigo-500/20", text: "text-indigo-300" },
+              "python-tool":      { label: "Python",   bg: "bg-yellow-500/20", text: "text-yellow-300" },
+              "game":             { label: "Game",     bg: "bg-pink-500/20",   text: "text-pink-300" },
+              "internal":         { label: "Internal", bg: "bg-gray-500/20",   text: "text-gray-300" },
+              "venture":          { label: "Venture",  bg: "bg-teal-500/20",   text: "text-teal-300" },
+            };
+            const b = BADGE[app.shipType] ?? BADGE["ios-app"];
+            return (
+              <span className={`inline-flex items-center rounded-full ${b.bg} ${b.text} px-1.5 py-0 text-[9px] font-medium leading-tight`}>
+                {b.label}
+              </span>
+            );
+          })()}
           {formatRelativeDate(epic.created_at) && (
             <span className="text-[10px] text-gray-500" title={epic.created_at}>
               {formatRelativeDate(epic.created_at)}

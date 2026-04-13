@@ -188,9 +188,14 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
       <div className="flex items-center gap-2 mb-2 justify-end">
         {/* Ship-type filter toggle */}
         <div className="flex items-center rounded-md border border-border-default overflow-hidden">
-          {(["all", "ios-app", "venture"] as const).map((type) => {
+          {(["all", "ios-app", "macos-app", "web-app", "wordpress-plugin", "python-tool", "game", "internal", "venture"] as const).map((type) => {
             const active = shipTypeFilter === type;
-            const label = type === "all" ? "All" : type === "ios-app" ? "iOS" : "Venture";
+            const LABELS: Record<string, string> = {
+              all: "All", "ios-app": "iOS", "macos-app": "macOS", "web-app": "Web",
+              "wordpress-plugin": "WP", "python-tool": "Python", game: "Game",
+              internal: "Internal", venture: "Venture",
+            };
+            const label = LABELS[type] ?? type;
             return (
               <button
                 key={type}
