@@ -6,7 +6,7 @@ import {
   closeEpic,
   updateEpicStatus,
 } from "@/lib/pipeline-labels";
-import { launchAgent, stopAgent } from "@/lib/agent-launcher";
+import { launchAgent, stopAgent, getWaveStatus } from "@/lib/agent-launcher";
 import { getRepos } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import { extractAppName } from "@/lib/extract-app-name";
@@ -595,26 +595,21 @@ export async function POST(request: NextRequest) {
           ? `platforms/${shipType.replace("-app", "")}/qa`
           : "qa";
 
-        // Determine total wave count so QA can assign wave labels to filed bugs
-        // (factory-core-cur.1.18)
-        let totalWaves = 0;
+        // Get wave count so QA agent can assign wave:N+1 labels to bugs (factory-core-cur.1.18)
+        let totalWavesStr = '';
         try {
-          const { execSync } = await import("child_process");
-          const childrenOut = execSync(
-            `cd ${repoPath} && bd list --status=all --parent=${epicId} 2>/dev/null || echo ""`,
-            { encoding: "utf-8", timeout: 10000 },
-          );
-          const waveNums = [...childrenOut.matchAll(/wave:(\d+)/g)].map(m => parseInt(m[1], 10));
-          if (waveNums.length > 0) totalWaves = Math.max(...waveNums);
+          const waveStatus = await getWaveStatus(epicId as string, repoPath);
+          if (waveStatus.hasWaves) {
+            totalWavesStr = ` Total waves: ${waveStatus.totalWaves}.`;
+          }
         } catch {
-          // No wave info available — QA will check independently
+          // Wave count is optional; QA agent will fall back to checking labels
         }
-        const waveNote = totalWaves > 0 ? ` Total waves: ${totalWaves}.` : "";
 
         const session = await launchAgent({
           repoPath: repoPath,
           repoName: repoName,
-          prompt: `Run QA for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. QA round: ${currentRound}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Shipyard: ${fleetCorePath}.${waveNote}`,
+          prompt: `Run QA for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. QA round: ${currentRound}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Shipyard: ${fleetCorePath}.${totalWavesStr}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Glob,Grep,Task",

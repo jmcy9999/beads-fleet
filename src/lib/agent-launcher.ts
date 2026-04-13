@@ -195,7 +195,7 @@ interface WaveStatus {
  *   products this is fleet-core; for other ship types it's the product repo.
  *   (factory-core-cur.1.11: was hardcoded to FLEET_CORE_PATH)
  */
-async function getWaveStatus(epicId: string, repoPath: string): Promise<WaveStatus> {
+export async function getWaveStatus(epicId: string, repoPath: string): Promise<WaveStatus> {
   const { execSync } = await import("child_process");
 
   // Check if epic has wave-checkpoint:required label
