@@ -197,6 +197,7 @@ export async function POST(request: NextRequest) {
           epicId: epicId,
           epicLabels: labels,
           pipelineStage: "development",
+          agentName: "builder",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
@@ -308,6 +309,7 @@ export async function POST(request: NextRequest) {
           epicId: epicId,
           epicLabels: labels,
           pipelineStage: "development",
+          agentName: "builder",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
@@ -441,6 +443,7 @@ export async function POST(request: NextRequest) {
           epicId: epicId,
           epicLabels: labels,
           pipelineStage: "development",
+          agentName: "builder",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
@@ -628,6 +631,7 @@ export async function POST(request: NextRequest) {
           epicId: epicId,
           epicLabels: labels,
           pipelineStage: "qa-fixes",
+          agentName: "builder",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
