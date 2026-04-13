@@ -802,7 +802,10 @@ export async function getDiff(since: string, projectPath?: string): Promise<Robo
  * Adds a `project:<repoName>` label to each issue for filtering.
  */
 export async function getAllProjectsPlan(repoPaths: string[]): Promise<RobotPlan> {
-  const plans = await Promise.all(repoPaths.map((p) => getPlan(p)));
+  const results = await Promise.allSettled(repoPaths.map((p) => getPlan(p)));
+  const plans = results
+    .filter((r): r is PromiseFulfilledResult<RobotPlan> => r.status === "fulfilled")
+    .map((r) => r.value);
 
   const allIssues: PlanIssue[] = [];
   const allTracks: PlanTrack[] = [];
