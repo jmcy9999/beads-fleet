@@ -326,7 +326,9 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
 // Chain actions -- when an agent exits, optionally trigger the next step
 // ---------------------------------------------------------------------------
 
-const FLEET_CORE_PATH = "/Users/janemckay/dev/fleet/fleet-core";
+// Resolve fleet-core path: env var > hardcoded fallback
+// Externalised so the path isn't brittle if fleet-core moves.
+const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
 
 /**
  * Returns true if the chain action handled the stage transition (so NEXT_STAGE

@@ -23,7 +23,8 @@ export interface RepoPathResult {
   planPath?: string;
 }
 
-const FLEET_CORE_PATH = "/Users/janemckay/dev/fleet/fleet-core";
+// Resolve fleet-core path: env var > hardcoded fallback
+const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
 const PRODUCT_REPO_BASE = "/Users/janemckay/dev/claude_projects";
 
 /**
