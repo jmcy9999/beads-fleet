@@ -33,13 +33,29 @@ export const FLEET_STAGES: FleetStage[] = [
 ];
 
 /** Ship types supported by the shipyard. */
-export type ShipType = "ios-app" | "venture";
+export type ShipType =
+  | "ios-app"
+  | "macos-app"
+  | "web-app"
+  | "wordpress-plugin"
+  | "python-tool"
+  | "game"
+  | "internal"
+  | "venture";
 
-/** Detect ship type from epic labels. Defaults to "ios-app" for backward compat. */
+const VALID_SHIP_TYPES: Set<string> = new Set([
+  "ios-app", "macos-app", "web-app", "wordpress-plugin",
+  "python-tool", "game", "internal", "venture",
+]);
+
+/** Detect ship type from epic labels. Defaults to "ios-app" if no valid ship-type label. */
 export function getShipType(epic: PlanIssue): ShipType {
   const labels = epic.labels ?? [];
   const shipLabel = labels.find((l) => l.startsWith("ship-type:"));
-  if (shipLabel === "ship-type:venture") return "venture";
+  if (shipLabel) {
+    const type = shipLabel.replace("ship-type:", "");
+    if (VALID_SHIP_TYPES.has(type)) return type as ShipType;
+  }
   return "ios-app";
 }
 
