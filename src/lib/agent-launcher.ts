@@ -443,6 +443,9 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
       HOME: process.env.HOME || "/Users/janemckay",
       // Must unset CLAUDECODE to avoid "nested session" error
       CLAUDECODE: undefined,
+      // Must unset ANTHROPIC_API_KEY so agents use the subscription, not the API
+      // (beads_web loads this for Haiku title cleanup, but agents should not inherit it)
+      ANTHROPIC_API_KEY: undefined,
       NO_COLOR: "1",
     },
   });
