@@ -269,6 +269,7 @@ export async function POST(request: NextRequest) {
           epicId: epicId,
           epicLabels: labels,
           pipelineStage: "submission-prep",
+          agentName: "builder",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
@@ -337,6 +338,7 @@ export async function POST(request: NextRequest) {
           epicId: epicId,
           epicLabels: labels,
           pipelineStage: "kit-management",
+          agentName: "kit-analyzer",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
