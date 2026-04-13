@@ -591,7 +591,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       const { addLabelsToEpic: addQALabels, removeLabelsFromEpic: removeQALabels } = await import("./pipeline-labels");
       await removeQALabels(session.epicId!, ["pipeline:qa"]);
       await addQALabels(session.epicId!, ["pipeline:submission-prep", "qa:needs-review"]);
-      console.log(\`QA passed for \${session.epicId} — advanced to submission-prep\`);
+      console.log(`QA passed for ${session.epicId} — advanced to submission-prep`);
       return true; // Handled — don't fall through to NEXT_STAGE
     } catch (err) {
       console.error("Failed to handle QA chain:", err);

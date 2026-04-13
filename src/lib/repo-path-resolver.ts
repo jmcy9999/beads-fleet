@@ -76,11 +76,17 @@ export function resolveRepoPath(
 
   // Internal: parse title to determine target repo
   if (shipType === "internal") {
+    // If the epic lives in fleet-core beads, the repo is fleet-core
+    // (even if the title mentions beads_web as part of the work)
+    const isFleetCoreEpic = epicId.startsWith("factory-core");
+
     const lowerTitle = epicTitle.toLowerCase();
     const isBeadsWeb =
-      lowerTitle.includes("beads_web") ||
-      lowerTitle.includes("dashboard") ||
-      lowerTitle.includes("fleet board");
+      !isFleetCoreEpic && (
+        lowerTitle.includes("beads_web") ||
+        lowerTitle.includes("dashboard") ||
+        lowerTitle.includes("fleet board")
+      );
 
     if (isBeadsWeb) {
       const topic = sanitizeTopicName(epicTitle);

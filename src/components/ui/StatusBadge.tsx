@@ -6,7 +6,7 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status, size = "sm" }: StatusBadgeProps) {
-  const config = STATUS_CONFIG[status];
+  const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.open;
   const sizeClasses =
     size === "sm" ? "px-2 py-0.5 text-xs" : "px-3 py-1 text-sm";
 
