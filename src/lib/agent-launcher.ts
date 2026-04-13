@@ -173,6 +173,92 @@ const EXIT_LABELS: Record<string, string[]> = {
 };
 
 // ---------------------------------------------------------------------------
+// Wave status detection
+// ---------------------------------------------------------------------------
+
+interface WaveStatus {
+  hasWaves: boolean;
+  waves: Map<number, { total: number; closed: number }>;
+  currentWave: number;
+  totalWaves: number;
+  currentWaveComplete: boolean;
+  allWavesComplete: boolean;
+  hasCheckpointRequired: boolean;
+}
+
+/**
+ * Query the epic's children to determine wave completion status.
+ * Returns wave info or { hasWaves: false } if no wave labels exist.
+ */
+async function getWaveStatus(epicId: string, fleetCorePath: string): Promise<WaveStatus> {
+  const { execSync } = await import("child_process");
+
+  // Check if epic has wave-checkpoint:required label
+  let hasCheckpointRequired = false;
+  try {
+    const epicInfo = execSync(
+      `cd ${fleetCorePath} && bd show ${epicId} 2>/dev/null || echo ""`,
+      { encoding: "utf-8", timeout: 10000 },
+    );
+    hasCheckpointRequired = epicInfo.includes("wave-checkpoint:required");
+  } catch {
+    // ignore
+  }
+
+  // Get all children and their statuses/labels
+  let childrenOutput = "";
+  try {
+    childrenOutput = execSync(
+      `cd ${fleetCorePath} && bd list --status=all --parent=${epicId} 2>/dev/null || echo ""`,
+      { encoding: "utf-8", timeout: 10000 },
+    );
+  } catch {
+    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
+  }
+
+  // Parse wave labels from children output
+  // Lines look like: ├── ○ factory-core-cur.1.1 ● P1 [wave:1] Title...
+  // Or from labels in bd show output
+  const waveMap = new Map<number, { total: number; closed: number }>();
+  const lines = childrenOutput.split("\n");
+
+  for (const line of lines) {
+    const waveMatch = line.match(/wave:(\d+)/);
+    if (!waveMatch) continue;
+    const waveNum = parseInt(waveMatch[1], 10);
+    if (isNaN(waveNum)) continue;
+
+    const entry = waveMap.get(waveNum) ?? { total: 0, closed: 0 };
+    entry.total += 1;
+    // Check if bead is closed (✓ symbol in bd list output)
+    if (line.includes("✓")) {
+      entry.closed += 1;
+    }
+    waveMap.set(waveNum, entry);
+  }
+
+  if (waveMap.size === 0) {
+    return { hasWaves: false, waves: waveMap, currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
+  }
+
+  const totalWaves = Math.max(...waveMap.keys());
+  let currentWave = totalWaves;
+  for (let w = 1; w <= totalWaves; w++) {
+    const entry = waveMap.get(w);
+    if (entry && entry.closed < entry.total) {
+      currentWave = w;
+      break;
+    }
+  }
+
+  const currentEntry = waveMap.get(currentWave) ?? { total: 0, closed: 0 };
+  const currentWaveComplete = currentEntry.closed >= currentEntry.total;
+  const allWavesComplete = Array.from(waveMap.values()).every((e) => e.closed >= e.total);
+
+  return { hasWaves: true, waves: waveMap, currentWave, totalWaves, currentWaveComplete, allWavesComplete, hasCheckpointRequired };
+}
+
+// ---------------------------------------------------------------------------
 // Chain actions -- when an agent exits, optionally trigger the next step
 // ---------------------------------------------------------------------------
 
@@ -227,11 +313,34 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
   }
 
   // -------------------------------------------------------------------------
-  // development -> QA: auto-send to QA after build completes
+  // development -> wave review or QA: check wave status before chaining
   // -------------------------------------------------------------------------
   if (stage === "development") {
-    // After build crew finishes, auto-send to QA
     try {
+      const waveStatus = await getWaveStatus(session.epicId!, FLEET_CORE_PATH);
+
+      if (waveStatus.hasWaves && !waveStatus.allWavesComplete) {
+        // Waves exist and not all complete — chain to review-wave for the completed wave
+        if (waveStatus.currentWaveComplete) {
+          // Current wave is complete — launch reviewer for it
+          await fetch("http://localhost:3000/api/fleet/action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "review-wave",
+              epicId: session.epicId,
+              epicTitle: session.repoName,
+              currentLabels: session.epicLabels,
+              waveNumber: waveStatus.currentWave,
+            }),
+          });
+          return true; // Chain handled (development -> wave review)
+        }
+        // Current wave not complete — builder didn't finish all beads, no chain
+        return false;
+      }
+
+      // No waves or all waves complete — normal chain to QA
       await fetch("http://localhost:3000/api/fleet/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -242,12 +351,107 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           currentLabels: session.epicLabels,
         }),
       });
-      return true; // Chain handled the transition (development -> qa)
+      return true; // Chain handled (development -> qa)
     } catch (err) {
-      console.error("Failed to chain QA after build:", err);
-      return false; // Fall through to NEXT_STAGE (though development has no NEXT_STAGE entry)
+      console.error("Failed to chain after build:", err);
+      return false;
     }
-  } else if (stage === "qa") {
+  }
+
+  // -------------------------------------------------------------------------
+  // build-review (wave review) -> next wave or QA
+  // -------------------------------------------------------------------------
+  if (stage === "build-review") {
+    try {
+      const waveStatus = await getWaveStatus(session.epicId!, FLEET_CORE_PATH);
+
+      if (!waveStatus.hasWaves) {
+        // No waves — shouldn't happen for wave review, but handle gracefully
+        return false;
+      }
+
+      // Check if reviewer found P0/P1 issues (check for open bugs in the repo)
+      const { execSync } = await import("child_process");
+      let hasP0P1 = false;
+      try {
+        const bugCheck = execSync(
+          `cd ${session.repoPath} && bd list --status=open --type=bug 2>/dev/null | grep -cE "P[01]" || echo "0"`,
+          { encoding: "utf-8", timeout: 10000 },
+        ).trim();
+        hasP0P1 = parseInt(bugCheck) > 0;
+      } catch {
+        // No bugs found, proceed
+      }
+
+      if (hasP0P1) {
+        // P0/P1 found — chain back to builder to fix same wave
+        // Extract wave number from the prompt (e.g., "Review Wave 2 changes for epic...")
+        const waveMatch = session.prompt.match(/Wave (\d+)/);
+        const reviewedWave = waveMatch ? parseInt(waveMatch[1], 10) : waveStatus.currentWave;
+
+        await fetch("http://localhost:3000/api/fleet/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "start-wave",
+            epicId: session.epicId,
+            epicTitle: session.repoName,
+            currentLabels: session.epicLabels,
+            waveNumber: reviewedWave,
+          }),
+        });
+        return true; // Chain handled (review -> fix wave)
+      }
+
+      // Reviewer passed — determine next step
+      const waveMatch = session.prompt.match(/Wave (\d+)/);
+      const reviewedWave = waveMatch ? parseInt(waveMatch[1], 10) : waveStatus.currentWave;
+      const nextWave = reviewedWave + 1;
+      const hasNextWave = waveStatus.waves.has(nextWave);
+
+      if (hasNextWave) {
+        // More waves to go
+        if (waveStatus.hasCheckpointRequired) {
+          // Owner checkpoint required — add pending label and wait
+          const { addLabelsToEpic } = await import("./pipeline-labels");
+          await addLabelsToEpic(session.epicId!, ["wave-checkpoint:pending"]);
+          return true; // Chain handled (paused for owner)
+        }
+
+        // Auto-advance to next wave
+        await fetch("http://localhost:3000/api/fleet/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "start-wave",
+            epicId: session.epicId,
+            epicTitle: session.repoName,
+            currentLabels: session.epicLabels,
+            waveNumber: nextWave,
+          }),
+        });
+        return true; // Chain handled (review -> next wave)
+      }
+
+      // Final wave passed — chain to QA
+      await fetch("http://localhost:3000/api/fleet/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send-for-qa",
+          epicId: session.epicId,
+          epicTitle: session.repoName,
+          currentLabels: session.epicLabels,
+        }),
+      });
+      return true; // Chain handled (final wave review -> qa)
+    } catch (err) {
+      console.error("Failed to chain after wave review:", err);
+      return false;
+    }
+  }
+
+  if (stage === "qa") {
     // After QA finishes, check if bugs were filed
     try {
       const { execSync } = await import("child_process");
