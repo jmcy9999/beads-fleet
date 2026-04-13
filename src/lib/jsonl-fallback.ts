@@ -7,10 +7,7 @@
 // scores, bottlenecks, cycles, etc.) are unavailable in this mode.
 // =============================================================================
 
-import { promises as fs } from "fs";
-import path from "path";
-
-import { readIssuesFromDB } from "./sqlite-reader";
+import { readIssuesFromDolt } from "./dolt-reader";
 import type {
   BeadsIssue,
   IssueStatus,
@@ -23,37 +20,13 @@ import type {
 } from "./types";
 
 // -----------------------------------------------------------------------------
-// Read raw issues — tries SQLite DB first, falls back to JSONL
+// Read raw issues — Dolt only (all repos migrated to Dolt as of 2026-04-13)
 // -----------------------------------------------------------------------------
 
 export async function readIssuesFromJSONL(
   projectPath: string,
 ): Promise<BeadsIssue[]> {
-  // Try SQLite first (source of truth)
-  const dbIssues = readIssuesFromDB(projectPath);
-  if (dbIssues !== null) return dbIssues;
-
-  // Fall back to JSONL if no database
-  const filePath = path.join(projectPath, ".beads", "issues.jsonl");
-  let content: string;
-  try {
-    content = await fs.readFile(filePath, "utf-8");
-  } catch {
-    // File missing or unreadable — return empty list
-    return [];
-  }
-
-  const issues: BeadsIssue[] = [];
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      issues.push(JSON.parse(trimmed) as BeadsIssue);
-    } catch {
-      // Skip malformed lines
-    }
-  }
-  return issues;
+  return readIssuesFromDolt(projectPath);
 }
 
 // -----------------------------------------------------------------------------

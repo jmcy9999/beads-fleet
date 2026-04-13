@@ -1,6 +1,12 @@
 // =============================================================================
-// Tests for src/lib/jsonl-fallback.ts — JSONL reading and plan conversion
+// Tests for src/lib/jsonl-fallback.ts — plan conversion and stubs
 // =============================================================================
+// Note: readIssuesFromJSONL now delegates to the Dolt reader (dolt-reader.ts).
+// Tests that need to call readIssuesFromJSONL mock the Dolt reader to avoid
+// requiring a running Dolt server.
+// =============================================================================
+
+jest.mock("@/lib/dolt-reader");
 
 import {
   readIssuesFromJSONL,
@@ -8,6 +14,7 @@ import {
   emptyPriority,
   emptyInsights,
 } from "@/lib/jsonl-fallback";
+import { readIssuesFromDolt } from "@/lib/dolt-reader";
 import {
   createTestFixture,
   TestFixture,
@@ -20,173 +27,58 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
+const mockReadIssuesFromDolt = readIssuesFromDolt as jest.MockedFunction<typeof readIssuesFromDolt>;
+
 // ---------------------------------------------------------------------------
-// Helper: create a temp dir with ONLY a JSONL file (no SQLite DB)
+// Helper: build BeadsIssue[] from test constants (for use in mocks)
 // ---------------------------------------------------------------------------
 
-function createJSONLOnlyFixture(): { projectPath: string; cleanup: () => void } {
-  const projectPath = mkdtempSync(join(tmpdir(), "beads-jsonl-only-"));
-  const beadsDir = join(projectPath, ".beads");
-  mkdirSync(beadsDir);
-
-  const jsonlLines = TEST_ISSUES.map((issue) => {
+function buildTestBeadsIssues(): BeadsIssue[] {
+  return TEST_ISSUES.map((issue) => {
     const deps = TEST_DEPENDENCIES.filter(([id]) => id === issue.id).map(
       ([issueId, dependsOn, type]) => ({
         issue_id: issueId,
         depends_on_id: dependsOn,
-        type,
+        type: type as "blocks",
         created_at: "2026-01-01T00:00:00Z",
         created_by: "test",
       }),
     );
     const labels = TEST_LABELS.filter(([id]) => id === issue.id).map(
-      ([, label]) => label,
+      ([, label]) => label as string,
     );
-    return JSON.stringify({
+    return {
       ...issue,
+      status: issue.status as BeadsIssue["status"],
+      priority: issue.priority as BeadsIssue["priority"],
+      issue_type: issue.issue_type as BeadsIssue["issue_type"],
       labels: labels.length > 0 ? labels : undefined,
       dependencies: deps.length > 0 ? deps : undefined,
-    });
+    };
   });
-
-  writeFileSync(join(beadsDir, "issues.jsonl"), jsonlLines.join("\n") + "\n");
-
-  return {
-    projectPath,
-    cleanup: () => {
-      try {
-        const { rmSync } = require("fs");
-        rmSync(projectPath, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
-    },
-  };
 }
 
 describe("readIssuesFromJSONL", () => {
-  // ---------------------------------------------------------------------------
-  // JSONL path (no SQLite DB)
-  // ---------------------------------------------------------------------------
+  // readIssuesFromJSONL now delegates to the Dolt reader.
+  // These tests verify the delegation works correctly via mocks.
 
-  describe("JSONL fallback path", () => {
-    let jsonlFixture: { projectPath: string; cleanup: () => void };
-
-    beforeAll(() => {
-      jsonlFixture = createJSONLOnlyFixture();
-    });
-
-    afterAll(() => {
-      jsonlFixture.cleanup();
-    });
-
-    it("reads all 8 issues from the JSONL file", async () => {
-      const issues = await readIssuesFromJSONL(jsonlFixture.projectPath);
-      expect(issues).toHaveLength(8);
-    });
-
-    it("returns correct ids for all issues", async () => {
-      const issues = await readIssuesFromJSONL(jsonlFixture.projectPath);
-      const ids = issues.map((i) => i.id).sort();
-      const expectedIds = TEST_ISSUES.map((i) => i.id).sort();
-      expect(ids).toEqual(expectedIds);
-    });
-
-    it("preserves issue fields (title, status, priority, issue_type)", async () => {
-      const issues = await readIssuesFromJSONL(jsonlFixture.projectPath);
-      const issue1 = issues.find((i) => i.id === "TEST-001");
-      expect(issue1).toBeDefined();
-      expect(issue1!.title).toBe("Implement user authentication");
-      expect(issue1!.status).toBe("open");
-      expect(issue1!.priority).toBe(1);
-      expect(issue1!.issue_type).toBe("feature");
-    });
-
-    it("preserves dependencies from JSONL", async () => {
-      const issues = await readIssuesFromJSONL(jsonlFixture.projectPath);
-      const issue3 = issues.find((i) => i.id === "TEST-003");
-      expect(issue3!.dependencies).toBeDefined();
-      expect(issue3!.dependencies!.length).toBe(1);
-      expect(issue3!.dependencies![0].depends_on_id).toBe("TEST-001");
-    });
-
-    it("preserves labels from JSONL", async () => {
-      const issues = await readIssuesFromJSONL(jsonlFixture.projectPath);
-      const issue1 = issues.find((i) => i.id === "TEST-001");
-      expect(issue1!.labels).toBeDefined();
-      expect(issue1!.labels!.sort()).toEqual(["auth", "backend"]);
-    });
+  beforeEach(() => {
+    mockReadIssuesFromDolt.mockReset();
   });
 
-  // ---------------------------------------------------------------------------
-  // SQLite priority path
-  // ---------------------------------------------------------------------------
+  it("delegates to readIssuesFromDolt", async () => {
+    const mockIssues = buildTestBeadsIssues();
+    mockReadIssuesFromDolt.mockResolvedValue(mockIssues);
 
-  describe("SQLite primary path", () => {
-    let fixture: TestFixture;
-
-    beforeAll(() => {
-      fixture = createTestFixture();
-    });
-
-    afterAll(() => {
-      fixture.cleanup();
-    });
-
-    it("reads from SQLite when DB exists", async () => {
-      const issues = await readIssuesFromJSONL(fixture.projectPath);
-      expect(issues).toHaveLength(8);
-    });
+    const issues = await readIssuesFromJSONL("/test/path");
+    expect(issues).toHaveLength(8);
+    expect(mockReadIssuesFromDolt).toHaveBeenCalledWith("/test/path");
   });
 
-  // ---------------------------------------------------------------------------
-  // Empty / missing file
-  // ---------------------------------------------------------------------------
+  it("propagates Dolt errors (no fallback to stale data)", async () => {
+    mockReadIssuesFromDolt.mockRejectedValue(new Error("No Dolt server"));
 
-  describe("empty or missing JSONL", () => {
-    it("returns empty array when no .beads directory exists", async () => {
-      const tmpPath = mkdtempSync(join(tmpdir(), "beads-no-beads-"));
-      try {
-        const issues = await readIssuesFromJSONL(tmpPath);
-        expect(issues).toEqual([]);
-      } finally {
-        const { rmSync } = require("fs");
-        rmSync(tmpPath, { recursive: true, force: true });
-      }
-    });
-
-    it("returns empty array when JSONL file is missing", async () => {
-      const tmpPath = mkdtempSync(join(tmpdir(), "beads-no-jsonl-"));
-      mkdirSync(join(tmpPath, ".beads"));
-      try {
-        const issues = await readIssuesFromJSONL(tmpPath);
-        expect(issues).toEqual([]);
-      } finally {
-        const { rmSync } = require("fs");
-        rmSync(tmpPath, { recursive: true, force: true });
-      }
-    });
-
-    it("skips malformed JSONL lines gracefully", async () => {
-      const tmpPath = mkdtempSync(join(tmpdir(), "beads-bad-jsonl-"));
-      const beadsDir = join(tmpPath, ".beads");
-      mkdirSync(beadsDir);
-      const content = [
-        JSON.stringify({ id: "GOOD-1", title: "Valid", status: "open", priority: 1, issue_type: "task", created_at: "2026-01-01", updated_at: "2026-01-01" }),
-        "this is not valid json",
-        "",
-        JSON.stringify({ id: "GOOD-2", title: "Also valid", status: "closed", priority: 2, issue_type: "bug", created_at: "2026-01-02", updated_at: "2026-01-02" }),
-      ].join("\n");
-      writeFileSync(join(beadsDir, "issues.jsonl"), content);
-      try {
-        const issues = await readIssuesFromJSONL(tmpPath);
-        expect(issues).toHaveLength(2);
-        expect(issues.map((i) => i.id).sort()).toEqual(["GOOD-1", "GOOD-2"]);
-      } finally {
-        const { rmSync } = require("fs");
-        rmSync(tmpPath, { recursive: true, force: true });
-      }
-    });
+    await expect(readIssuesFromJSONL("/test/path")).rejects.toThrow("No Dolt server");
   });
 });
 
