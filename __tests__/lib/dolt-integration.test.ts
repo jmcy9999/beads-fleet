@@ -1,25 +1,13 @@
 // =============================================================================
-// Integration tests for Dolt reader + JSONL fallback + fleet detection
+// Integration tests for Dolt reader + plan builder + fleet detection
 // =============================================================================
-// Tests the full data pipeline: Dolt/JSONL → issuesToPlan → buildFleetApps
+// Tests the full data pipeline: Dolt → issuesToPlan → buildFleetApps
 // =============================================================================
 
-// Mock child_process at the top level, before imports
-jest.mock("child_process", () => {
-  const actual = jest.requireActual("child_process");
-  return {
-    ...actual,
-    execFileSync: jest.fn(actual.execFileSync),
-  };
-});
-
-// Mock the Dolt reader — these tests use temp fixtures without real Dolt servers
+// Mock the Dolt reader — these tests use in-memory fixtures, not real Dolt servers
 jest.mock("@/lib/dolt-reader");
 
-import {
-  readIssuesFromJSONL,
-  issuesToPlan,
-} from "@/lib/jsonl-fallback";
+import { issuesToPlan } from "@/lib/plan-builder";
 import { readIssuesFromDolt } from "@/lib/dolt-reader";
 const mockReadIssuesFromDolt = readIssuesFromDolt as jest.MockedFunction<typeof readIssuesFromDolt>;
 import { buildFleetApps, type FleetStage } from "@/components/fleet/fleet-utils";
@@ -29,9 +17,6 @@ import {
   TEST_LABELS,
 } from "../fixtures/create-test-db";
 import type { BeadsIssue } from "@/lib/types";
-import { execFileSync } from "child_process";
-
-const mockExecFileSync = execFileSync as jest.MockedFunction<typeof execFileSync>;
 
 // ---------------------------------------------------------------------------
 // Test 1: Full pipeline — Dolt → issuesToPlan → fleet detection
@@ -39,7 +24,6 @@ const mockExecFileSync = execFileSync as jest.MockedFunction<typeof execFileSync
 
 describe("Full pipeline: Dolt → issuesToPlan → fleet detection", () => {
   beforeEach(() => {
-    mockExecFileSync.mockClear();
     mockReadIssuesFromDolt.mockReset();
   });
 
@@ -68,7 +52,7 @@ describe("Full pipeline: Dolt → issuesToPlan → fleet detection", () => {
     mockReadIssuesFromDolt.mockResolvedValue(testIssues);
 
     // Step 1: Read issues
-    const issues = await readIssuesFromJSONL("/test/path");
+    const issues = await readIssuesFromDolt("/test/path");
     expect(issues).toHaveLength(3);
     expect(issues.map((i) => i.id).sort()).toEqual(["TEST-001", "TEST-002", "TEST-003"]);
 
@@ -109,7 +93,7 @@ describe("Full pipeline: Dolt → issuesToPlan → fleet detection", () => {
     });
     mockReadIssuesFromDolt.mockResolvedValue(mockIssues as any);
 
-    const issues = await readIssuesFromJSONL("/test/epics");
+    const issues = await readIssuesFromDolt("/test/epics");
     const plan = issuesToPlan(issues, "/test/epics");
     const fleetApps = buildFleetApps(plan.all_issues);
 
@@ -136,7 +120,7 @@ describe("Dolt reader integration", () => {
   it("throws when Dolt server is not available", async () => {
     mockReadIssuesFromDolt.mockRejectedValue(new Error("No Dolt server port found"));
 
-    await expect(readIssuesFromJSONL("/nonexistent")).rejects.toThrow("No Dolt server");
+    await expect(readIssuesFromDolt("/nonexistent")).rejects.toThrow("No Dolt server");
   });
 
   it("returns issues from Dolt reader", async () => {
@@ -146,7 +130,7 @@ describe("Dolt reader integration", () => {
     ];
     mockReadIssuesFromDolt.mockResolvedValue(mockIssues as any);
 
-    const issues = await readIssuesFromJSONL("/test/dolt");
+    const issues = await readIssuesFromDolt("/test/dolt");
     expect(issues).toHaveLength(2);
     expect(issues[0].id).toBe("DOLT-1");
     expect(issues[1].id).toBe("DOLT-2");
@@ -176,14 +160,14 @@ describe("Dolt reader returns fresh data (no stale fallback)", () => {
     });
     mockReadIssuesFromDolt.mockResolvedValue(allIssues);
 
-    const issues = await readIssuesFromJSONL("/test/fresh");
+    const issues = await readIssuesFromDolt("/test/fresh");
     expect(issues).toHaveLength(8);
   });
 
   it("does not fall back to stale data when Dolt fails", async () => {
     mockReadIssuesFromDolt.mockRejectedValue(new Error("Dolt server down"));
 
-    await expect(readIssuesFromJSONL("/test/stale")).rejects.toThrow("Dolt server down");
+    await expect(readIssuesFromDolt("/test/stale")).rejects.toThrow("Dolt server down");
   });
 });
 
@@ -206,7 +190,7 @@ describe("Fleet board epic visibility with pipeline labels", () => {
     ];
     mockReadIssuesFromDolt.mockResolvedValue(mockIssues as any);
 
-    const issues = await readIssuesFromJSONL("/test/staging");
+    const issues = await readIssuesFromDolt("/test/staging");
     const plan = issuesToPlan(issues, "/test/staging");
     const fleetApps = buildFleetApps(plan.all_issues);
 
@@ -224,7 +208,7 @@ describe("Fleet board epic visibility with pipeline labels", () => {
     ];
     mockReadIssuesFromDolt.mockResolvedValue(mockIssues as any);
 
-    const issues = await readIssuesFromJSONL("/test/plan-review");
+    const issues = await readIssuesFromDolt("/test/plan-review");
     const plan = issuesToPlan(issues, "/test/plan-review");
     const fleetApps = buildFleetApps(plan.all_issues);
 

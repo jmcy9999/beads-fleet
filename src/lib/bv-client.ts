@@ -19,11 +19,11 @@ import { promisify } from "util";
 
 import { cache } from "./cache";
 import { computeInsightsFromIssues } from "./graph-metrics";
+import { readIssuesFromDolt } from "./dolt-reader";
 import {
-  readIssuesFromJSONL,
   issuesToPlan,
   emptyPriority,
-} from "./jsonl-fallback";
+} from "./plan-builder";
 import type {
   BeadsIssue,
   DiffIssueChange,
@@ -126,7 +126,7 @@ function isBvNotFoundError(error: unknown): boolean {
  * Our PlanSummary: { open_count, in_progress_count, blocked_count, closed_count, highest_impact?: { issue_id, title, impact_score, unblocks_count? } }
  */
 function normalizePlan(raw: any, projectPath: string): RobotPlan {
-  // If the raw data already has our expected shape (e.g. from JSONL fallback),
+  // If the raw data already has our expected shape (e.g. from Dolt reader),
   // return it as-is.
   if (raw.tracks && raw.summary && raw.all_issues) {
     return raw as RobotPlan;
@@ -244,7 +244,7 @@ function normalizePlanItem(item: any): PlanIssue {
  *   full_stats, advanced_insights, usage_hints }
  */
 function normalizeInsights(raw: any, projectPath: string): RobotInsights {
-  // If the raw data already has our expected shape (e.g. from JSONL fallback),
+  // If the raw data already has our expected shape (e.g. from Dolt reader),
   // return it as-is.
   if (
     raw.bottlenecks !== undefined &&
@@ -354,7 +354,7 @@ function normalizePriority(raw: any, projectPath: string): RobotPriority {
  * array and count fields.
  */
 function normalizeDiff(raw: any, projectPath: string, sinceRef: string): RobotDiff {
-  // If the raw data already has our expected shape (e.g. from JSONL fallback),
+  // If the raw data already has our expected shape (e.g. from Dolt reader),
   // return it as-is.
   if (Array.isArray(raw.changes)) {
     return raw as RobotDiff;
@@ -534,7 +534,7 @@ async function computeDiffFromGit(
   }
 
   // ---- 3. Read current issues from SQLite (source of truth) -----------------
-  const currentIssues = await readIssuesFromJSONL(projectPath);
+  const currentIssues = await readIssuesFromDolt(projectPath);
 
   // ---- 4. Diff the two sets -------------------------------------------------
   const oldMap = new Map<string, BeadsIssue>();
@@ -663,12 +663,12 @@ export async function getInsights(projectPath?: string): Promise<RobotInsights> 
     return data;
   } catch (error) {
     if (isBvNotFoundError(error)) {
-      const issues = await readIssuesFromJSONL(resolvedPath);
+      const issues = await readIssuesFromDolt(resolvedPath);
       const fallback = computeInsightsFromIssues(issues, resolvedPath);
       cache.set(cacheKey, fallback);
       return fallback;
     }
-    const issues = await readIssuesFromJSONL(resolvedPath);
+    const issues = await readIssuesFromDolt(resolvedPath);
     const fallback = computeInsightsFromIssues(issues, resolvedPath);
     cache.set(cacheKey, fallback);
     return fallback;
@@ -693,7 +693,7 @@ export async function getPlan(projectPath?: string): Promise<RobotPlan> {
     // bv --robot-plan only returns actionable/triage items in tracks.
     // Supplement all_issues with the full issue list from SQLite so the
     // dashboard shows every issue, not just the 4-5 triage picks.
-    const fullIssues = await readIssuesFromJSONL(resolvedPath);
+    const fullIssues = await readIssuesFromDolt(resolvedPath);
     if (fullIssues.length > data.all_issues.length) {
       const fullPlan = issuesToPlan(fullIssues, resolvedPath);
       data.all_issues = fullPlan.all_issues;
@@ -707,12 +707,12 @@ export async function getPlan(projectPath?: string): Promise<RobotPlan> {
     return data;
   } catch (error) {
     if (isBvNotFoundError(error)) {
-      const issues = await readIssuesFromJSONL(resolvedPath);
+      const issues = await readIssuesFromDolt(resolvedPath);
       const fallback = issuesToPlan(issues, resolvedPath);
       cache.set(cacheKey, fallback);
       return fallback;
     }
-    const issues = await readIssuesFromJSONL(resolvedPath);
+    const issues = await readIssuesFromDolt(resolvedPath);
     const fallback = issuesToPlan(issues, resolvedPath);
     cache.set(cacheKey, fallback);
     return fallback;
@@ -890,7 +890,7 @@ export async function getIssueById(
   // Try to get the full raw issue from JSONL for description/comments
   let rawIssue: import("./types").BeadsIssue | null = null;
   try {
-    const allRaw = await readIssuesFromJSONL(resolvedPath);
+    const allRaw = await readIssuesFromDolt(resolvedPath);
     rawIssue = allRaw.find((i) => i.id === issueId) ?? null;
   } catch {
     // JSONL read failed, that's OK

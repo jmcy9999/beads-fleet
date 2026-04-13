@@ -413,7 +413,7 @@ function SidebarContent({ collapsed, setCollapsed, onNavClick }: {
       <div className={`${collapsed ? "px-2" : "px-4"} py-2 border-t border-border-default`}>
         <div className={`flex items-center ${collapsed ? "justify-center" : "gap-2"} text-xs text-gray-500`}>
           <span className={bvAvailable ? "text-status-open" : "text-status-progress"}>●</span>
-          {!collapsed && <span>{bvAvailable ? "bv connected" : "JSONL fallback"}</span>}
+          {!collapsed && <span>{bvAvailable ? "bv connected" : "Dolt direct"}</span>}
         </div>
       </div>
 

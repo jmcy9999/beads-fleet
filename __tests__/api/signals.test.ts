@@ -14,18 +14,18 @@ jest.mock("@/lib/repo-config", () => ({
   ALL_PROJECTS_SENTINEL: "__all__",
 }));
 
-jest.mock("@/lib/jsonl-fallback", () => ({
-  readIssuesFromJSONL: jest.fn(),
+jest.mock("@/lib/dolt-reader", () => ({
+  readIssuesFromDolt: jest.fn(),
 }));
 
 import { GET } from "@/app/api/signals/route";
 import { getActiveProjectPath, getAllRepoPaths } from "@/lib/repo-config";
-import { readIssuesFromJSONL } from "@/lib/jsonl-fallback";
+import { readIssuesFromDolt } from "@/lib/dolt-reader";
 import { NextRequest } from "next/server";
 
 const mockGetActiveProjectPath = getActiveProjectPath as jest.MockedFunction<typeof getActiveProjectPath>;
 const mockGetAllRepoPaths = getAllRepoPaths as jest.MockedFunction<typeof getAllRepoPaths>;
-const mockReadIssues = readIssuesFromJSONL as jest.MockedFunction<typeof readIssuesFromJSONL>;
+const mockReadIssues = readIssuesFromDolt as jest.MockedFunction<typeof readIssuesFromDolt>;
 
 // ---------------------------------------------------------------------------
 // Helpers

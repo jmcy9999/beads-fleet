@@ -1,13 +1,14 @@
 // =============================================================================
-// Beads Fleet — JSONL Fallback Parser
+// Beads Fleet — Plan Builder
 // =============================================================================
 //
-// When the `bv` CLI is not available, read .beads/issues.jsonl directly and
-// build simplified robot-protocol responses. Graph-derived fields (impact
-// scores, bottlenecks, cycles, etc.) are unavailable in this mode.
+// Converts BeadsIssue[] into robot-protocol responses (RobotPlan, etc.).
+// Used when the bv CLI is unavailable. Graph-derived fields (impact scores,
+// bottlenecks, cycles, etc.) are unavailable in this mode.
+//
+// Data reading is handled by dolt-reader.ts. This module only does conversion.
 // =============================================================================
 
-import { readIssuesFromDolt } from "./dolt-reader";
 import type {
   BeadsIssue,
   IssueStatus,
@@ -18,16 +19,6 @@ import type {
   RobotPlan,
   RobotPriority,
 } from "./types";
-
-// -----------------------------------------------------------------------------
-// Read raw issues — Dolt only (all repos migrated to Dolt as of 2026-04-13)
-// -----------------------------------------------------------------------------
-
-export async function readIssuesFromJSONL(
-  projectPath: string,
-): Promise<BeadsIssue[]> {
-  return readIssuesFromDolt(projectPath);
-}
 
 // -----------------------------------------------------------------------------
 // Convert BeadsIssue[] -> RobotPlan (simplified, no graph metrics)

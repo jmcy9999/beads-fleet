@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readIssuesFromJSONL } from "@/lib/jsonl-fallback";
+import { readIssuesFromDolt } from "@/lib/dolt-reader";
 import {
   getActiveProjectPath,
   getAllRepoPaths,
@@ -66,11 +66,11 @@ export async function GET(request: NextRequest) {
     if (projectPath === ALL_PROJECTS_SENTINEL) {
       const paths = await getAllRepoPaths();
       const issueArrays = await Promise.all(
-        paths.map((p) => readIssuesFromJSONL(p)),
+        paths.map((p) => readIssuesFromDolt(p)),
       );
       allIssues = issueArrays.flat();
     } else {
-      allIssues = await readIssuesFromJSONL(projectPath);
+      allIssues = await readIssuesFromDolt(projectPath);
     }
 
     // Filter by status

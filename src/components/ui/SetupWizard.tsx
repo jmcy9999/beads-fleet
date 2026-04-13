@@ -81,7 +81,7 @@ export function SetupWizard() {
                   <p className="text-xs text-gray-400">
                     {bvAvailable
                       ? "Installed — full graph metrics available"
-                      : "Not found — will use JSONL fallback (basic mode)"}
+                      : "Not found — will use Dolt direct reader (basic mode)"}
                   </p>
                 </div>
               </div>

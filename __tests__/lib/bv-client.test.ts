@@ -101,11 +101,15 @@ jest.mock("@/lib/graph-metrics", () => ({
   })),
 }));
 
-// Mock readIssuesFromJSONL and issuesToPlan from jsonl-fallback
-const mockReadIssuesFromJSONL = jest.fn();
+// Mock readIssuesFromDolt from dolt-reader
+const mockReadIssuesFromDolt = jest.fn();
+jest.mock("@/lib/dolt-reader", () => ({
+  readIssuesFromDolt: (...args: unknown[]) => mockReadIssuesFromDolt(...args),
+}));
+
+// Mock issuesToPlan from plan-builder
 const mockIssuesToPlan = jest.fn();
-jest.mock("@/lib/jsonl-fallback", () => ({
-  readIssuesFromJSONL: (...args: unknown[]) => mockReadIssuesFromJSONL(...args),
+jest.mock("@/lib/plan-builder", () => ({
   issuesToPlan: (...args: unknown[]) => mockIssuesToPlan(...args),
   emptyPriority: jest.fn((projectPath: string) => ({
     timestamp: new Date().toISOString(),
@@ -237,8 +241,8 @@ describe("getPlan() — SQLite supplementation", () => {
     // Default: execFile returns the small bv plan envelope
     execFileBehavior = () => ({ stdout: JSON.stringify(BV_ENVELOPE) });
 
-    // Default: readIssuesFromJSONL returns the full 50-issue set
-    mockReadIssuesFromJSONL.mockResolvedValue(FULL_ISSUES);
+    // Default: readIssuesFromDolt returns the full 50-issue set
+    mockReadIssuesFromDolt.mockResolvedValue(FULL_ISSUES);
 
     // Default: issuesToPlan converts full issues into a plan
     mockIssuesToPlan.mockImplementation((issues: BeadsIssue[], projectPath: string) => {
@@ -321,10 +325,10 @@ describe("getPlan() — SQLite supplementation", () => {
     expect(totalFromSummary).toBeGreaterThan(4);
   });
 
-  it("readIssuesFromJSONL is called with the project path", async () => {
+  it("readIssuesFromDolt is called with the project path", async () => {
     await getPlan(TEST_PROJECT_PATH);
 
-    expect(mockReadIssuesFromJSONL).toHaveBeenCalledWith(TEST_PROJECT_PATH);
+    expect(mockReadIssuesFromDolt).toHaveBeenCalledWith(TEST_PROJECT_PATH);
   });
 
   it("issuesToPlan is called with the full issue set when SQLite has more issues", async () => {
@@ -453,7 +457,7 @@ describe("getPlan() — SQLite supplementation", () => {
       makeBeadsIssue("SMALL-001", "open"),
       makeBeadsIssue("SMALL-002", "closed"),
     ];
-    mockReadIssuesFromJSONL.mockResolvedValue(smallIssueSet);
+    mockReadIssuesFromDolt.mockResolvedValue(smallIssueSet);
 
     const plan = await getPlan(TEST_PROJECT_PATH);
 
@@ -494,7 +498,7 @@ describe("getPlan() — SQLite supplementation", () => {
     const plan = await getPlan(TEST_PROJECT_PATH);
 
     // Should fall back to issuesToPlan with all SQLite issues
-    expect(mockReadIssuesFromJSONL).toHaveBeenCalledWith(TEST_PROJECT_PATH);
+    expect(mockReadIssuesFromDolt).toHaveBeenCalledWith(TEST_PROJECT_PATH);
     expect(mockIssuesToPlan).toHaveBeenCalledWith(FULL_ISSUES, TEST_PROJECT_PATH);
     expect(plan.all_issues.length).toBe(50);
   });
