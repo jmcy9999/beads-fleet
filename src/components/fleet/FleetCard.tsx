@@ -711,9 +711,12 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                       {isPendingThis && <Spinner />}
                       {actionLabel("Send Back to Dev")}
                     </button>
-                    {/* Send for Polish CTA (factory-core-hnv.17) */}
-                    {(() => {
-                      const isNonUI = app.shipType === "python-tool" || app.shipType === "internal";
+                    {/* Send for Polish CTA (factory-core-hnv.17, hnv.22, hnv.23) */}
+                    {/* Only show during QA round 1 — polish is not relevant in round 2+ */}
+                    {qaRound === 1 && (() => {
+                      // Match API's isNonUI logic: internal WITH beads_web label is UI (factory-core-hnv.23)
+                      const isNonUI = app.shipType === "python-tool" ||
+                        (app.shipType === "internal" && !(epic.labels ?? []).some(l => l.includes("beads_web")));
                       return (
                         <button
                           onClick={(e) => handleAction(e, "send-for-polish")}

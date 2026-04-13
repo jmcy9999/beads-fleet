@@ -1158,6 +1158,9 @@ describe("POST /api/fleet/action", () => {
     });
 
     it("skips polish for python-tool ship type", async () => {
+      // Mock getEpicLabels to return actual labels with qa:round-1 (factory-core-hnv.22)
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:qa", "qa:round-1", "ship-type:python-tool"]);
+
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "ToolName: Python utility",
@@ -1169,7 +1172,7 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
       expect(data.skipped).toBe(true);
 
-      // Should remove old pipeline and round labels (factory-core-hnv.21)
+      // Should dynamically read labels and remove actual round label (factory-core-hnv.22)
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:qa", "qa:round-1"],
@@ -1180,6 +1183,36 @@ describe("POST /api/fleet/action", () => {
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    it("skips polish for non-UI type in round 2+ using dynamic round reading", async () => {
+      // Mock getEpicLabels to return qa:round-2 — skip path must read this dynamically (factory-core-hnv.22)
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:qa", "qa:round-2", "ship-type:python-tool"]);
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+
+      // Should remove the actual qa:round-2 label (not hard-coded qa:round-1)
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+
+      // Should advance to QA Round 3
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-3"],
         expect.any(String),
       );
     });

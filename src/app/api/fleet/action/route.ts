@@ -871,10 +871,14 @@ export async function POST(request: NextRequest) {
           (shipType === "internal" && !labels.some(l => l.includes("beads_web")));
 
         if (isNonUI) {
-          // Skip polish -- advance directly to QA Round 2
-          // Use same label convention as send-for-qa: pipeline:qa + qa:round-N (factory-core-hnv.21)
-          await removeLabelsFromEpic(epicId, ["pipeline:qa", "qa:round-1"], fleetCorePath);
-          await addLabelsToEpic(epicId, ["pipeline:qa", "qa:round-2"], fleetCorePath);
+          // Skip polish -- advance directly to next QA round
+          // Read fresh labels to determine current round dynamically (factory-core-hnv.22)
+          const actualLabels = await getEpicLabels(epicId as string, fleetCorePath);
+          const roundLabels = actualLabels.filter(l => l.startsWith("qa:round-"));
+          const currentRound = roundLabels.length > 0
+            ? Math.max(...roundLabels.map(l => parseInt(l.split("-")[1]))) : 1;
+          await removeLabelsFromEpic(epicId, ["pipeline:qa", ...roundLabels], fleetCorePath);
+          await addLabelsToEpic(epicId, ["pipeline:qa", `qa:round-${currentRound + 1}`], fleetCorePath);
           invalidateCache();
           return NextResponse.json({ success: true, action, epicId, skipped: true, reason: "Non-UI ship type -- no polish needed" });
         }
