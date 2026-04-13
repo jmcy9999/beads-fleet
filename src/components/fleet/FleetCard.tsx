@@ -176,16 +176,13 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
     }
   }
 
-  /** Whether any agent is running globally (disables launch buttons). */
-  const anyAgentRunning = agentRunning ?? false;
-
   /** Whether this specific card's action is currently being submitted. */
   const isPendingThis = pendingEpicId === epic.id;
 
   /** Returns the appropriate label for an action button, accounting for pending/running states. */
   function actionLabel(defaultLabel: string): string {
     if (isPendingThis) return "Launching\u2026";
-    if (anyAgentRunning) return "Agent Running\u2026";
+    if (epicAgentRunning) return "Agent Running\u2026";
     return defaultLabel;
   }
 
@@ -372,7 +369,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             <>
               <button
                 onClick={(e) => handleAction(e, "start-research")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_BLUE}
               >
                 {isPendingThis && <Spinner />}
@@ -380,7 +377,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               </button>
               <button
                 onClick={(e) => handleAction(e, "skip-to-plan")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_GREEN}
               >
                 {isPendingThis && <Spinner />}
@@ -406,7 +403,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           {app.stage === "development" && app.shipType === "venture" && !epicAgentRunning && (
             <button
               onClick={(e) => handleAction(e, "mark-ready-to-deploy")}
-              disabled={anyAgentRunning || isPendingThis}
+              disabled={epicAgentRunning || isPendingThis}
               className={BTN_GREEN}
             >
               {isPendingThis && <Spinner />}
@@ -419,7 +416,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             <>
               <button
                 onClick={(e) => handleAction(e, "generate-plan")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_BLUE}
               >
                 {isPendingThis && <Spinner />}
@@ -427,7 +424,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               </button>
               <button
                 onClick={(e) => handleFeedbackAction(e, "more-research")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_AMBER}
               >
                 {isPendingThis && <Spinner />}
@@ -435,7 +432,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               </button>
               <button
                 onClick={(e) => handleAction(e, "deprioritise")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_RED}
               >
                 Abandon
@@ -452,7 +449,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                 <>
                   <button
                     onClick={(e) => handleAction(e, "send-for-development")}
-                    disabled={anyAgentRunning || isPendingThis}
+                    disabled={epicAgentRunning || isPendingThis}
                     className={BTN_GREEN}
                   >
                     {isPendingThis && <Spinner />}
@@ -460,7 +457,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                   </button>
                   <button
                     onClick={(e) => handleFeedbackAction(e, "revise-plan")}
-                    disabled={anyAgentRunning || isPendingThis}
+                    disabled={epicAgentRunning || isPendingThis}
                     className={BTN_AMBER}
                   >
                     {isPendingThis && <Spinner />}
@@ -497,7 +494,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                   <>
                     <button
                       onClick={(e) => handleAction(e, "approve-and-build")}
-                      disabled={anyAgentRunning || isPendingThis}
+                      disabled={epicAgentRunning || isPendingThis}
                       className={BTN_GREEN}
                     >
                       {isPendingThis && <Spinner />}
@@ -505,7 +502,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                     </button>
                     <button
                       onClick={(e) => handleFeedbackAction(e, "revise-plan")}
-                      disabled={anyAgentRunning || isPendingThis}
+                      disabled={epicAgentRunning || isPendingThis}
                       className={BTN_AMBER}
                     >
                       {isPendingThis && <Spinner />}
@@ -513,7 +510,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                     </button>
                     <button
                       onClick={(e) => handleAction(e, "deprioritise")}
-                      disabled={anyAgentRunning || isPendingThis}
+                      disabled={epicAgentRunning || isPendingThis}
                       className={BTN_RED}
                     >
                       Abandon
@@ -545,7 +542,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                   <>
                     <button
                       onClick={(e) => handleAction(e, "send-for-qa")}
-                      disabled={anyAgentRunning || isPendingThis}
+                      disabled={epicAgentRunning || isPendingThis}
                       className={BTN_GREEN}
                     >
                       {isPendingThis && <Spinner />}
@@ -553,7 +550,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                     </button>
                     <button
                       onClick={(e) => handleAction(e, "approve-submission")}
-                      disabled={anyAgentRunning || isPendingThis}
+                      disabled={epicAgentRunning || isPendingThis}
                       className={BTN_BLUE}
                     >
                       {isPendingThis && <Spinner />}
@@ -561,7 +558,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                     </button>
                     <button
                       onClick={(e) => handleFeedbackAction(e, "send-back-to-dev")}
-                      disabled={anyAgentRunning || isPendingThis}
+                      disabled={epicAgentRunning || isPendingThis}
                       className={BTN_AMBER}
                     >
                       {isPendingThis && <Spinner />}
@@ -578,7 +575,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             <>
               <button
                 onClick={(e) => handleAction(e, "approve-submission")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_GREEN}
               >
                 {isPendingThis && <Spinner />}
@@ -586,7 +583,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               </button>
               <button
                 onClick={(e) => handleFeedbackAction(e, "send-back-to-dev")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_AMBER}
               >
                 {isPendingThis && <Spinner />}
@@ -594,7 +591,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               </button>
               <button
                 onClick={(e) => handleFeedbackAction(e, "revise-plan-from-launch")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_AMBER}
               >
                 {isPendingThis && <Spinner />}
@@ -607,7 +604,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           {app.stage === "submitted" && (
             <button
               onClick={(e) => handleAction(e, "mark-as-live")}
-              disabled={anyAgentRunning || isPendingThis}
+              disabled={epicAgentRunning || isPendingThis}
               className={BTN_GREEN}
             >
               {isPendingThis && <Spinner />}
@@ -620,7 +617,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             <>
               <button
                 onClick={(e) => handleAction(e, "mark-venture-live")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_GREEN}
               >
                 {isPendingThis && <Spinner />}
@@ -628,7 +625,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               </button>
               <button
                 onClick={(e) => handleFeedbackAction(e, "send-back-to-dev")}
-                disabled={anyAgentRunning || isPendingThis}
+                disabled={epicAgentRunning || isPendingThis}
                 className={BTN_AMBER}
               >
                 {isPendingThis && <Spinner />}
@@ -641,7 +638,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           {app.stage === "live" && (
             <button
               onClick={(e) => handleAction(e, "mark-venture-complete")}
-              disabled={anyAgentRunning || isPendingThis}
+              disabled={epicAgentRunning || isPendingThis}
               className={BTN_GREEN}
             >
               {isPendingThis && <Spinner />}
@@ -655,7 +652,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             app.stage !== "research-complete" && app.stage !== "plan-review" && (
             <button
               onClick={(e) => handleAction(e, "deprioritise")}
-              disabled={anyAgentRunning || isPendingThis}
+              disabled={epicAgentRunning || isPendingThis}
               className={BTN_RED}
             >
               Abandon
