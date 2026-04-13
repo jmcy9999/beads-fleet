@@ -52,6 +52,7 @@ export function sanitizeTopicName(title: string): string {
  * @param appName - The derived app name (PascalCase)
  * @param epicId - The epic ID
  * @param fleetCorePath - Path to fleet-core (usually FLEET_CORE_PATH)
+ * @param productRepoBase - Base path for product repositories (default: "/Users/janemckay/dev/claude_projects")
  * @returns RepoPathResult with paths for repo, research, and plan
  */
 export function resolveRepoPath(
@@ -60,6 +61,7 @@ export function resolveRepoPath(
   appName: string,
   epicId: string,
   fleetCorePath: string,
+  productRepoBase: string = "/Users/janemckay/dev/claude_projects",
 ): RepoPathResult {
   // Venture: research-only in fleet-core
   if (shipType === "venture") {
@@ -83,10 +85,10 @@ export function resolveRepoPath(
     if (isBeadsWeb) {
       const topic = sanitizeTopicName(epicTitle);
       return {
-        repoPath: `${PRODUCT_REPO_BASE}/beads_web`,
+        repoPath: `${productRepoBase}/beads_web`,
         repoName: "beads_web",
         researchPath: `${fleetCorePath}/docs/research/${topic}.md`,
-        planPath: `${PRODUCT_REPO_BASE}/beads_web/.beads/plans/${epicId}.md`,
+        planPath: `${productRepoBase}/beads_web/.beads/plans/${epicId}.md`,
       };
     } else {
       // Internal work on fleet-core itself
@@ -101,7 +103,7 @@ export function resolveRepoPath(
   }
 
   // All other ship types: product repo
-  const productRepoPath = `${PRODUCT_REPO_BASE}/${appName}`;
+  const productRepoPath = `${productRepoBase}/${appName}`;
   return {
     repoPath: productRepoPath,
     repoName: appName,

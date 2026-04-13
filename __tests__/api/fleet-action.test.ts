@@ -770,4 +770,267 @@ describe("POST /api/fleet/action", () => {
       );
     });
   });
+
+  // -------------------------------------------------------------------------
+  // send-for-qa
+  // -------------------------------------------------------------------------
+
+  describe("send-for-qa", () => {
+    it("starts first QA round when no prior QA labels exist", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(1);
+    });
+
+    it("applies correct labels for first QA round", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development"],
+      });
+      await POST(req);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:development"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-1", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("launches platform-specific QA agent for ios-app", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "ship-type:ios-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pipelineStage: "qa",
+          agentName: "platforms/ios/qa",
+        }),
+      );
+    });
+
+    it("launches generic QA agent for web-app", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "TaskFlow",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "ship-type:web-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pipelineStage: "qa",
+          agentName: "qa",
+        }),
+      );
+    });
+
+    it("includes qaRound in response", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      const data = await res.json();
+
+      expect(data.qaRound).toBe(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // qa-fix-and-retest
+  // -------------------------------------------------------------------------
+
+  describe("qa-fix-and-retest", () => {
+    it("removes pipeline:qa and adds pipeline:development + agent:running", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "qa-fix-and-retest",
+        currentLabels: ["pipeline:qa", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:development", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("sets pipelineStage to qa-fixes", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "qa-fix-and-retest",
+        currentLabels: ["pipeline:qa"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pipelineStage: "qa-fixes",
+        }),
+      );
+    });
+
+    it("uses 300 maxTurns for QA fixes", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "qa-fix-and-retest",
+        currentLabels: ["pipeline:qa"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxTurns: 300,
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // approve-and-build
+  // -------------------------------------------------------------------------
+
+  describe("approve-and-build", () => {
+    // Mock fs.readFile for approval file tests
+    const originalReadFile = jest.requireActual("fs").promises.readFile;
+    let mockReadFile: jest.SpyInstance;
+
+    beforeEach(() => {
+      mockReadFile = jest.spyOn(require("fs").promises, "readFile");
+    });
+
+    afterEach(() => {
+      mockReadFile.mockRestore();
+    });
+
+    it("applies correct labels", async () => {
+      mockReadFile.mockRejectedValue(new Error("File not found"));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "approve-and-build",
+        currentLabels: ["pipeline:research-complete", "plan:pending"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:research-complete", "plan:pending"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["plan:approved", "pipeline:development", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("launches development agent with 500 maxTurns", async () => {
+      mockReadFile.mockRejectedValue(new Error("File not found"));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "approve-and-build",
+        currentLabels: ["pipeline:research-complete", "plan:pending"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pipelineStage: "development",
+          maxTurns: 500,
+        }),
+      );
+    });
+
+    it("includes feature approval in prompt when approval file exists", async () => {
+      const approvalData = {
+        features: [
+          { name: "Feature A", status: "approved" },
+          { name: "Feature B", status: "rejected" },
+          { name: "Feature C", status: "deferred" },
+        ],
+      };
+      mockReadFile.mockResolvedValue(JSON.stringify(approvalData));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "approve-and-build",
+        currentLabels: ["pipeline:research-complete", "plan:pending"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("APPROVED features"),
+        }),
+      );
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("REJECTED features"),
+        }),
+      );
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("DEFERRED features"),
+        }),
+      );
+    });
+
+    it("handles missing approval file gracefully", async () => {
+      mockReadFile.mockRejectedValue(new Error("ENOENT"));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "approve-and-build",
+        currentLabels: ["pipeline:research-complete", "plan:pending"],
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.not.stringContaining("Feature scope"),
+        }),
+      );
+    });
+  });
 });

@@ -25,6 +25,22 @@ describe("sanitizeTopicName", () => {
       "research-analysis"
     );
   });
+
+  it("returns empty string for empty input", () => {
+    expect(sanitizeTopicName("")).toBe("");
+  });
+
+  it("returns empty string for whitespace-only input", () => {
+    expect(sanitizeTopicName("   ")).toBe("");
+  });
+
+  it("returns empty string for special-characters-only input", () => {
+    expect(sanitizeTopicName("!@#$%")).toBe("");
+  });
+
+  it("handles numeric strings with spaces", () => {
+    expect(sanitizeTopicName("123 456")).toBe("123-456");
+  });
 });
 
 describe("resolveRepoPath", () => {
