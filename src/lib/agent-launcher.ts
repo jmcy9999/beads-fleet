@@ -203,6 +203,40 @@ function execBdSync(args: string[], cwd: string, timeoutMs = 15000): BdExecResul
 }
 
 // ---------------------------------------------------------------------------
+// Helpers for bd list output parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a bd list tree output line represents a bug-type bead.
+ * Handles both tree output format variations:
+ * - Open/in-progress items:  "● P0 [bug] Title"  (bracketed)
+ * - Closed items:            "● P0 bug Title"     (unbracketed)
+ * (factory-core-cur.1.25: tree output uses different formats for open vs closed)
+ */
+function lineIsBugType(line: string): boolean {
+  return /P\d\s+\[?bug\]?\s/i.test(line);
+}
+
+/**
+ * Parse child bead IDs and closed status from bd list --parent= tree output.
+ * Tree format: ├── ✓ factory-core-cur.1.16 ● P0 bug Title...
+ * Returns array of { id, isClosed } for each child (skips the root epic line).
+ */
+function parseChildrenFromTree(treeOutput: string): Array<{ id: string; isClosed: boolean }> {
+  const children: Array<{ id: string; isClosed: boolean }> = [];
+  for (const line of treeOutput.split("\n")) {
+    // Match tree lines (├── or └──) with status icon and bead ID
+    const idMatch = line.match(/[├└].*?[✓○◐●❄]\s+(\S+)\s/);
+    if (!idMatch) continue;
+    children.push({
+      id: idMatch[1],
+      isClosed: line.includes("✓"),
+    });
+  }
+  return children;
+}
+
+// ---------------------------------------------------------------------------
 // Wave status detection
 // ---------------------------------------------------------------------------
 
@@ -233,29 +267,33 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
     hasCheckpointRequired = epicResult.stdout.includes("wave-checkpoint:required");
   }
 
-  // Get all children and their statuses/labels
+  // Step 1: Get all children IDs and closed status from tree output
   const childrenResult = execBdSync(["list", "--status=all", `--parent=${epicId}`], repoPath, 10000);
   if (!childrenResult.success) {
     return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
   }
-  const childrenOutput = childrenResult.stdout;
 
-  // Parse wave labels from children output
-  // Lines look like: ├── ○ factory-core-cur.1.1 ● P1 [wave:1] Title...
-  // Or from labels in bd show output
+  const children = parseChildrenFromTree(childrenResult.stdout);
+  if (children.length === 0) {
+    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
+  }
+
+  // Step 2: Get wave labels from bd show for each child
+  // (factory-core-cur.1.26: bd list --parent= tree output omits labels,
+  // so we must query each child individually to get wave:N labels)
   const waveMap = new Map<number, { total: number; closed: number }>();
-  const lines = childrenOutput.split("\n");
+  for (const child of children) {
+    const showResult = execBdSync(["show", child.id], repoPath, 5000);
+    if (!showResult.success) continue;
 
-  for (const line of lines) {
-    const waveMatch = line.match(/wave:(\d+)/);
+    const waveMatch = showResult.stdout.match(/wave:(\d+)/);
     if (!waveMatch) continue;
     const waveNum = parseInt(waveMatch[1], 10);
     if (isNaN(waveNum)) continue;
 
     const entry = waveMap.get(waveNum) ?? { total: 0, closed: 0 };
     entry.total += 1;
-    // Check if bead is closed (✓ symbol in bd list output)
-    if (line.includes("✓")) {
+    if (child.isClosed) {
       entry.closed += 1;
     }
     waveMap.set(waveNum, entry);
@@ -408,8 +446,9 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       );
       if (bugResult.success) {
         // Count lines that are bugs with P0 or P1 priority
+        // (factory-core-cur.1.25: use lineIsBugType() for format-resilient detection)
         const bugLines = bugResult.stdout.split("\n").filter(
-          (line) => (line.includes("[bug]") || line.includes("[BUG]")) && /P[01]/.test(line),
+          (line) => lineIsBugType(line) && /P[01]/.test(line),
         );
         hasP0P1 = bugLines.length > 0;
       } else {
@@ -509,7 +548,8 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       }
 
       // Check for any open bug beads under the epic
-      const hasBugs = childrenResult.stdout.includes("[bug]") || childrenResult.stdout.includes("[BUG]");
+      // (factory-core-cur.1.25: use lineIsBugType() for format-resilient detection)
+      const hasBugs = childrenResult.stdout.split("\n").some((line) => lineIsBugType(line));
 
       if (hasBugs) {
         // Check round count -- max 3 rounds
