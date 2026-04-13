@@ -36,7 +36,9 @@ type PipelineAction =
   | "qa-fix-and-retest"
   | "mark-ready-to-deploy"
   | "mark-venture-live"
-  | "mark-venture-complete";
+  | "mark-venture-complete"
+  | "start-wave"
+  | "review-wave";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -58,6 +60,8 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "mark-ready-to-deploy",
   "mark-venture-live",
   "mark-venture-complete",
+  "start-wave",
+  "review-wave",
 ]);
 
 const FLEET_CORE_PATH = "/Users/janemckay/dev/fleet/fleet-core";
@@ -114,7 +118,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { epicId, epicTitle, action, feedback, currentLabels } = body;
+  const { epicId, epicTitle, action, feedback, currentLabels, waveNumber } = body;
 
   if (!epicId || typeof epicId !== "string") {
     return NextResponse.json({ error: "Missing epicId" }, { status: 400 });
@@ -668,6 +672,90 @@ export async function POST(request: NextRequest) {
         await closeEpic(epicId, "Venture complete", fleetCorePath);
         invalidateCache();
         return NextResponse.json({ success: true, action, epicId });
+      }
+
+      // -------------------------------------------------------------------
+      // START WAVE: Launch builder scoped to a specific wave
+      // -------------------------------------------------------------------
+      case "start-wave": {
+        const wave = typeof waveNumber === "number" ? waveNumber : parseInt(String(waveNumber), 10);
+        if (isNaN(wave) || wave < 1) {
+          return NextResponse.json({ error: "Invalid waveNumber" }, { status: 400 });
+        }
+
+        await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: waveRepoPath, repoName: waveRepoName, researchPath: waveResearchPath, planPath: wavePlanPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+
+        const startWaveSession = await launchAgent({
+          repoPath: waveRepoPath,
+          repoName: waveRepoName,
+          prompt: startWavePrompt,
+          model: "opus",
+          maxTurns: 500,
+          allowedTools: isVenture
+            ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
+            : "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "development",
+          agentName: "builder",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, waveNumber: wave, session: startWaveSession });
+      }
+
+      // -------------------------------------------------------------------
+      // REVIEW WAVE: Launch reviewer scoped to a specific wave's changes
+      // -------------------------------------------------------------------
+      case "review-wave": {
+        const rWave = typeof waveNumber === "number" ? waveNumber : parseInt(String(waveNumber), 10);
+        if (isNaN(rWave) || rWave < 1) {
+          return NextResponse.json({ error: "Invalid waveNumber" }, { status: 400 });
+        }
+
+        await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: rRepoPath, repoName: rRepoName, researchPath: rResearchPath, planPath: rPlanPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        // Select platform-specific reviewer if available
+        const platformReview = ["ios", "macos"];
+        const reviewerAgentName = platformReview.includes(shipType.replace("-app", ""))
+          ? `platforms/${shipType.replace("-app", "")}/reviewer`
+          : "reviewer";
+
+        const reviewWavePrompt = `Review Wave ${rWave} changes for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${rRepoPath}. Research report: ${rResearchPath}. Build plan: ${rPlanPath}. Shipyard: ${fleetCorePath}. ONLY review beads with wave:${rWave} label. Check code quality, security patterns, standing order compliance.`;
+
+        const reviewWaveSession = await launchAgent({
+          repoPath: rRepoPath,
+          repoName: rRepoName,
+          prompt: reviewWavePrompt,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "build-review",
+          agentName: reviewerAgentName,
+        });
+
+        return NextResponse.json({ success: true, action, epicId, waveNumber: rWave, session: reviewWaveSession });
       }
 
       // -------------------------------------------------------------------

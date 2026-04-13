@@ -446,6 +446,65 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               </button>
             )}
 
+          {/* Wave CTAs (development stage, waves configured, no agent running) */}
+          {app.stage === "development" && waveInfo && waveProgress && !epicAgentRunning && (() => {
+            // Check if current wave has all beads complete
+            const currentWaveComplete = waveInfo.currentClosed === waveInfo.currentTotal;
+            const allWavesComplete = waveProgress.every((w) => w.closed === w.total);
+            const nextWave = waveInfo.currentWave + 1;
+            const hasNextWave = waveProgress.some((w) => w.wave === nextWave);
+
+            if (allWavesComplete) return null; // All done — no wave CTAs needed
+
+            if (currentWaveComplete && hasNextWave) {
+              // Current wave done — offer review or start next wave
+              return (
+                <>
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onPipelineAction?.({ epicId: epic.id, epicTitle: epic.title, action: "review-wave", waveNumber: waveInfo.currentWave });
+                    }}
+                    disabled={isPendingThis}
+                    className={BTN_AMBER}
+                  >
+                    {isPendingThis && <Spinner />}
+                    {actionLabel(`Review Wave ${waveInfo.currentWave}`)}
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onPipelineAction?.({ epicId: epic.id, epicTitle: epic.title, action: "start-wave", waveNumber: nextWave });
+                    }}
+                    disabled={isPendingThis}
+                    className={BTN_GREEN}
+                  >
+                    {isPendingThis && <Spinner />}
+                    {actionLabel(`Start Wave ${nextWave}`)}
+                  </button>
+                </>
+              );
+            }
+
+            // Current wave not complete — offer to start it (if no beads are in progress)
+            return (
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onPipelineAction?.({ epicId: epic.id, epicTitle: epic.title, action: "start-wave", waveNumber: waveInfo.currentWave });
+                }}
+                disabled={isPendingThis}
+                className={BTN_BLUE}
+              >
+                {isPendingThis && <Spinner />}
+                {actionLabel(`Start Wave ${waveInfo.currentWave}`)}
+              </button>
+            );
+          })()}
+
           {/* Building + venture (no agent running): Ready to Deploy */}
           {app.stage === "development" && app.shipType === "venture" && !epicAgentRunning && (
             <button

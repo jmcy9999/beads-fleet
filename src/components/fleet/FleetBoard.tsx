@@ -35,13 +35,16 @@ export type PipelineAction =
   | "qa-fix-and-retest"
   | "mark-ready-to-deploy"
   | "mark-venture-live"
-  | "mark-venture-complete";
+  | "mark-venture-complete"
+  | "start-wave"
+  | "review-wave";
 
 export interface PipelineActionPayload {
   epicId: string;
   epicTitle: string;
   action: PipelineAction;
   feedback?: string;
+  waveNumber?: number;
 }
 
 interface FleetBoardProps {

@@ -27,7 +27,9 @@ export type PipelineActionType =
   | "qa-fix-and-retest"
   | "mark-ready-to-deploy"
   | "mark-venture-live"
-  | "mark-venture-complete";
+  | "mark-venture-complete"
+  | "start-wave"
+  | "review-wave";
 
 export interface PipelineActionParams {
   epicId: string;
@@ -35,6 +37,7 @@ export interface PipelineActionParams {
   action: PipelineActionType;
   feedback?: string;
   currentLabels?: string[];
+  waveNumber?: number;
 }
 
 interface PipelineActionResult {
@@ -58,7 +61,7 @@ export function usePipelineAction() {
   const { addToast } = useToast();
 
   return useMutation<PipelineActionResult, Error, PipelineActionParams>({
-    mutationFn: async ({ epicId, epicTitle, action, feedback, currentLabels }) => {
+    mutationFn: async ({ epicId, epicTitle, action, feedback, currentLabels, waveNumber }) => {
       const res = await fetch("/api/fleet/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -68,6 +71,7 @@ export function usePipelineAction() {
           action: normalizeAction(action),
           feedback,
           currentLabels,
+          waveNumber,
         }),
       });
       if (!res.ok) {
