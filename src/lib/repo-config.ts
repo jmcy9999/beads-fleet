@@ -8,10 +8,10 @@
 // =============================================================================
 
 import { promises as fs } from "fs";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import path from "path";
 import os from "os";
-import Database from "better-sqlite3";
+import * as mysql from "mysql2/promise";
 
 export interface RepoConfig {
   name: string;
@@ -142,18 +142,39 @@ export async function removeRepo(repoPath: string): Promise<RepoStore> {
 export async function findRepoForIssue(issueId: string): Promise<string | null> {
   const store = await readConfig();
   for (const repo of store.repos) {
-    const dbPath = path.join(repo.path, ".beads", "beads.db");
-    if (!existsSync(dbPath)) continue;
+    const portFile = path.join(repo.path, ".beads", "dolt-server.port");
+    if (!existsSync(portFile)) continue;
 
-    let db: Database.Database | null = null;
+    const port = parseInt(readFileSync(portFile, "utf-8").trim(), 10);
+    if (isNaN(port)) continue;
+
+    // Read database name from metadata
+    let database = path.basename(repo.path);
+    const metaFile = path.join(repo.path, ".beads", "metadata.json");
+    if (existsSync(metaFile)) {
+      try {
+        const meta = JSON.parse(readFileSync(metaFile, "utf-8"));
+        if (meta.dolt_database) database = meta.dolt_database;
+      } catch {
+        // Use default
+      }
+    }
+
+    let conn: mysql.Connection | null = null;
     try {
-      db = new Database(dbPath, { readonly: true });
-      const row = db.prepare("SELECT 1 FROM issues WHERE id = ?").get(issueId);
-      if (row) return repo.path;
+      conn = await mysql.createConnection({
+        host: "127.0.0.1",
+        port,
+        user: "root",
+        database,
+        connectTimeout: 2000,
+      });
+      const [rows] = await conn.query("SELECT 1 FROM issues WHERE id = ? LIMIT 1", [issueId]);
+      if ((rows as unknown[]).length > 0) return repo.path;
     } catch {
-      // DB unreadable — skip
+      // Dolt server unreachable or query failed — skip
     } finally {
-      if (db) db.close();
+      if (conn) await conn.end();
     }
   }
   return null;

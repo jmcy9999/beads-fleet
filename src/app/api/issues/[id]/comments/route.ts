@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import path from "path";
-import Database from "better-sqlite3";
+import * as mysql from "mysql2/promise";
 import { findRepoForIssue, getActiveProjectPath, ALL_PROJECTS_SENTINEL } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import type { BeadsComment } from "@/lib/types";
@@ -22,7 +22,7 @@ interface CommentRow {
 }
 
 /**
- * GET /api/issues/[id]/comments — read comments from SQLite.
+ * GET /api/issues/[id]/comments — read comments from Dolt.
  */
 export async function GET(
   _request: NextRequest,
@@ -43,20 +43,42 @@ export async function GET(
       if (resolved) projectPath = resolved;
     }
 
-    const dbPath = path.join(projectPath, ".beads", "beads.db");
-    if (!existsSync(dbPath)) {
+    const portFile = path.join(projectPath, ".beads", "dolt-server.port");
+    if (!existsSync(portFile)) {
       return NextResponse.json([] as BeadsComment[]);
     }
 
-    const db = new Database(dbPath, { readonly: true });
-    try {
-      const rows = db
-        .prepare(
-          "SELECT id, issue_id, author, text, created_at FROM comments WHERE issue_id = ? ORDER BY created_at ASC",
-        )
-        .all(issueId) as CommentRow[];
+    const port = parseInt(readFileSync(portFile, "utf-8").trim(), 10);
+    if (isNaN(port)) {
+      return NextResponse.json([] as BeadsComment[]);
+    }
 
-      const comments: BeadsComment[] = rows.map((r) => ({
+    let database = path.basename(projectPath);
+    const metaFile = path.join(projectPath, ".beads", "metadata.json");
+    if (existsSync(metaFile)) {
+      try {
+        const meta = JSON.parse(readFileSync(metaFile, "utf-8"));
+        if (meta.dolt_database) database = meta.dolt_database;
+      } catch {
+        // Use default
+      }
+    }
+
+    const conn = await mysql.createConnection({
+      host: "127.0.0.1",
+      port,
+      user: "root",
+      database,
+      connectTimeout: 3000,
+    });
+
+    try {
+      const [rows] = await conn.query(
+        "SELECT id, issue_id, author, text, created_at FROM comments WHERE issue_id = ? ORDER BY created_at ASC",
+        [issueId],
+      );
+
+      const comments: BeadsComment[] = (rows as CommentRow[]).map((r) => ({
         id: r.id,
         issue_id: r.issue_id,
         author: r.author,
@@ -66,7 +88,7 @@ export async function GET(
 
       return NextResponse.json(comments);
     } finally {
-      db.close();
+      await conn.end();
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";

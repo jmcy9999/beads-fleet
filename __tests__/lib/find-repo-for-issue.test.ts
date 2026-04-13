@@ -5,49 +5,31 @@
 import path from "path";
 import fs from "fs";
 import os from "os";
-import Database from "better-sqlite3";
+
+// Mock mysql2/promise
+jest.mock("mysql2/promise");
+import * as mysql from "mysql2/promise";
+const mockCreateConnection = mysql.createConnection as jest.MockedFunction<typeof mysql.createConnection>;
+
 import { findRepoForIssue } from "@/lib/repo-config";
 
 // ---------------------------------------------------------------------------
-// Test fixtures — temp repos with SQLite DBs
+// Test fixtures — temp repos with Dolt port files
 // ---------------------------------------------------------------------------
 
 let tmpDir: string;
 let repoA: string;
 let repoB: string;
-let repoNoDb: string;
-let configPath: string;
+let repoNoPort: string;
 
-function createBeadsDb(repoPath: string, issueIds: string[]) {
+function createDoltFixture(repoPath: string, port: number, database: string) {
   const beadsDir = path.join(repoPath, ".beads");
   fs.mkdirSync(beadsDir, { recursive: true });
-  const dbPath = path.join(beadsDir, "beads.db");
-  const db = new Database(dbPath);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS issues (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      description TEXT,
-      status TEXT NOT NULL DEFAULT 'open',
-      priority INTEGER NOT NULL DEFAULT 2,
-      issue_type TEXT NOT NULL DEFAULT 'task',
-      owner TEXT,
-      created_at TEXT NOT NULL,
-      created_by TEXT,
-      updated_at TEXT NOT NULL,
-      closed_at TEXT,
-      close_reason TEXT,
-      deleted_at TEXT
-    )
-  `);
-  const stmt = db.prepare(
-    `INSERT INTO issues (id, title, status, priority, issue_type, created_at, updated_at)
-     VALUES (?, ?, 'open', 2, 'task', datetime('now'), datetime('now'))`,
+  fs.writeFileSync(path.join(beadsDir, "dolt-server.port"), String(port));
+  fs.writeFileSync(
+    path.join(beadsDir, "metadata.json"),
+    JSON.stringify({ dolt_database: database }),
   );
-  for (const id of issueIds) {
-    stmt.run(id, `Issue ${id}`);
-  }
-  db.close();
 }
 
 beforeAll(() => {
@@ -55,18 +37,15 @@ beforeAll(() => {
 
   repoA = path.join(tmpDir, "repo-a");
   repoB = path.join(tmpDir, "repo-b");
-  repoNoDb = path.join(tmpDir, "repo-no-db");
+  repoNoPort = path.join(tmpDir, "repo-no-port");
 
   fs.mkdirSync(repoA, { recursive: true });
   fs.mkdirSync(repoB, { recursive: true });
-  fs.mkdirSync(repoNoDb, { recursive: true });
+  fs.mkdirSync(repoNoPort, { recursive: true });
 
-  createBeadsDb(repoA, ["ALPHA-001", "ALPHA-002", "ALPHA-003"]);
-  createBeadsDb(repoB, ["BETA-001", "BETA-002"]);
-  // repoNoDb intentionally has no .beads/beads.db
-
-  // Write a test config
-  configPath = path.join(os.homedir(), ".beads-web.json");
+  createDoltFixture(repoA, 55001, "repo_a");
+  createDoltFixture(repoB, 55002, "repo_b");
+  // repoNoPort intentionally has no .beads/dolt-server.port
 });
 
 afterAll(() => {
@@ -74,10 +53,9 @@ afterAll(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests
+// Mock readConfig to return our test repos
 // ---------------------------------------------------------------------------
 
-// We need to mock readConfig to return our test repos instead of the real config
 jest.mock("fs", () => {
   const actual = jest.requireActual("fs");
   return {
@@ -92,20 +70,50 @@ jest.mock("fs", () => {
 import { promises as fsPromises } from "fs";
 const mockReadFile = fsPromises.readFile as jest.MockedFunction<typeof fsPromises.readFile>;
 
+// ---------------------------------------------------------------------------
+// Helper: set up mock mysql2 to return results for specific repos
+// ---------------------------------------------------------------------------
+
+function setupMockConnections(issueMap: Record<number, string[]>) {
+  mockCreateConnection.mockImplementation(async (opts) => {
+    const port = (opts as { port: number }).port;
+    const mockQuery = jest.fn().mockImplementation(async (_sql: string, params?: unknown[]) => {
+      const issueId = params?.[0] as string;
+      const issues = issueMap[port] || [];
+      if (issues.includes(issueId)) {
+        return [[{ "1": 1 }]];
+      }
+      return [[]];
+    });
+    return {
+      query: mockQuery,
+      end: jest.fn(),
+    } as unknown as mysql.Connection;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 describe("findRepoForIssue", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Return a config with our test repos
     mockReadFile.mockResolvedValue(
       JSON.stringify({
         repos: [
           { name: "repo-a", path: repoA },
           { name: "repo-b", path: repoB },
-          { name: "repo-no-db", path: repoNoDb },
+          { name: "repo-no-port", path: repoNoPort },
         ],
         activeRepo: "__all__",
       }),
     );
+    // Default: repo-a has ALPHA issues, repo-b has BETA issues
+    setupMockConnections({
+      55001: ["ALPHA-001", "ALPHA-002", "ALPHA-003"],
+      55002: ["BETA-001", "BETA-002"],
+    });
   });
 
   it("finds an issue in the first repo", async () => {
@@ -123,8 +131,7 @@ describe("findRepoForIssue", () => {
     expect(result).toBeNull();
   });
 
-  it("skips repos without a beads.db", async () => {
-    // repoNoDb has no .beads/beads.db — should be silently skipped
+  it("skips repos without a dolt-server.port file", async () => {
     const result = await findRepoForIssue("BETA-001");
     expect(result).toBe(repoB);
   });
@@ -133,5 +140,29 @@ describe("findRepoForIssue", () => {
     mockReadFile.mockResolvedValue(JSON.stringify({ repos: [] }));
     const result = await findRepoForIssue("ALPHA-001");
     expect(result).toBeNull();
+  });
+
+  it("skips repos where Dolt connection fails", async () => {
+    mockCreateConnection.mockImplementation(async (opts) => {
+      const port = (opts as { port: number }).port;
+      if (port === 55001) throw new Error("ECONNREFUSED");
+      const mockQuery = jest.fn().mockResolvedValue([[{ "1": 1 }]]);
+      return { query: mockQuery, end: jest.fn() } as unknown as mysql.Connection;
+    });
+
+    const result = await findRepoForIssue("BETA-001");
+    expect(result).toBe(repoB);
+  });
+
+  it("closes connections after each query", async () => {
+    const mockEnd = jest.fn();
+    mockCreateConnection.mockImplementation(async () => {
+      const mockQuery = jest.fn().mockResolvedValue([[]]);
+      return { query: mockQuery, end: mockEnd } as unknown as mysql.Connection;
+    });
+
+    await findRepoForIssue("NONEXISTENT");
+    // Should have connected to repo-a and repo-b (repo-no-port skipped)
+    expect(mockEnd).toHaveBeenCalledTimes(2);
   });
 });
