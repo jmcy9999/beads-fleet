@@ -505,6 +505,26 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             );
           })()}
 
+          {/* Resume Build CTA: development stage, no agent running, open bugs/tasks exist
+              (factory-core-cur.1.17) */}
+          {app.stage === "development" && !epicAgentRunning && (() => {
+            const openBugs = children.filter((c) => c.status !== "closed" && c.issue_type === "bug");
+            const openTasks = children.filter((c) => c.status !== "closed" && (c.issue_type === "task" || c.issue_type === "feature"));
+            const hasOpenWork = openBugs.length > 0 || openTasks.length > 0;
+            // Only show Resume Build if there's no wave CTA already shown (avoids duplicate CTAs)
+            if (!hasOpenWork || (waveInfo && waveProgress)) return null;
+            return (
+              <button
+                onClick={(e) => handleAction(e, "resume-build")}
+                disabled={isPendingThis}
+                className={BTN_GREEN}
+              >
+                {isPendingThis && <Spinner />}
+                {actionLabel(`Resume Build (${openBugs.length} bug${openBugs.length !== 1 ? "s" : ""})`)}
+              </button>
+            );
+          })()}
+
           {/* Building + venture (no agent running): Ready to Deploy */}
           {app.stage === "development" && app.shipType === "venture" && !epicAgentRunning && (
             <button

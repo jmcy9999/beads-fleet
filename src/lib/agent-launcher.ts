@@ -189,15 +189,20 @@ interface WaveStatus {
 /**
  * Query the epic's children to determine wave completion status.
  * Returns wave info or { hasWaves: false } if no wave labels exist.
+ *
+ * @param epicId - The epic bead ID to query children for
+ * @param repoPath - The repo where the epic's children live. For internal
+ *   products this is fleet-core; for other ship types it's the product repo.
+ *   (factory-core-cur.1.11: was hardcoded to FLEET_CORE_PATH)
  */
-async function getWaveStatus(epicId: string, fleetCorePath: string): Promise<WaveStatus> {
+async function getWaveStatus(epicId: string, repoPath: string): Promise<WaveStatus> {
   const { execSync } = await import("child_process");
 
   // Check if epic has wave-checkpoint:required label
   let hasCheckpointRequired = false;
   try {
     const epicInfo = execSync(
-      `cd ${fleetCorePath} && bd show ${epicId} 2>/dev/null || echo ""`,
+      `cd ${repoPath} && bd show ${epicId} 2>/dev/null || echo ""`,
       { encoding: "utf-8", timeout: 10000 },
     );
     hasCheckpointRequired = epicInfo.includes("wave-checkpoint:required");
@@ -209,7 +214,7 @@ async function getWaveStatus(epicId: string, fleetCorePath: string): Promise<Wav
   let childrenOutput = "";
   try {
     childrenOutput = execSync(
-      `cd ${fleetCorePath} && bd list --status=all --parent=${epicId} 2>/dev/null || echo ""`,
+      `cd ${repoPath} && bd list --status=all --parent=${epicId} 2>/dev/null || echo ""`,
       { encoding: "utf-8", timeout: 10000 },
     );
   } catch {
@@ -241,7 +246,9 @@ async function getWaveStatus(epicId: string, fleetCorePath: string): Promise<Wav
     return { hasWaves: false, waves: waveMap, currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
   }
 
-  const totalWaves = Math.max(...waveMap.keys());
+  // Use waveMap.size (count of distinct waves) for consistency with
+  // fleet-utils.ts getWaveInfo which uses waveProgress.length (factory-core-cur.1.13)
+  const totalWaves = waveMap.size;
   let currentWave = totalWaves;
   for (let w = 1; w <= totalWaves; w++) {
     const entry = waveMap.get(w);
@@ -317,7 +324,9 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
   // -------------------------------------------------------------------------
   if (stage === "development") {
     try {
-      const waveStatus = await getWaveStatus(session.epicId!, FLEET_CORE_PATH);
+      // Use session.repoPath: for internal products that's fleet-core,
+      // for other ship types it's the product repo where wave-labeled beads live
+      const waveStatus = await getWaveStatus(session.epicId!, session.repoPath);
 
       if (waveStatus.hasWaves && !waveStatus.allWavesComplete) {
         // Waves exist and not all complete — chain to review-wave for the completed wave
@@ -363,7 +372,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
   // -------------------------------------------------------------------------
   if (stage === "build-review") {
     try {
-      const waveStatus = await getWaveStatus(session.epicId!, FLEET_CORE_PATH);
+      const waveStatus = await getWaveStatus(session.epicId!, session.repoPath);
 
       if (!waveStatus.hasWaves) {
         // No waves — shouldn't happen for wave review, but handle gracefully
@@ -452,21 +461,26 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
   }
 
   if (stage === "qa") {
-    // After QA finishes, check if bugs were filed
+    // After QA finishes, check if bugs were filed under this epic.
+    // FAIL-SAFE: if the check throws, stay at QA rather than advancing
+    // past it with unfixed bugs (factory-core-cur.1.16).
     try {
       const { execSync } = await import("child_process");
-      const bugCount = execSync(
-        `cd ${session.repoPath} && bd list --status=open --type=bug 2>/dev/null | grep -c "bug" || echo "0"`,
-        { encoding: "utf-8" },
+
+      // Scope bug check to this epic's children (not all repo bugs)
+      const childrenOutput = execSync(
+        `cd ${session.repoPath} && bd list --status=open --parent=${session.epicId} 2>/dev/null || echo ""`,
+        { encoding: "utf-8", timeout: 15000 },
       ).trim();
 
-      const hasBugs = parseInt(bugCount) > 0;
+      // Check for any open bug beads under the epic
+      const hasBugs = childrenOutput.includes("[bug]") || childrenOutput.includes("[BUG]");
 
       if (hasBugs) {
         // Check round count -- max 3 rounds
         const roundResult = execSync(
           `cd ${FLEET_CORE_PATH} && bd show ${session.epicId} 2>/dev/null | grep -o "qa:round-[0-9]*" | sort -t- -k2 -n | tail -1 || echo ""`,
-          { encoding: "utf-8" },
+          { encoding: "utf-8", timeout: 10000 },
         ).trim();
 
         const currentRound = roundResult ? parseInt(roundResult.split("-")[1]) : 1;
@@ -492,11 +506,13 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         });
         return true; // Handled -- bugs found, looping back through dev -> QA
       }
-      // If no bugs, the normal exit handler advances to submission-prep via NEXT_STAGE
+      // No bugs under this epic -- safe to advance to submission-prep via NEXT_STAGE
       return false;
     } catch (err) {
       console.error("Failed to handle QA chain:", err);
-      return false;
+      // FAIL-SAFE: stay at QA if we can't determine bug status.
+      // Better to pause for human review than advance past unfixed bugs.
+      return true;
     }
   } else if (stage === "qa-fixes") {
     // After build crew fixes QA bugs, send back to QA

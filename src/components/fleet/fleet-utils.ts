@@ -254,7 +254,19 @@ export function detectStage(
     if (labels.includes("pipeline:kit-management")) return "kit-management";
     if (labels.includes("pipeline:submitted")) return "submitted";
     if (labels.includes("pipeline:submission-prep")) return "submission-prep";
-    if (labels.includes("pipeline:qa")) return "qa";
+    // Map all QA-related pipeline labels to the "qa" column.
+    // CLAUDE.md documents pipeline:qa-round-1, pipeline:qa-round-2,
+    // pipeline:ux-polish, pipeline:qa-review, pipeline:security-review
+    // as valid pipeline labels. beads_web collapses these into one QA column.
+    // (factory-core-cur.1.19)
+    if (labels.includes("pipeline:qa") ||
+        labels.some((l) => l.startsWith("pipeline:qa-round-")) ||
+        labels.includes("pipeline:ux-polish") ||
+        labels.includes("pipeline:qa-review") ||
+        labels.includes("pipeline:security-review")) return "qa";
+    // Build review is part of the development cycle (between waves),
+    // so map it to the development column
+    if (labels.includes("pipeline:build-review")) return "development";
     if (labels.includes("pipeline:development")) return "development";
     if (labels.includes("pipeline:research-complete")) {
       // Split into plan-review sub-column when plan labels are present

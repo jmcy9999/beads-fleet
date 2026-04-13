@@ -37,7 +37,8 @@ export type PipelineAction =
   | "mark-venture-live"
   | "mark-venture-complete"
   | "start-wave"
-  | "review-wave";
+  | "review-wave"
+  | "resume-build";
 
 export interface PipelineActionPayload {
   epicId: string;
@@ -348,26 +349,42 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
 
       {/* Board with CSS transform scaling */}
       <div className="flex-1 overflow-auto">
-        <div
-          className="flex gap-2 pb-4"
-          style={{
-            transform: `scale(${scale})`,
-            transformOrigin: "top left",
-            width: `${100 / scale}%`,
-          }}
-        >
-          {filteredStages.map((stage) => (
-            <FleetColumn
-              key={stage}
-              stage={stage}
-              apps={grouped.get(stage) ?? []}
-              epicCosts={epicCosts}
-              onPipelineAction={onPipelineAction}
-              agentRunning={agentRunning}
-              pendingEpicId={pendingEpicId}
-            />
-          ))}
-        </div>
+        {/* Empty state when filters produce no results (factory-core-cur.1.14) */}
+        {apps.length === 0 && (shipTypeFilter !== "all" || waveFilter !== null) ? (
+          <div className="flex flex-col items-center justify-center py-16 text-gray-500">
+            <svg className="w-10 h-10 mb-3 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+            </svg>
+            <p className="text-sm mb-2">No epics match the current filters</p>
+            <button
+              onClick={() => { setShipTypeFilter("all"); saveShipTypeFilter("all"); setWaveFilter(null); }}
+              className="text-xs text-blue-400 hover:text-blue-300 underline"
+            >
+              Clear filters
+            </button>
+          </div>
+        ) : (
+          <div
+            className="flex gap-2 pb-4"
+            style={{
+              transform: `scale(${scale})`,
+              transformOrigin: "top left",
+              width: `${100 / scale}%`,
+            }}
+          >
+            {filteredStages.map((stage) => (
+              <FleetColumn
+                key={stage}
+                stage={stage}
+                apps={grouped.get(stage) ?? []}
+                epicCosts={epicCosts}
+                onPipelineAction={onPipelineAction}
+                agentRunning={agentRunning}
+                pendingEpicId={pendingEpicId}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

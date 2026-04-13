@@ -38,7 +38,8 @@ type PipelineAction =
   | "mark-venture-live"
   | "mark-venture-complete"
   | "start-wave"
-  | "review-wave";
+  | "review-wave"
+  | "resume-build";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -62,6 +63,7 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "mark-venture-complete",
   "start-wave",
   "review-wave",
+  "resume-build",
 ]);
 
 const FLEET_CORE_PATH = "/Users/janemckay/dev/fleet/fleet-core";
@@ -593,10 +595,26 @@ export async function POST(request: NextRequest) {
           ? `platforms/${shipType.replace("-app", "")}/qa`
           : "qa";
 
+        // Determine total wave count so QA can assign wave labels to filed bugs
+        // (factory-core-cur.1.18)
+        let totalWaves = 0;
+        try {
+          const { execSync } = await import("child_process");
+          const childrenOut = execSync(
+            `cd ${repoPath} && bd list --status=all --parent=${epicId} 2>/dev/null || echo ""`,
+            { encoding: "utf-8", timeout: 10000 },
+          );
+          const waveNums = [...childrenOut.matchAll(/wave:(\d+)/g)].map(m => parseInt(m[1], 10));
+          if (waveNums.length > 0) totalWaves = Math.max(...waveNums);
+        } catch {
+          // No wave info available — QA will check independently
+        }
+        const waveNote = totalWaves > 0 ? ` Total waves: ${totalWaves}.` : "";
+
         const session = await launchAgent({
           repoPath: repoPath,
           repoName: repoName,
-          prompt: `Run QA for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. QA round: ${currentRound}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Shipyard: ${fleetCorePath}.`,
+          prompt: `Run QA for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. QA round: ${currentRound}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Shipyard: ${fleetCorePath}.${waveNote}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Glob,Grep,Task",
@@ -672,6 +690,46 @@ export async function POST(request: NextRequest) {
         await closeEpic(epicId, "Venture complete", fleetCorePath);
         invalidateCache();
         return NextResponse.json({ success: true, action, epicId });
+      }
+
+      // -------------------------------------------------------------------
+      // RESUME BUILD: Re-launch builder to fix open bugs/tasks
+      // (factory-core-cur.1.17)
+      // -------------------------------------------------------------------
+      case "resume-build": {
+        await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: rbRepoPath, repoName: rbRepoName, researchPath: rbResearchPath, planPath: rbPlanPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const feedbackStrResume = typeof feedback === "string" && feedback.trim()
+          ? ` Jane's feedback: "${feedback}".`
+          : "";
+
+        const resumePrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${rbRepoPath}. Research report: ${rbResearchPath}. Build plan: ${rbPlanPath}. Fix all open bugs and complete remaining tasks.${feedbackStrResume}`;
+
+        const resumeSession = await launchAgent({
+          repoPath: rbRepoPath,
+          repoName: rbRepoName,
+          prompt: resumePrompt,
+          model: "opus",
+          maxTurns: 500,
+          allowedTools: isVenture
+            ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
+            : "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "development",
+          agentName: "builder",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: resumeSession });
       }
 
       // -------------------------------------------------------------------
