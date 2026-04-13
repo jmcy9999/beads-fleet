@@ -26,8 +26,8 @@ See `ARCHITECTURE.md` for full system documentation: pages, API routes, data flo
 
 ## Quick Reference
 
-- **Stack:** Next.js 14, React 18, TanStack Query 5, ReactFlow 11, better-sqlite3, Tailwind CSS 3
-- **Data:** `.beads/beads.db` (SQLite, source of truth) -> bv-client.ts -> API routes -> React hooks -> UI
+- **Stack:** Next.js 14, React 18, TanStack Query 5, ReactFlow 11, mysql2, Tailwind CSS 3
+- **Data:** Dolt (MySQL) -> dolt-reader.ts / bv-client.ts -> API routes -> React hooks -> UI
 - **Multi-repo:** `~/.beads-web.json` config, `__all__` sentinel for aggregation mode
-- **Fallback chain:** bv CLI -> SQLite -> JSONL -> empty response
-- **Schema tolerance:** sqlite-reader.ts uses `PRAGMA table_info` to handle different beads DB versions
+- **Data reader:** dolt-reader.ts connects to each repo's Dolt MySQL server (port from `.beads/dolt-server.port`)
+- **Schema tolerance:** dolt-reader.ts uses `SHOW COLUMNS` to handle different beads DB versions

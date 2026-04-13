@@ -6,15 +6,16 @@
 
 A Next.js 14 dark-themed web dashboard for the **Beads** git-backed issue tracker. It visualizes issues, dependencies, graph analytics, token usage, and project health across multiple beads-enabled repositories.
 
-**Tech stack:** Next.js 14, React 18, TanStack React Query 5, ReactFlow 11, better-sqlite3, Tailwind CSS 3, TypeScript 5.
+**Tech stack:** Next.js 14, React 18, TanStack React Query 5, ReactFlow 11, mysql2, Tailwind CSS 3, TypeScript 5.
 
 ## Beads Data Model
 
 ### Storage
 
-Each beads-enabled project has a `.beads/` directory containing:
-- **`beads.db`** — SQLite database (source of truth). Tables: `issues`, `labels`, `dependencies`, `comments`, `events`, `config`, `metadata`, and others.
-- **`issues.jsonl`** — JSON Lines export (one issue per line). Created by `bd sync`. May be stale — always prefer SQLite.
+Each beads-enabled project has a `.beads/` directory. All repos use **Dolt** (a MySQL-compatible version-controlled database) as their backend:
+- **`.beads/dolt/`** — Dolt database directory. Contains the versioned database with tables: `issues`, `labels`, `dependencies`, `comments`, `events`, `config`, `metadata`, and others.
+- **`.beads/dolt-server.port`** — MySQL port for this repo's Dolt server.
+- **`.beads/metadata.json`** — Backend config including `dolt_database` (database name).
 - **`token-usage.jsonl`** — JSON Lines with per-session token/cost records.
 
 ### Issue Fields
@@ -92,11 +93,11 @@ Each line in `token-usage.jsonl`:
 
 ### How the Dashboard Reads Beads
 
-1. `sqlite-reader.ts` opens `.beads/beads.db` in readonly mode. Uses `PRAGMA table_info` to detect which columns exist (handles schema differences across beads versions).
-2. If SQLite fails or DB is missing, falls back to parsing `.beads/issues.jsonl` line by line.
-3. `bv-client.ts` tries the `bv` CLI first (richer graph analytics), falls back to the SQLite/JSONL path.
-4. Issues are converted to `PlanIssue` objects with resolved dependency cross-references, epic associations, and `project:` labels.
-5. API routes serve this data as JSON. React hooks poll every 30-60 seconds.
+1. `dolt-reader.ts` connects to each repo's Dolt MySQL server (port from `.beads/dolt-server.port`, database name from `.beads/metadata.json`). Uses `SHOW COLUMNS` to detect which optional columns exist (handles schema differences across beads versions).
+2. `bv-client.ts` tries the `bv` CLI first (richer graph analytics), falls back to the Dolt reader.
+3. Issues are converted to `PlanIssue` objects via `plan-builder.ts` with resolved dependency cross-references, epic associations, and `project:` labels.
+4. API routes serve this data as JSON. React hooks poll every 30-60 seconds.
+5. In `__all__` aggregation mode, `Promise.allSettled` reads each repo independently — one failing repo doesn't block the rest.
 
 ### Creating Beads for Different Workflows
 
@@ -366,22 +367,25 @@ Or add it directly to `~/.beads-web.json`:
 - Live indicator with auto-polling (30s issues, 60s insights/tokens)
 
 ### Graceful Degradation
-- Works without `bv` CLI installed (falls back to SQLite/JSONL for basic data)
-- Schema-tolerant SQLite reader (handles different beads DB versions)
+- Works without `bv` CLI installed (falls back to Dolt reader for basic data)
+- Schema-tolerant Dolt reader (handles different beads DB versions via `SHOW COLUMNS`)
 - Graph metrics computed locally when bv unavailable (approximate but functional)
+- In `__all__` mode, `Promise.allSettled` ensures one failing repo doesn't block others
 
 ## Data Flow
 
 ```
-.beads/beads.db (SQLite)   ─┐
-.beads/issues.jsonl         ─┤── sqlite-reader.ts / jsonl-fallback.ts ──┐
-.beads/token-usage.jsonl    ─┘                                          │
-                                                                        v
-bv CLI (--robot-plan/insights/priority/diff)                            │
-        │                                                               │
-        v                                                               v
+.beads/dolt/ (Dolt MySQL)  ─── dolt-reader.ts ──────────────────┐
+.beads/token-usage.jsonl   ─── token-usage.ts                   │
+                                                                 v
+bv CLI (--robot-plan/insights/priority/diff)                     │
+        │                                                        │
+        v                                                        v
   bv-client.ts  <── graph-metrics.ts (fallback analytics)
   (normalizes bv output + 10s TTL cache)
+        │
+        v
+  plan-builder.ts (issuesToPlan conversion)
         │
         v
   API Routes (src/app/api/**)
@@ -394,11 +398,11 @@ bv CLI (--robot-plan/insights/priority/diff)                            │
   UI Components (pages, dashboard, board, insights)
 ```
 
-**Fallback chain:** bv CLI -> SQLite DB -> JSONL file -> empty response. The app works without `bv` installed.
+**Data reader:** dolt-reader.ts connects to each repo's Dolt MySQL server. If the server is unavailable, returns an error (not stale data).
 
-**Multi-repo aggregation:** When `activeRepo === "__all__"`, API routes fetch each repo's data in parallel directly from each project's `.beads/beads.db`, merge results, and add `project:<repoName>` labels for filtering. There is no hub or intermediary database — every read goes to the real project DB.
+**Multi-repo aggregation:** When `activeRepo === "__all__"`, API routes fetch each repo's data via `Promise.allSettled` from each project's Dolt server, merge results, and add `project:<repoName>` labels for filtering. Failed repos are skipped.
 
-**Issue mutations:** The action route (`POST /api/issues/[id]/action`) uses `findRepoForIssue()` to resolve which project DB contains the issue, then runs `bd` in that project directory. This works in both single-project and `__all__` aggregation mode.
+**Issue mutations:** The action route (`POST /api/issues/[id]/action`) uses `findRepoForIssue()` to resolve which project contains the issue, then runs `bd` in that project directory. This works in both single-project and `__all__` aggregation mode.
 
 ## Pages
 
@@ -438,7 +442,7 @@ bv CLI (--robot-plan/insights/priority/diff)                            │
 ## Core Library Modules
 
 ### `src/lib/bv-client.ts` (central data layer)
-Wraps `bv --robot-*` CLI commands via `execFile`. Normalizes PascalCase bv output to TypeScript types. 10-second TTL cache. Falls back to SQLite/JSONL when bv unavailable.
+Wraps `bv --robot-*` CLI commands via `execFile`. Normalizes PascalCase bv output to TypeScript types. 10-second TTL cache. Falls back to Dolt reader when bv unavailable.
 
 Key exports:
 - `getPlan(projectPath?)` -> `RobotPlan`
@@ -446,15 +450,15 @@ Key exports:
 - `getPriority(projectPath?)` -> `RobotPriority`
 - `getDiff(since, projectPath?)` -> `RobotDiff`
 - `getIssueById(issueId, projectPath?)` -> `{ plan_issue, raw_issue }`
-- `getAllProjectsPlan(repoPaths)` -> merged `RobotPlan` with `project:` labels
+- `getAllProjectsPlan(repoPaths)` -> merged `RobotPlan` with `project:` labels (uses `Promise.allSettled`)
 - `invalidateCache()` -> clears all cached responses
 
-### `src/lib/sqlite-reader.ts`
-Reads `.beads/beads.db` via `better-sqlite3` (readonly). Dynamically detects optional columns (e.g. `story_points`) via `PRAGMA table_info` to handle schema differences across beads versions. Returns `null` if DB missing (triggers JSONL fallback).
+### `src/lib/dolt-reader.ts`
+Reads issues directly from each repo's Dolt MySQL server. Discovers connection via `.beads/dolt-server.port` and `.beads/metadata.json`. Uses `SHOW COLUMNS` to detect optional columns (e.g. `story_points`). Throws if Dolt server unavailable (no fallback to stale data).
 
-### `src/lib/jsonl-fallback.ts`
-- `readIssuesFromJSONL(projectPath)` -> tries SQLite first, then `.beads/issues.jsonl`
+### `src/lib/plan-builder.ts`
 - `issuesToPlan(issues, projectPath)` -> converts `BeadsIssue[]` to `RobotPlan` with dependency cross-references
+- `emptyInsights(projectPath)` / `emptyPriority(projectPath)` -> empty stubs when bv unavailable
 
 ### `src/lib/graph-metrics.ts`
 Computes approximate graph metrics when bv unavailable: betweenness centrality (bottlenecks), transitive unblock count (keystones), degree centrality (hubs/authorities/influencers), Tarjan's SCC (cycles).
@@ -462,7 +466,7 @@ Computes approximate graph metrics when bv unavailable: betweenness centrality (
 ### `src/lib/repo-config.ts`
 Manages `~/.beads-web.json`. `ALL_PROJECTS_SENTINEL = "__all__"` enables aggregation mode. Exports: `getActiveProjectPath()`, `getAllRepoPaths()`, `addRepo()`, `removeRepo()`, `setActiveRepo()`, `getRepos()`, `findRepoForIssue()`.
 
-- **`findRepoForIssue(issueId)`** — Resolves which repo an issue belongs to by checking each configured repo's SQLite DB. Used by the action route to run `bd` in the correct project directory, even in `__all__` aggregation mode.
+- **`findRepoForIssue(issueId)`** — Resolves which repo an issue belongs to by checking each configured repo's Dolt database. Used by the action route to run `bd` in the correct project directory, even in `__all__` aggregation mode.
 
 ### `src/lib/recipes.ts`
 Filter engine. `FilterCriteria` supports: statuses, priorities, types, owner, labels, labelPrefix, projects, epic, hasBlockers, isStale, isRecent, search text. Built-in views: All Issues, Actionable, In Progress, Blocked, High Priority, Bugs, Submissions. Custom views saved to localStorage.
@@ -475,6 +479,7 @@ Spawns Claude Code CLI as a detached background subprocess. Manages one active s
 
 ### `src/lib/cache.ts`
 Simple TTL cache (10-second default). Used by bv-client to avoid redundant subprocess calls.
+
 
 ### `src/lib/types.ts`
 All TypeScript types:
@@ -561,8 +566,8 @@ Dark mode with 4-tier surface palette:
 
 ## Important Patterns
 
-1. **Schema tolerance:** SQLite reader checks which columns exist via `PRAGMA table_info` before querying. Different beads versions have different schemas (e.g. `story_points` is optional).
-2. **Graceful degradation:** Every data path has a fallback chain. Never crashes on missing data.
+1. **Schema tolerance:** Dolt reader checks which columns exist via `SHOW COLUMNS` before querying. Different beads versions have different schemas (e.g. `story_points` is optional).
+2. **No stale data:** Dolt reader throws if server unavailable rather than falling back to stale data. In `__all__` mode, `Promise.allSettled` skips failed repos.
 3. **Security:** CLI calls use `execFile` (not `exec`). Diff `since` param validated against safe regex. Issue mutations go through `bd` CLI (validated issue ID + action). Mutations resolve the correct project via `findRepoForIssue()` so they always target the real project DB.
 4. **Cache invalidation:** bv-client has 10s server TTL. React Query has 15s stale time + polling. Repo switch invalidates everything.
 
@@ -628,8 +633,8 @@ src/
     bv-client.ts            # Central data layer (bv CLI wrapper)
     types.ts                # All TypeScript types
     venture-plan-types.ts   # Venture plan types (VenturePlan, VenturePlanStream, etc.)
-    sqlite-reader.ts        # SQLite DB reader (includes due_at column detection)
-    jsonl-fallback.ts       # JSONL fallback + issuesToPlan
+    dolt-reader.ts          # Dolt MySQL reader (connects to per-repo Dolt server)
+    plan-builder.ts         # issuesToPlan conversion + empty stubs
     graph-metrics.ts        # Fallback graph analytics
     repo-config.ts          # Multi-repo config (~/.beads-web.json)
     recipes.ts              # Filter engine + saved views

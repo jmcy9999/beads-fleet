@@ -206,11 +206,10 @@ Beads Fleet is a thin wrapper over the existing Beads data layer. It does not du
 ```
 Browser  -->  Next.js API Routes  -->  bv CLI (Robot Protocol)
                                    |
-                                   +->  SQLite fallback (.beads/beads.db)
-                                   +->  JSONL fallback (.beads/issues.jsonl)
+                                   +->  Dolt reader (mysql2 -> per-repo Dolt server)
 ```
 
-**Data flow:** The browser calls Next.js API routes. Each route shells out to `bv --robot-*` commands that return structured JSON. When `bv` is unavailable, the route reads directly from the Beads SQLite database via `better-sqlite3`. If the database is also missing, it parses `.beads/issues.jsonl` as a final fallback.
+**Data flow:** The browser calls Next.js API routes. Each route shells out to `bv --robot-*` commands that return structured JSON. When `bv` is unavailable, the route reads directly from each repo's Dolt MySQL server via `mysql2`. All repos use Dolt as their backend.
 
 Responses are cached in memory with a short TTL to keep the UI responsive without hammering the filesystem.
 
@@ -225,7 +224,7 @@ Responses are cached in memory with a short TTL to keep the UI responsive withou
 | Styling | Tailwind CSS v3 |
 | Data Fetching | TanStack Query v5 (React Query) |
 | Graph Visualization | ReactFlow v11 |
-| Database Access | better-sqlite3 |
+| Database Access | mysql2 (Dolt) |
 | Testing | Jest + React Testing Library |
 | CI | GitHub Actions |
 
@@ -300,14 +299,14 @@ src/
   hooks/                   # React Query hooks
   lib/                     # Core data access and utilities
     agent-launcher.ts      # Claude Code agent subprocess management
-    bv-client.ts           # bv CLI wrapper + fallback chain
+    bv-client.ts           # bv CLI wrapper + Dolt reader integration
     cache.ts               # TTL cache for bv responses
-    graph-metrics.ts       # In-process graph analytics fallback
-    jsonl-fallback.ts      # JSONL parser (final fallback)
+    dolt-reader.ts         # Dolt MySQL reader (per-repo Dolt server)
+    graph-metrics.ts       # In-process graph analytics (when bv unavailable)
     pipeline-labels.ts     # Pipeline label management for epics
+    plan-builder.ts        # issuesToPlan conversion + empty stubs
     recipes.ts             # Saved view / filter presets
     repo-config.ts         # Multi-repo configuration (~/.beads-web.json)
-    sqlite-reader.ts       # Direct SQLite DB reader
     token-usage.ts         # Token usage JSONL reader and aggregation
     types.ts               # Shared TypeScript types
 ```
@@ -328,7 +327,7 @@ PROJECT_DIR=/path/to/your/beads/project docker compose up -d
 
 A `netlify.toml` is included. Connect the repository to Netlify and it will build automatically using the `@netlify/plugin-nextjs` plugin.
 
-> **Note:** SQLite-based features require a server runtime. Netlify deployments will depend on `bv` being accessible or the API routes being adapted for edge/serverless constraints.
+> **Note:** Dolt-based features require a server runtime with MySQL access. Netlify deployments will depend on `bv` being accessible or the Dolt servers being network-reachable.
 
 ### Standalone Node.js
 
@@ -355,4 +354,4 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 - [Beads](https://github.com/steveyegge/beads) by Steve Yegge -- the issue tracker this dashboard visualizes
 - [beads_viewer (`bv`)](https://github.com/Dicklesworthstone/beads_viewer) by Dicklesworthstone (MIT) -- the terminal TUI / graph analytics engine whose Robot Protocol powers the backend
-- Built with [Next.js](https://nextjs.org/), [ReactFlow](https://reactflow.dev/), [TanStack Query](https://tanstack.com/query), [Tailwind CSS](https://tailwindcss.com/), and [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)
+- Built with [Next.js](https://nextjs.org/), [ReactFlow](https://reactflow.dev/), [TanStack Query](https://tanstack.com/query), [Tailwind CSS](https://tailwindcss.com/), and [mysql2](https://github.com/sidorares/node-mysql2)
