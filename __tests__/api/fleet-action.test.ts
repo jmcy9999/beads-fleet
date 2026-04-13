@@ -506,7 +506,7 @@ describe("POST /api/fleet/action", () => {
       );
     });
 
-    it("launches planning agent in the app repo with CLAUDE.md format prompt", async () => {
+    it("launches planning agent in the app repo with concise prompt and agentName", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -521,12 +521,13 @@ describe("POST /api/fleet/action", () => {
           maxTurns: 200,
           pipelineStage: "planning",
           epicId: "epic-1",
-          prompt: expect.stringContaining("Plan the app build for"),
+          agentName: "planner",
+          prompt: expect.stringContaining("Plan epic"),
         }),
       );
     });
 
-    it("includes entry: from-research in the prompt", async () => {
+    it("includes entry point and ship type in the prompt", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -536,12 +537,12 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          prompt: expect.stringContaining("entry: from-research"),
+          prompt: expect.stringContaining("Entry point: from-research"),
         }),
       );
     });
 
-    it("references the recon brief in the prompt", async () => {
+    it("references the research report in the prompt", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -551,7 +552,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          prompt: expect.stringContaining("Recon brief is at"),
+          prompt: expect.stringContaining("Research report:"),
         }),
       );
     });
@@ -622,7 +623,7 @@ describe("POST /api/fleet/action", () => {
       );
     });
 
-    it("launches planning agent in the app repo with revise-plan entry point", async () => {
+    it("launches planning agent in the app repo with revise-plan entry point and agentName", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -634,7 +635,8 @@ describe("POST /api/fleet/action", () => {
         expect.objectContaining({
           repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
           pipelineStage: "planning",
-          prompt: expect.stringContaining("entry: revise-plan"),
+          agentName: "planner",
+          prompt: expect.stringContaining("Entry point: revise-plan"),
         }),
       );
     });
@@ -676,7 +678,7 @@ describe("POST /api/fleet/action", () => {
       );
     });
 
-    it("launches planning agent with from-candidates entry point", async () => {
+    it("launches planning agent with from-candidates entry point and agentName", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -689,7 +691,8 @@ describe("POST /api/fleet/action", () => {
           repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
           model: "opus",
           pipelineStage: "planning",
-          prompt: expect.stringContaining("entry: from-candidates"),
+          agentName: "planner",
+          prompt: expect.stringContaining("Entry point: from-candidates"),
         }),
       );
     });
@@ -749,7 +752,7 @@ describe("POST /api/fleet/action", () => {
       );
     });
 
-    it("launches planning agent in the app repo with revise-plan entry point", async () => {
+    it("launches planning agent in the app repo with revise-plan entry point and agentName", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -761,7 +764,8 @@ describe("POST /api/fleet/action", () => {
         expect.objectContaining({
           repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
           pipelineStage: "planning",
-          prompt: expect.stringContaining("entry: revise-plan"),
+          agentName: "planner",
+          prompt: expect.stringContaining("Entry point: revise-plan"),
         }),
       );
     });

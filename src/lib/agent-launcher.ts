@@ -41,6 +41,7 @@ export interface LaunchOptions {
   allowedTools?: string;
   epicId?: string;
   pipelineStage?: string;
+  agentName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +425,11 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     "--model",
     model,
   ];
+
+  // Add agent name if specified
+  if (options.agentName) {
+    args.push("--agent", options.agentName);
+  }
 
   // Ensure cwd exists (planning agents run in app repos that may not exist yet)
   await fs.mkdir(options.repoPath, { recursive: true });
