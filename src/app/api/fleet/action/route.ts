@@ -10,6 +10,7 @@ import { launchAgent, stopAgent } from "@/lib/agent-launcher";
 import { getRepos } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import { extractAppName } from "@/lib/extract-app-name";
+import { resolveRepoPath } from "@/lib/repo-path-resolver";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -174,12 +175,19 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
         invalidateCache();
 
-        const appRepoPath = `/Users/janemckay/dev/claude_projects/${appName}`;
-        const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${appRepoPath}. Research report: ${fleetCorePath}/products/${appName}/research/report.md. Build plan: ${appRepoPath}/.beads/plans/${epicId}.md.`;
+        const { repoPath, repoName, researchPath, planPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}.`;
 
         const session = await launchAgent({
-          repoPath: appRepoPath,
-          repoName: appName,
+          repoPath: repoPath,
+          repoName: repoName,
           prompt: devPrompt,
           model: "opus",
           maxTurns: 500,
@@ -273,16 +281,23 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
         invalidateCache();
 
-        const appRepoPath = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const { repoPath, repoName, researchPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
         const feedbackStr2 = typeof feedback === "string" && feedback.trim()
           ? ` Jane's feedback: "${feedback}".`
           : "";
 
-        const sendBackPrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${appRepoPath}. Research report: ${fleetCorePath}/products/${appName}/research/report.md.${feedbackStr2}`;
+        const sendBackPrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}.${feedbackStr2}`;
 
         const session = await launchAgent({
-          repoPath: appRepoPath,
-          repoName: appName,
+          repoPath: repoPath,
+          repoName: repoName,
           prompt: sendBackPrompt,
           model: "opus",
           maxTurns: 500,
@@ -332,12 +347,19 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], fleetCorePath);
         invalidateCache();
 
-        const appRepoPath3 = `/Users/janemckay/dev/claude_projects/${appName}`;
-        const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${appRepoPath3}. Research report: ${fleetCorePath}/products/${appName}/research/report.md.`;
+        const { repoPath, repoName, researchPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${repoPath}. Research report: ${researchPath}.`;
 
         const session = await launchAgent({
-          repoPath: appRepoPath3,
-          repoName: appName,
+          repoPath: repoPath,
+          repoName: repoName,
           prompt: planPrompt,
           model: "opus",
           maxTurns: 200,
@@ -370,12 +392,18 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["plan:approved", "pipeline:development", "agent:running"], fleetCorePath);
         invalidateCache();
 
-        const appRepoPath7 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const { repoPath, repoName, researchPath, planPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
 
         // Read feature approval state if it exists, to scope the build
         let featureScopeNote = "";
         try {
-          const approvalPath = path.join(appRepoPath7, ".beads", "plans", `${epicId}.approval.json`);
+          const approvalPath = path.join(repoPath, ".beads", "plans", `${epicId}.approval.json`);
           const raw = await fs.readFile(approvalPath, "utf-8");
           const approval = JSON.parse(raw);
           const approved = (approval.features ?? []).filter((f: { status: string }) => f.status === "approved");
@@ -398,11 +426,11 @@ export async function POST(request: NextRequest) {
           // No approval file — build everything in the plan
         }
 
-        const approveDevPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${appRepoPath7}. Research report: ${fleetCorePath}/products/${appName}/research/report.md. Build plan: ${appRepoPath7}/.beads/plans/${epicId}.md.${featureScopeNote}`;
+        const approveDevPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}.${featureScopeNote}`;
 
         const session = await launchAgent({
-          repoPath: appRepoPath7,
-          repoName: appName,
+          repoPath: repoPath,
+          repoName: repoName,
           prompt: approveDevPrompt,
           model: "opus",
           maxTurns: 500,
@@ -425,16 +453,23 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache();
 
-        const appRepoPath4 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const { repoPath, repoName } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
         const feedbackStr3 = typeof feedback === "string" && feedback.trim()
           ? ` Jane's feedback: "${feedback}".`
           : "";
 
-        const revisePlanPrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${appRepoPath4}.${feedbackStr3}`;
+        const revisePlanPrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}.${feedbackStr3}`;
 
         const session = await launchAgent({
-          repoPath: appRepoPath4,
-          repoName: appName,
+          repoPath: repoPath,
+          repoName: repoName,
           prompt: revisePlanPrompt,
           model: "opus",
           maxTurns: 200,
@@ -456,12 +491,19 @@ export async function POST(request: NextRequest) {
         await updateEpicStatus(epicId, "in_progress", fleetCorePath);
         invalidateCache();
 
-        const appRepoPath5 = `/Users/janemckay/dev/claude_projects/${appName}`;
-        const skipPlanPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-candidates. Product repo: ${appRepoPath5}. No recon brief.`;
+        const { repoPath, repoName } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const skipPlanPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-candidates. Product repo: ${repoPath}. No recon brief.`;
 
         const session = await launchAgent({
-          repoPath: appRepoPath5,
-          repoName: appName,
+          repoPath: repoPath,
+          repoName: repoName,
           prompt: skipPlanPrompt,
           model: "opus",
           maxTurns: 200,
@@ -483,15 +525,22 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], fleetCorePath);
         invalidateCache();
 
-        const appRepoPath6 = `/Users/janemckay/dev/claude_projects/${appName}`;
+        const { repoPath, repoName } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
         const feedbackStr4 = typeof feedback === "string" && feedback.trim()
           ? ` Jane's feedback: "${feedback}".`
           : "";
 
         const session = await launchAgent({
-          repoPath: appRepoPath6,
-          repoName: appName,
-          prompt: `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${appRepoPath6}.${feedbackStr4}`,
+          repoPath: repoPath,
+          repoName: repoName,
+          prompt: `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}.${feedbackStr4}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -520,7 +569,13 @@ export async function POST(request: NextRequest) {
         invalidateCache();
 
         const qaAppName = extractAppName(epicTitle as string) ?? appName;
-        const qaAppPath = `/Users/janemckay/dev/claude_projects/${qaAppName}`;
+        const { repoPath, repoName, researchPath, planPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          qaAppName,
+          epicId as string,
+          fleetCorePath
+        );
 
         // Select platform-specific QA agent if available
         const platformQA = ["ios", "macos"];
@@ -529,9 +584,9 @@ export async function POST(request: NextRequest) {
           : "qa";
 
         const session = await launchAgent({
-          repoPath: qaAppPath,
-          repoName: qaAppName,
-          prompt: `Run QA for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. QA round: ${currentRound}. Product repo: ${qaAppPath}. Research report: ${fleetCorePath}/products/${qaAppName}/research/report.md. Build plan: ${qaAppPath}/.beads/plans/${epicId}.md. Shipyard: ${fleetCorePath}.`,
+          repoPath: repoPath,
+          repoName: repoName,
+          prompt: `Run QA for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. QA round: ${currentRound}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Shipyard: ${fleetCorePath}.`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Glob,Grep,Task",
@@ -554,12 +609,18 @@ export async function POST(request: NextRequest) {
         invalidateCache();
 
         const fixAppName = extractAppName(epicTitle as string) ?? appName;
-        const fixAppPath = `/Users/janemckay/dev/claude_projects/${fixAppName}`;
+        const { repoPath, repoName, researchPath, planPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          fixAppName,
+          epicId as string,
+          fleetCorePath
+        );
 
         const session = await launchAgent({
-          repoPath: fixAppPath,
-          repoName: fixAppName,
-          prompt: `Fix QA bugs for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${fixAppPath}. Research report: ${fleetCorePath}/products/${fixAppName}/research/report.md. Build plan: ${fixAppPath}/.beads/plans/${epicId}.md.`,
+          repoPath: repoPath,
+          repoName: repoName,
+          prompt: `Fix QA bugs for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}.`,
           model: "opus",
           maxTurns: 300,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
