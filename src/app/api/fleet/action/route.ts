@@ -290,8 +290,10 @@ export async function POST(request: NextRequest) {
       // SEND BACK TO DEVELOPMENT: Prepare for Submission -> In Development
       // -------------------------------------------------------------------
       case "send-back-to-dev": {
-        // Remove whichever "from" stage label is present (submission-prep, deploying, or qa)
-        await removeLabelsFromEpic(epicId, ["pipeline:submission-prep", "pipeline:deploying", "pipeline:qa"], fleetCorePath);
+        // Remove ALL pipeline:* labels to prevent orphans (factory-core-hnv.24)
+        // Previously only removed submission-prep/deploying/qa, missing ux-polish etc.
+        const sendBackLabels = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, sendBackLabels, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
         invalidateCache();
 
@@ -583,8 +585,10 @@ export async function POST(request: NextRequest) {
           ? Math.max(...roundLabels.map(l => parseInt(l.split("-")[1]))) + 1
           : 1;
 
-        // Remove old labels, add QA labels
-        await removeLabelsFromEpic(epicId, ["pipeline:development", ...roundLabels], fleetCorePath);
+        // Remove ALL pipeline:* labels to prevent orphans (factory-core-hnv.24)
+        // Previously only removed pipeline:development, missing ux-polish/build-review/etc.
+        await removeAllPipelineLabels(epicId as string, actualLabels, fleetCorePath);
+        await removeLabelsFromEpic(epicId, roundLabels, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:qa", `qa:round-${currentRound}`, "agent:running"], fleetCorePath);
         invalidateCache();
 

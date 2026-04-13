@@ -380,7 +380,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("send-back-to-dev", () => {
-    it("removes submission-prep and adds development + agent:running", async () => {
+    it("removes all pipeline labels and adds development + agent:running (hnv.24)", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -389,7 +389,9 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:submission-prep", "pipeline:deploying", "pipeline:qa"], expect.any(String));
+      // Should use removeAllPipelineLabels to prevent orphan labels (hnv.24)
+      expect(mockGetEpicLabels).toHaveBeenCalledWith("epic-1", expect.any(String));
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-1", expect.any(Array), expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["pipeline:development", "agent:running"], expect.any(String));
     });
 
@@ -799,7 +801,7 @@ describe("POST /api/fleet/action", () => {
       expect(data.qaRound).toBe(1);
     });
 
-    it("applies correct labels for first QA round", async () => {
+    it("applies correct labels for first QA round (hnv.24)", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -808,9 +810,16 @@ describe("POST /api/fleet/action", () => {
       });
       await POST(req);
 
+      // Should use removeAllPipelineLabels to prevent orphan labels (hnv.24)
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith(
+        "epic-1",
+        expect.any(Array),
+        expect.any(String),
+      );
+      // Round labels removed separately (none for first round)
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:development"],
+        [],
         expect.any(String),
       );
       expect(mockAddLabels).toHaveBeenCalledWith(
@@ -870,7 +879,7 @@ describe("POST /api/fleet/action", () => {
       expect(data.qaRound).toBe(2);
     });
 
-    it("reads actual labels (not stale request body) for round calculation (hnv.19)", async () => {
+    it("reads actual labels (not stale request body) for round calculation (hnv.19, hnv.24)", async () => {
       // Simulate auto-chain: request body has stale labels (no qa:round-*)
       // but the epic actually has qa:round-2 from a previous QA cycle
       mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-2"]);
@@ -885,10 +894,16 @@ describe("POST /api/fleet/action", () => {
 
       // Should be round 3 (based on actual labels), not round 1 (based on stale body)
       expect(data.qaRound).toBe(3);
-      // Should remove the old round label
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
+      // Should use removeAllPipelineLabels for pipeline labels (hnv.24)
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:development", "qa:round-2"],
+        expect.any(String),
+      );
+      // Should remove round labels separately
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["qa:round-2"],
         expect.any(String),
       );
     });
