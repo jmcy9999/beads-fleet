@@ -214,7 +214,8 @@ export async function POST(request: NextRequest) {
           ? ` Jane's feedback: "${feedback}".`
           : "";
 
-        const moreResearchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}. Previous research at products/${appName}/research/report.md.${feedbackStr}`;
+        const { researchPath: prevResearchPath } = resolveRepoPath(shipType, epicTitle as string, appName, epicId as string, fleetCorePath);
+        const moreResearchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}. Previous research at ${prevResearchPath}.${feedbackStr}`;
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
