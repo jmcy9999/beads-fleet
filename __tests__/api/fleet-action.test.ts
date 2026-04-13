@@ -1169,10 +1169,17 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
       expect(data.skipped).toBe(true);
 
-      // Should advance directly to QA Round 2
+      // Should remove old pipeline and round labels (factory-core-hnv.21)
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-1"],
+        expect.any(String),
+      );
+
+      // Should advance directly to QA Round 2 using standard label convention (factory-core-hnv.21)
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:qa-round-2"],
+        ["pipeline:qa", "qa:round-2"],
         expect.any(String),
       );
     });
