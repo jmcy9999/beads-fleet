@@ -169,7 +169,7 @@ const NEXT_STAGE: Record<string, string> = {
  * auto-chains to build instead of waiting for plan approval.
  */
 const EXIT_LABELS: Record<string, string[]> = {
-  // planning used to add plan:pending here, but now auto-chains to build
+  planning: ["plan:pending"],
 };
 
 // ---------------------------------------------------------------------------
@@ -216,26 +216,14 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
   }
 
   // -------------------------------------------------------------------------
-  // planning -> build: auto-start build after planning completes
-  // (skips plan approval gate — agent proceeds, Jane reviews async)
+  // planning -> plan:pending: stop for owner review (human gate)
+  // Owner clicks "Approve Plan" or "Revise Plan" from the dashboard.
+  // Do NOT auto-chain to build — the plan must be reviewed first.
   // -------------------------------------------------------------------------
   if (stage === "planning") {
-    try {
-      await fetch("http://localhost:3000/api/fleet/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "approve-and-build",
-          epicId: session.epicId,
-          epicTitle: session.repoName,
-          currentLabels: session.epicLabels,
-        }),
-      });
-      return true; // Chain handled (planning -> build)
-    } catch (err) {
-      console.error("Failed to chain build after planning:", err);
-      return false;
-    }
+    // plan:pending is added by the EXIT_LABELS map (line ~167).
+    // No auto-chain — return false so the normal exit handler applies EXIT_LABELS.
+    return false;
   }
 
   // -------------------------------------------------------------------------
