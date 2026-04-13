@@ -13,7 +13,14 @@ import { findRepoForIssue } from "./repo-config";
 import { getBdPath, getBdEnv } from "./bd-path";
 
 const execFile = promisify(execFileCb);
-const BD = getBdPath();
+// Lazy-initialize BD to avoid stale references during Next.js hot reload.
+// Module-level getBdPath() can return a stale cached value when HMR
+// replaces modules. (factory-core-cur.1.21)
+let _bd: string | null = null;
+function BD(): string {
+  if (!_bd) _bd = getBdPath();
+  return _bd;
+}
 
 const BD_TIMEOUT = 15_000;
 
@@ -45,7 +52,7 @@ export async function addLabelsToEpic(
 
   for (const label of labels) {
     try {
-      await execFile(BD, ["label", "add", issueId, label], {
+      await execFile(BD(), ["label", "add", issueId, label], {
         cwd: repoPath,
         timeout: BD_TIMEOUT,
         env: { ...process.env, NO_COLOR: "1" },
@@ -74,7 +81,7 @@ export async function removeLabelsFromEpic(
 
   for (const label of labels) {
     try {
-      await execFile(BD, ["label", "remove", issueId, label], {
+      await execFile(BD(), ["label", "remove", issueId, label], {
         cwd: repoPath,
         timeout: BD_TIMEOUT,
         env: { ...process.env, NO_COLOR: "1" },
@@ -112,7 +119,7 @@ export async function closeEpic(
 ): Promise<void> {
   const repoPath = await resolveRepoPath(issueId, epicRepoPath);
 
-  await execFile(BD, ["close", issueId, "--reason", reason], {
+  await execFile(BD(), ["close", issueId, "--reason", reason], {
     cwd: repoPath,
     timeout: BD_TIMEOUT,
     env: { ...process.env, NO_COLOR: "1" },
@@ -129,7 +136,7 @@ export async function updateEpicStatus(
 ): Promise<void> {
   const repoPath = await resolveRepoPath(issueId, epicRepoPath);
 
-  await execFile(BD, ["update", issueId, `--status=${status}`], {
+  await execFile(BD(), ["update", issueId, `--status=${status}`], {
     cwd: repoPath,
     timeout: BD_TIMEOUT,
     env: { ...process.env, NO_COLOR: "1" },
