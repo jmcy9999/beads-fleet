@@ -252,8 +252,17 @@ export function detectStage(
     if (labels.includes("pipeline:live")) return "live";
     if (labels.includes("pipeline:deploying")) return "deploying";
     if (labels.includes("pipeline:kit-management")) return "kit-management";
-    if (labels.includes("pipeline:submitted")) return "submitted";
-    if (labels.includes("pipeline:submission-prep")) return "submission-prep";
+    // Map platform review stages to the "submitted" column
+    // CLAUDE.md documents pipeline:awaiting-review and pipeline:in-review
+    // as valid pipeline labels for store review states. (factory-core-cur.1.19)
+    if (labels.includes("pipeline:submitted") ||
+        labels.includes("pipeline:awaiting-review") ||
+        labels.includes("pipeline:in-review")) return "submitted";
+    // Map compliance-check and package to submission-prep column
+    // (pre-submission stages from CLAUDE.md). (factory-core-cur.1.19)
+    if (labels.includes("pipeline:submission-prep") ||
+        labels.includes("pipeline:compliance-check") ||
+        labels.includes("pipeline:package")) return "submission-prep";
     // Map all QA-related pipeline labels to the "qa" column.
     // CLAUDE.md documents pipeline:qa-round-1, pipeline:qa-round-2,
     // pipeline:ux-polish, pipeline:qa-review, pipeline:security-review
@@ -268,6 +277,9 @@ export function detectStage(
     // so map it to the development column
     if (labels.includes("pipeline:build-review")) return "development";
     if (labels.includes("pipeline:development")) return "development";
+    // pipeline:plan-review is the explicit label; pipeline:research-complete
+    // with plan:* labels is the legacy detection. (factory-core-cur.1.19)
+    if (labels.includes("pipeline:plan-review")) return "plan-review";
     if (labels.includes("pipeline:research-complete")) {
       // Split into plan-review sub-column when plan labels are present
       if (labels.includes("plan:pending") || labels.includes("plan:approved")) {
