@@ -30,6 +30,7 @@ export interface AgentSession {
   logFile: string;
   epicId?: string;
   pipelineStage?: string;
+  epicLabels?: string[];
 }
 
 export interface LaunchOptions {
@@ -42,6 +43,7 @@ export interface LaunchOptions {
   epicId?: string;
   pipelineStage?: string;
   agentName?: string;
+  epicLabels?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +205,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           action: "generate-plan",
           epicId: session.epicId,
           epicTitle: session.repoName,
+          currentLabels: session.epicLabels,
         }),
       });
       return true; // Chain handled (research -> planning)
@@ -225,6 +228,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           action: "approve-and-build",
           epicId: session.epicId,
           epicTitle: session.repoName,
+          currentLabels: session.epicLabels,
         }),
       });
       return true; // Chain handled (planning -> build)
@@ -246,7 +250,8 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         body: JSON.stringify({
           action: "send-for-qa",
           epicId: session.epicId,
-          epicTitle: session.repoName, // Will be resolved by extractAppName
+          epicTitle: session.repoName,
+          currentLabels: session.epicLabels,
         }),
       });
       return true; // Chain handled the transition (development -> qa)
@@ -290,6 +295,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
             action: "qa-fix-and-retest",
             epicId: session.epicId,
             epicTitle: session.repoName,
+            currentLabels: session.epicLabels,
           }),
         });
         return true; // Handled -- bugs found, looping back through dev -> QA
@@ -310,6 +316,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           action: "send-for-qa",
           epicId: session.epicId,
           epicTitle: session.repoName,
+          currentLabels: session.epicLabels,
         }),
       });
       return true; // Chain handled the transition (qa-fixes -> qa)
@@ -482,6 +489,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     logFile,
     epicId: options.epicId,
     pipelineStage: options.pipelineStage,
+    epicLabels: options.epicLabels,
   };
 
   activeAgents.set(repoKey, { session, process: child });

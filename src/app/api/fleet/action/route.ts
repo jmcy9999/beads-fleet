@@ -158,6 +158,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "research",
           agentName: "research",
         });
@@ -186,6 +187,7 @@ export async function POST(request: NextRequest) {
             ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
             : "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "development",
         });
 
@@ -214,6 +216,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "research",
           agentName: "research",
         });
@@ -254,6 +257,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 100,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "submission-prep",
         });
 
@@ -286,6 +290,7 @@ export async function POST(request: NextRequest) {
             ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
             : "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "development",
         });
 
@@ -312,6 +317,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "kit-management",
         });
 
@@ -337,6 +343,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "planning",
           agentName: "planner",
         });
@@ -403,6 +410,7 @@ export async function POST(request: NextRequest) {
             ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
             : "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "development",
         });
 
@@ -432,6 +440,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "planning",
           agentName: "planner",
         });
@@ -458,6 +467,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "planning",
           agentName: "planner",
         });
@@ -486,6 +496,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "planning",
           agentName: "planner",
         });
@@ -525,6 +536,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 200,
           allowedTools: "Bash,Read,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "qa",
           agentName: qaAgentName,
         });
@@ -552,6 +564,7 @@ export async function POST(request: NextRequest) {
           maxTurns: 300,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
+          epicLabels: labels,
           pipelineStage: "qa-fixes",
         });
 
