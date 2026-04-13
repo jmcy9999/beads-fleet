@@ -6,8 +6,10 @@ import { startActiveObservation, propagateAttributes } from "@langfuse/tracing";
 import { getPlan, getAllProjectsPlan, invalidateCache } from "@/lib/bv-client";
 import { getActiveProjectPath, getAllRepoPaths, getRepos, ALL_PROJECTS_SENTINEL } from "@/lib/repo-config";
 import { parseQuickNote } from "@/lib/parse-quick-note";
+import { getBdPath, getBdEnv } from "@/lib/bd-path";
 
 const execFile = promisify(execFileCb);
+const BD = getBdPath();
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -187,10 +189,10 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { stdout } = await execFile("bd", args, {
+    const { stdout } = await execFile(BD, args, {
       cwd: targetPath,
       timeout: 15_000,
-      env: { ...process.env, NO_COLOR: "1" },
+      env: getBdEnv(),
     });
 
     invalidateCache();

@@ -3,8 +3,10 @@ import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import { findRepoForIssue, getActiveProjectPath, ALL_PROJECTS_SENTINEL } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
+import { getBdPath, getBdEnv } from "@/lib/bd-path";
 
 const execFile = promisify(execFileCb);
+const BD = getBdPath();
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -110,10 +112,10 @@ export async function POST(
       if (resolved) projectPath = resolved;
     }
 
-    await execFile("bd", args, {
+    await execFile(BD, args, {
       cwd: projectPath,
       timeout: 15_000,
-      env: { ...process.env, NO_COLOR: "1" },
+      env: getBdEnv(),
     });
 
     // Bust server-side cache so subsequent reads reflect the change

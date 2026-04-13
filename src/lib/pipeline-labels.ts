@@ -10,8 +10,10 @@
 import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import { findRepoForIssue } from "./repo-config";
+import { getBdPath, getBdEnv } from "./bd-path";
 
 const execFile = promisify(execFileCb);
+const BD = getBdPath();
 
 const BD_TIMEOUT = 15_000;
 
@@ -43,7 +45,7 @@ export async function addLabelsToEpic(
 
   for (const label of labels) {
     try {
-      await execFile("bd", ["label", "add", issueId, label], {
+      await execFile(BD, ["label", "add", issueId, label], {
         cwd: repoPath,
         timeout: BD_TIMEOUT,
         env: { ...process.env, NO_COLOR: "1" },
@@ -72,7 +74,7 @@ export async function removeLabelsFromEpic(
 
   for (const label of labels) {
     try {
-      await execFile("bd", ["label", "remove", issueId, label], {
+      await execFile(BD, ["label", "remove", issueId, label], {
         cwd: repoPath,
         timeout: BD_TIMEOUT,
         env: { ...process.env, NO_COLOR: "1" },
@@ -110,7 +112,7 @@ export async function closeEpic(
 ): Promise<void> {
   const repoPath = await resolveRepoPath(issueId, epicRepoPath);
 
-  await execFile("bd", ["close", issueId, "--reason", reason], {
+  await execFile(BD, ["close", issueId, "--reason", reason], {
     cwd: repoPath,
     timeout: BD_TIMEOUT,
     env: { ...process.env, NO_COLOR: "1" },
@@ -127,7 +129,7 @@ export async function updateEpicStatus(
 ): Promise<void> {
   const repoPath = await resolveRepoPath(issueId, epicRepoPath);
 
-  await execFile("bd", ["update", issueId, `--status=${status}`], {
+  await execFile(BD, ["update", issueId, `--status=${status}`], {
     cwd: repoPath,
     timeout: BD_TIMEOUT,
     env: { ...process.env, NO_COLOR: "1" },

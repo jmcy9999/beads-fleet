@@ -16,6 +16,10 @@ jest.mock("child_process", () => ({
 jest.mock("util", () => ({
   promisify: () => mockExecFile,
 }));
+jest.mock("@/lib/bd-path", () => ({
+  getBdPath: () => "bd",
+  getBdEnv: () => ({ ...process.env, NO_COLOR: "1" }),
+}));
 
 jest.mock("@/lib/repo-config", () => ({
   getActiveProjectPath: jest.fn(),

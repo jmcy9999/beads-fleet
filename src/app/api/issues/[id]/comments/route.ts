@@ -6,6 +6,7 @@ import path from "path";
 import * as mysql from "mysql2/promise";
 import { findRepoForIssue, getActiveProjectPath, ALL_PROJECTS_SENTINEL } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
+import { getBdPath, getBdEnv } from "@/lib/bd-path";
 import type { BeadsComment } from "@/lib/types";
 
 const execFile = promisify(execFileCb);
@@ -136,10 +137,10 @@ export async function POST(
       if (resolved) projectPath = resolved;
     }
 
-    await execFile("bd", ["comment", issueId, text.trim()], {
+    await execFile(getBdPath(), ["comment", issueId, text.trim()], {
       cwd: projectPath,
       timeout: 15_000,
-      env: { ...process.env, NO_COLOR: "1" },
+      env: getBdEnv(),
     });
 
     invalidateCache();
