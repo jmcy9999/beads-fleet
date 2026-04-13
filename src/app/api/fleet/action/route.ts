@@ -39,7 +39,9 @@ type PipelineAction =
   | "mark-venture-complete"
   | "start-wave"
   | "review-wave"
-  | "resume-build";
+  | "resume-build"
+  | "send-for-review"
+  | "send-for-polish";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -64,6 +66,8 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "start-wave",
   "review-wave",
   "resume-build",
+  "send-for-review",
+  "send-for-polish",
 ]);
 
 const FLEET_CORE_PATH = "/Users/janemckay/dev/fleet/fleet-core";
@@ -354,8 +358,9 @@ export async function POST(request: NextRequest) {
       // GENERATE PLAN: Research Complete -> Planning (launch planning agent)
       // -------------------------------------------------------------------
       case "generate-plan": {
-        // Keep research-complete label, add agent:running (plan:pending added on agent exit)
-        await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], fleetCorePath);
+        // Transition from research-complete to plan-review, add agent:running
+        await removeLabelsFromEpic(epicId, ["pipeline:research-complete"], fleetCorePath);
+        await addLabelsToEpic(epicId, ["pipeline:plan-review", "agent:running"], fleetCorePath);
         invalidateCache();
 
         const { repoPath, repoName, researchPath } = resolveRepoPath(
@@ -809,6 +814,101 @@ export async function POST(request: NextRequest) {
         });
 
         return NextResponse.json({ success: true, action, epicId, waveNumber: rWave, session: reviewWaveSession });
+      }
+
+      // -------------------------------------------------------------------
+      // SEND FOR REVIEW: Development -> Build Review (launch reviewer)
+      // (factory-core-hnv.10)
+      // -------------------------------------------------------------------
+      case "send-for-review": {
+        await removeLabelsFromEpic(epicId, ["pipeline:development"], fleetCorePath);
+        await addLabelsToEpic(epicId, ["pipeline:build-review", "agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: reviewRepoPath, repoName: reviewRepoName, researchPath: reviewResearchPath, planPath: reviewPlanPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        // Select platform-specific reviewer if available
+        const reviewPlatforms = ["ios", "macos"];
+        const sendReviewAgentName = reviewPlatforms.includes(shipType.replace("-app", ""))
+          ? `platforms/${shipType.replace("-app", "")}/reviewer`
+          : "reviewer";
+
+        const sendReviewPrompt = `Review all changes for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${reviewRepoPath}. Research report: ${reviewResearchPath}. Build plan: ${reviewPlanPath}. Shipyard: ${fleetCorePath}. Check code quality, security patterns, standing order compliance.`;
+
+        const sendReviewSession = await launchAgent({
+          repoPath: reviewRepoPath,
+          repoName: reviewRepoName,
+          prompt: sendReviewPrompt,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "build-review",
+          agentName: sendReviewAgentName,
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: sendReviewSession });
+      }
+
+      // -------------------------------------------------------------------
+      // SEND FOR POLISH: QA Round 1 -> UX Polish (launch polish agent)
+      // (factory-core-hnv.11)
+      // -------------------------------------------------------------------
+      case "send-for-polish": {
+        // Check if this is a non-UI ship type that should skip polish
+        const noPolishTypes = ["python-tool"];
+        const isNonUI = noPolishTypes.includes(shipType) ||
+          (shipType === "internal" && !labels.some(l => l.includes("beads_web")));
+
+        if (isNonUI) {
+          // Skip polish -- advance directly to QA Round 2
+          await removeLabelsFromEpic(epicId, ["pipeline:qa-round-1"], fleetCorePath);
+          await addLabelsToEpic(epicId, ["pipeline:qa-round-2"], fleetCorePath);
+          invalidateCache();
+          return NextResponse.json({ success: true, action, epicId, skipped: true, reason: "Non-UI ship type -- no polish needed" });
+        }
+
+        await removeLabelsFromEpic(epicId, ["pipeline:qa-round-1"], fleetCorePath);
+        await addLabelsToEpic(epicId, ["pipeline:ux-polish", "agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: polishRepoPath, repoName: polishRepoName, researchPath: polishResearchPath, planPath: polishPlanPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        // Select platform-specific polish agent if available
+        const polishPlatforms = ["ios", "macos"];
+        const polishAgentName = polishPlatforms.includes(shipType.replace("-app", ""))
+          ? `platforms/${shipType.replace("-app", "")}/polish`
+          : "polish";
+
+        const polishPrompt = `Polish UI/UX for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${polishRepoPath}. Research report: ${polishResearchPath}. Build plan: ${polishPlanPath}. Shipyard: ${fleetCorePath}. Review visual quality, layout, accessibility, empty states, responsive design.`;
+
+        const polishSession = await launchAgent({
+          repoPath: polishRepoPath,
+          repoName: polishRepoName,
+          prompt: polishPrompt,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "ux-polish",
+          agentName: polishAgentName,
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: polishSession });
       }
 
       // -------------------------------------------------------------------

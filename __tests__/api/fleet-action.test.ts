@@ -490,7 +490,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("generate-plan", () => {
-    it("adds research-complete and agent:running labels (plan:pending added on agent exit)", async () => {
+    it("transitions to plan-review and adds agent:running labels", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -499,9 +499,16 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
+      // hnv.14 fix: generate-plan now correctly removes research-complete
+      // and adds plan-review (was incorrectly keeping research-complete)
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:research-complete"],
+        expect.any(String),
+      );
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:research-complete", "agent:running"],
+        ["pipeline:plan-review", "agent:running"],
         expect.any(String),
       );
     });
@@ -1029,6 +1036,133 @@ describe("POST /api/fleet/action", () => {
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           prompt: expect.not.stringContaining("Feature scope"),
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // send-for-review (factory-core-hnv.10)
+  // -------------------------------------------------------------------------
+
+  describe("send-for-review", () => {
+    it("transitions from development to build-review", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "send-for-review",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:development"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:build-review", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("launches reviewer agent with opus model", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "send-for-review",
+        currentLabels: ["ship-type:web-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "opus",
+          pipelineStage: "build-review",
+          agentName: "reviewer",
+        }),
+      );
+    });
+
+    it("uses platform-specific reviewer for iOS", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "send-for-review",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentName: "platforms/ios/reviewer",
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // send-for-polish (factory-core-hnv.11)
+  // -------------------------------------------------------------------------
+
+  describe("send-for-polish", () => {
+    it("transitions from qa-round-1 to ux-polish for UI ship types", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa-round-1"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:ux-polish", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("skips polish for python-tool ship type", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+
+      // Should advance directly to QA Round 2
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa-round-2"],
+        expect.any(String),
+      );
+    });
+
+    it("launches polish agent with opus model for UI types", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:web-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "opus",
+          pipelineStage: "ux-polish",
+          agentName: "polish",
         }),
       );
     });

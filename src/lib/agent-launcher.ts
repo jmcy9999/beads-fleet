@@ -584,8 +584,15 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         });
         return true; // Handled -- bugs found, looping back through dev -> QA
       }
-      // No bugs under this epic -- safe to advance to submission-prep via NEXT_STAGE
-      return false;
+      // No bugs under this epic -- QA passed!
+      // Advance pipeline explicitly (don't rely on NEXT_STAGE which only maps to submission-prep)
+      // factory-core-hnv.16: was returning false, falling through to NEXT_STAGE which
+      // didn't always fire correctly. Now handles the transition directly.
+      const { addLabelsToEpic: addQALabels, removeLabelsFromEpic: removeQALabels } = await import("./pipeline-labels");
+      await removeQALabels(session.epicId!, ["pipeline:qa"]);
+      await addQALabels(session.epicId!, ["pipeline:submission-prep", "qa:needs-review"]);
+      console.log(\`QA passed for \${session.epicId} — advanced to submission-prep\`);
+      return true; // Handled — don't fall through to NEXT_STAGE
     } catch (err) {
       console.error("Failed to handle QA chain:", err);
       // FAIL-SAFE: stay at QA if we can't determine bug status.
