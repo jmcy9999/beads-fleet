@@ -82,7 +82,7 @@ export async function POST(
       args = ["update", issueId, "--status=open"];
       break;
     case "comment":
-      args = ["comment", issueId, reason!];
+      args = ["comments", "add", issueId, reason!];
       break;
     case "label-add":
       args = ["label", "add", issueId, reason!];

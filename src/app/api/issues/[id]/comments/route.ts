@@ -137,7 +137,7 @@ export async function POST(
       if (resolved) projectPath = resolved;
     }
 
-    await execFile(getBdPath(), ["comment", issueId, text.trim()], {
+    await execFile(getBdPath(), ["comments", "add", issueId, text.trim()], {
       cwd: projectPath,
       timeout: 15_000,
       env: getBdEnv(),

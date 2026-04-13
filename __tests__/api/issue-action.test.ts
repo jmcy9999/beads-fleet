@@ -242,7 +242,7 @@ describe("POST /api/issues/:id/action", () => {
     expect(body).toEqual({ success: true, action: "comment", issueId: "TEST-001" });
     expect(mockExecFile).toHaveBeenCalledWith(
       "bd",
-      ["comment", "TEST-001", "Need more competitor analysis"],
+      ["comments", "add", "TEST-001", "Need more competitor analysis"],
       expect.objectContaining({ cwd: TEST_PROJECT_PATH }),
     );
     expect(invalidateCache).toHaveBeenCalled();
@@ -275,7 +275,7 @@ describe("POST /api/issues/:id/action", () => {
     expect(mockFindRepoForIssue).toHaveBeenCalledWith("TEST-001");
     expect(mockExecFile).toHaveBeenCalledWith(
       "bd",
-      ["comment", "TEST-001", "Need more competitor analysis"],
+      ["comments", "add", "TEST-001", "Need more competitor analysis"],
       expect.objectContaining({ cwd: "/tmp/resolved" }),
     );
     expect(invalidateCache).toHaveBeenCalled();
