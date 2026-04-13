@@ -124,6 +124,35 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
     [researchReport?.content],
   );
 
+  // Wave info: extract wave:N labels from children, compute current wave and progress
+  const waveInfo = useMemo(() => {
+    const waveMap = new Map<number, { total: number; closed: number }>();
+    for (const child of children) {
+      const waveLabel = child.labels?.find((l) => l.startsWith("wave:"));
+      if (!waveLabel) continue;
+      const waveNum = parseInt(waveLabel.slice(5), 10);
+      if (isNaN(waveNum)) continue;
+      const entry = waveMap.get(waveNum) ?? { total: 0, closed: 0 };
+      entry.total += 1;
+      if (child.status === "closed") entry.closed += 1;
+      waveMap.set(waveNum, entry);
+    }
+    if (waveMap.size === 0) return null;
+
+    const totalWaves = Math.max(...waveMap.keys());
+    // Current active wave = lowest wave number with unclosed beads
+    let currentWave = totalWaves;
+    for (let w = 1; w <= totalWaves; w++) {
+      const entry = waveMap.get(w);
+      if (entry && entry.closed < entry.total) {
+        currentWave = w;
+        break;
+      }
+    }
+    const currentEntry = waveMap.get(currentWave) ?? { total: 0, closed: 0 };
+    return { currentWave, totalWaves, currentClosed: currentEntry.closed, currentTotal: currentEntry.total };
+  }, [children]);
+
   // Check if this epic has an agent currently running
   const epicAgentRunning = isAgentRunning(epic);
 
@@ -242,6 +271,18 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           </div>
           <span className="text-[10px] text-gray-500">
             {progress.closed}/{progress.total}
+          </span>
+        </div>
+      )}
+
+      {/* Wave badge and per-wave progress */}
+      {waveInfo && (
+        <div className="flex items-center gap-1.5 mb-2">
+          <span className="inline-flex items-center rounded-full bg-violet-500/20 text-violet-300 px-2 py-0.5 text-[10px] font-medium">
+            Wave {waveInfo.currentWave}/{waveInfo.totalWaves}
+          </span>
+          <span className="text-[10px] text-gray-400">
+            {waveInfo.currentClosed}/{waveInfo.currentTotal} in Wave {waveInfo.currentWave}
           </span>
         </div>
       )}
