@@ -5,6 +5,7 @@ import {
   removeAllPipelineLabels,
   closeEpic,
   updateEpicStatus,
+  getEpicLabels,
 } from "@/lib/pipeline-labels";
 import { launchAgent, stopAgent, getWaveStatus } from "@/lib/agent-launcher";
 import { getRepos } from "@/lib/repo-config";
@@ -574,8 +575,10 @@ export async function POST(request: NextRequest) {
       // SEND FOR QA: Development Complete -> QA Verification
       // -------------------------------------------------------------------
       case "send-for-qa": {
-        // Determine QA round from labels
-        const roundLabels = labels.filter(l => l.startsWith("qa:round-"));
+        // Read actual labels from the epic (not stale request body labels)
+        // to correctly determine QA round (factory-core-hnv.19)
+        const actualLabels = await getEpicLabels(epicId as string, fleetCorePath);
+        const roundLabels = actualLabels.filter(l => l.startsWith("qa:round-"));
         const currentRound = roundLabels.length > 0
           ? Math.max(...roundLabels.map(l => parseInt(l.split("-")[1]))) + 1
           : 1;
@@ -869,13 +872,13 @@ export async function POST(request: NextRequest) {
 
         if (isNonUI) {
           // Skip polish -- advance directly to QA Round 2
-          await removeLabelsFromEpic(epicId, ["pipeline:qa-round-1"], fleetCorePath);
+          await removeLabelsFromEpic(epicId, ["pipeline:qa"], fleetCorePath);
           await addLabelsToEpic(epicId, ["pipeline:qa-round-2"], fleetCorePath);
           invalidateCache();
           return NextResponse.json({ success: true, action, epicId, skipped: true, reason: "Non-UI ship type -- no polish needed" });
         }
 
-        await removeLabelsFromEpic(epicId, ["pipeline:qa-round-1"], fleetCorePath);
+        await removeLabelsFromEpic(epicId, ["pipeline:qa"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:ux-polish", "agent:running"], fleetCorePath);
         invalidateCache();
 

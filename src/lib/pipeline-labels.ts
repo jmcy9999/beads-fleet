@@ -39,6 +39,34 @@ async function resolveRepoPath(issueId: string, epicRepoPath?: string): Promise<
 }
 
 /**
+ * Read the current labels from an epic via `bd show <issueId>`.
+ * Returns the array of labels found, or an empty array on failure.
+ * Used to get fresh labels instead of relying on stale request body data
+ * (factory-core-hnv.19).
+ */
+export async function getEpicLabels(
+  issueId: string,
+  epicRepoPath?: string,
+): Promise<string[]> {
+  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
+  try {
+    const { stdout } = await execFile(BD(), ["show", issueId], {
+      cwd: repoPath,
+      timeout: BD_TIMEOUT,
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    // Parse labels from the "LABELS:" line in bd show output
+    const labelsMatch = stdout.match(/LABELS:\s*(.+)/);
+    if (labelsMatch) {
+      return labelsMatch[1].split(",").map((l: string) => l.trim()).filter(Boolean);
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Add labels to an epic via `bd label add <issueId> <label1> <label2> ...`.
  */
 export async function addLabelsToEpic(

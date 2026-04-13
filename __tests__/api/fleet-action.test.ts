@@ -12,6 +12,7 @@ const mockRemoveLabels = jest.fn().mockResolvedValue(undefined);
 const mockRemoveAllPipeline = jest.fn().mockResolvedValue(undefined);
 const mockCloseEpic = jest.fn().mockResolvedValue(undefined);
 const mockUpdateStatus = jest.fn().mockResolvedValue(undefined);
+const mockGetEpicLabels = jest.fn().mockResolvedValue([]);
 
 jest.mock("@/lib/pipeline-labels", () => ({
   addLabelsToEpic: (...args: unknown[]) => mockAddLabels(...args),
@@ -19,6 +20,7 @@ jest.mock("@/lib/pipeline-labels", () => ({
   removeAllPipelineLabels: (...args: unknown[]) => mockRemoveAllPipeline(...args),
   closeEpic: (...args: unknown[]) => mockCloseEpic(...args),
   updateEpicStatus: (...args: unknown[]) => mockUpdateStatus(...args),
+  getEpicLabels: (...args: unknown[]) => mockGetEpicLabels(...args),
 }));
 
 // Mock agent-launcher module
@@ -853,6 +855,9 @@ describe("POST /api/fleet/action", () => {
     });
 
     it("includes qaRound in response", async () => {
+      // Mock getEpicLabels to return actual epic labels with qa:round-1
+      // (factory-core-hnv.19: handler reads actual labels, not stale request body)
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -863,6 +868,29 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
 
       expect(data.qaRound).toBe(2);
+    });
+
+    it("reads actual labels (not stale request body) for round calculation (hnv.19)", async () => {
+      // Simulate auto-chain: request body has stale labels (no qa:round-*)
+      // but the epic actually has qa:round-2 from a previous QA cycle
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-2"]);
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development"], // stale — no qa:round-*
+      });
+      const res = await POST(req);
+      const data = await res.json();
+
+      // Should be round 3 (based on actual labels), not round 1 (based on stale body)
+      expect(data.qaRound).toBe(3);
+      // Should remove the old round label
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:development", "qa:round-2"],
+        expect.any(String),
+      );
     });
   });
 
@@ -1107,7 +1135,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("send-for-polish", () => {
-    it("transitions from qa-round-1 to ux-polish for UI ship types", async () => {
+    it("transitions from qa to ux-polish for UI ship types", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -1119,7 +1147,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:qa-round-1"],
+        ["pipeline:qa"],
         expect.any(String),
       );
       expect(mockAddLabels).toHaveBeenCalledWith(

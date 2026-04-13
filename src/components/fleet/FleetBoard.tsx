@@ -38,7 +38,9 @@ export type PipelineAction =
   | "mark-venture-complete"
   | "start-wave"
   | "review-wave"
-  | "resume-build";
+  | "resume-build"
+  | "send-for-review"
+  | "send-for-polish";
 
 export interface PipelineActionPayload {
   epicId: string;

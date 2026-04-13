@@ -505,6 +505,27 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             );
           })()}
 
+          {/* Send for Review CTA: development stage, all waves complete, no agent, pipeline:development active
+              (factory-core-hnv.17) */}
+          {app.stage === "development" && !epicAgentRunning && !isPendingThis && (() => {
+            const hasPipelineDev = (epic.labels ?? []).includes("pipeline:development");
+            if (!hasPipelineDev) return null; // Don't show during build-review
+            const allDone = waveProgress
+              ? waveProgress.every((w) => w.closed === w.total)
+              : progress.total > 0 && progress.closed === progress.total;
+            if (!allDone) return null;
+            return (
+              <button
+                onClick={(e) => handleAction(e, "send-for-review")}
+                disabled={isPendingThis}
+                className={BTN_GREEN}
+              >
+                {isPendingThis && <Spinner />}
+                {actionLabel("Send for Review")}
+              </button>
+            );
+          })()}
+
           {/* Resume Build CTA: development stage, no agent running, open bugs/tasks exist
               (factory-core-cur.1.17) */}
           {app.stage === "development" && !epicAgentRunning && (() => {
@@ -690,6 +711,20 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                       {isPendingThis && <Spinner />}
                       {actionLabel("Send Back to Dev")}
                     </button>
+                    {/* Send for Polish CTA (factory-core-hnv.17) */}
+                    {(() => {
+                      const isNonUI = app.shipType === "python-tool" || app.shipType === "internal";
+                      return (
+                        <button
+                          onClick={(e) => handleAction(e, "send-for-polish")}
+                          disabled={epicAgentRunning || isPendingThis}
+                          className={BTN_BLUE}
+                        >
+                          {isPendingThis && <Spinner />}
+                          {actionLabel(isNonUI ? "Skip Polish → QA Round 2" : "Send for Polish")}
+                        </button>
+                      );
+                    })()}
                   </>
                 )}
               </>
