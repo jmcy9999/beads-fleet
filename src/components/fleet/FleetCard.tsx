@@ -9,6 +9,7 @@ import { extractAppName } from "@/lib/extract-app-name";
 import {
   isAgentRunning,
   getPhaseHistory,
+  getWaveInfo,
   FLEET_STAGE_CONFIG,
   type FleetApp,
   type EpicCost,
@@ -124,34 +125,15 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
     [researchReport?.content],
   );
 
-  // Wave info: extract wave:N labels from children, compute current wave and progress
+  // Wave info: extract wave:N labels from children, compute per-wave progress
+  const waveProgress = useMemo(() => getWaveInfo(children), [children]);
   const waveInfo = useMemo(() => {
-    const waveMap = new Map<number, { total: number; closed: number }>();
-    for (const child of children) {
-      const waveLabel = child.labels?.find((l) => l.startsWith("wave:"));
-      if (!waveLabel) continue;
-      const waveNum = parseInt(waveLabel.slice(5), 10);
-      if (isNaN(waveNum)) continue;
-      const entry = waveMap.get(waveNum) ?? { total: 0, closed: 0 };
-      entry.total += 1;
-      if (child.status === "closed") entry.closed += 1;
-      waveMap.set(waveNum, entry);
-    }
-    if (waveMap.size === 0) return null;
-
-    const totalWaves = Math.max(...waveMap.keys());
+    if (!waveProgress) return null;
+    const totalWaves = waveProgress.length;
     // Current active wave = lowest wave number with unclosed beads
-    let currentWave = totalWaves;
-    for (let w = 1; w <= totalWaves; w++) {
-      const entry = waveMap.get(w);
-      if (entry && entry.closed < entry.total) {
-        currentWave = w;
-        break;
-      }
-    }
-    const currentEntry = waveMap.get(currentWave) ?? { total: 0, closed: 0 };
-    return { currentWave, totalWaves, currentClosed: currentEntry.closed, currentTotal: currentEntry.total };
-  }, [children]);
+    const current = waveProgress.find((w) => w.closed < w.total) ?? waveProgress[waveProgress.length - 1];
+    return { currentWave: current.wave, totalWaves, currentClosed: current.closed, currentTotal: current.total };
+  }, [waveProgress]);
 
   // Check if this epic has an agent currently running
   const epicAgentRunning = isAgentRunning(epic);
@@ -276,14 +258,38 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
       )}
 
       {/* Wave badge and per-wave progress */}
-      {waveInfo && (
-        <div className="flex items-center gap-1.5 mb-2">
-          <span className="inline-flex items-center rounded-full bg-violet-500/20 text-violet-300 px-2 py-0.5 text-[10px] font-medium">
-            Wave {waveInfo.currentWave}/{waveInfo.totalWaves}
-          </span>
-          <span className="text-[10px] text-gray-400">
-            {waveInfo.currentClosed}/{waveInfo.currentTotal} in Wave {waveInfo.currentWave}
-          </span>
+      {waveInfo && waveProgress && (
+        <div className="mb-2">
+          <div className="flex items-center gap-1.5 mb-1">
+            <span className="inline-flex items-center rounded-full bg-violet-500/20 text-violet-300 px-2 py-0.5 text-[10px] font-medium">
+              Wave {waveInfo.currentWave}/{waveInfo.totalWaves}
+            </span>
+            <span className="text-[10px] text-gray-400">
+              {waveInfo.currentClosed}/{waveInfo.currentTotal} in Wave {waveInfo.currentWave}
+            </span>
+          </div>
+          {/* Per-wave progress bars */}
+          <div className="flex gap-1">
+            {waveProgress.map((wp) => {
+              const wpPct = wp.total > 0 ? Math.round((wp.closed / wp.total) * 100) : 0;
+              return (
+                <div key={wp.wave} className="flex-1" title={`Wave ${wp.wave}: ${wp.closed}/${wp.total}`}>
+                  <div className="h-1 bg-surface-2 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${
+                        wp.wave === waveInfo.currentWave
+                          ? "bg-violet-400"
+                          : wpPct === 100
+                            ? "bg-green-400"
+                            : "bg-gray-600"
+                      }`}
+                      style={{ width: `${wpPct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

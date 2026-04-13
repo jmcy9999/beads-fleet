@@ -405,3 +405,59 @@ export function buildFleetApps(allIssues: PlanIssue[]): FleetApp[] {
     };
   });
 }
+
+/** Per-wave progress entry. */
+export interface WaveProgress {
+  wave: number;
+  total: number;
+  closed: number;
+}
+
+/**
+ * Extract wave information from an app's children.
+ * Returns null if no children have wave:N labels.
+ */
+export function getWaveInfo(children: PlanIssue[]): WaveProgress[] | null {
+  const waveMap = new Map<number, { total: number; closed: number }>();
+  for (const child of children) {
+    const waveLabel = child.labels?.find((l) => l.startsWith("wave:"));
+    if (!waveLabel) continue;
+    const waveNum = parseInt(waveLabel.slice(5), 10);
+    if (isNaN(waveNum)) continue;
+    const entry = waveMap.get(waveNum) ?? { total: 0, closed: 0 };
+    entry.total += 1;
+    if (child.status === "closed") entry.closed += 1;
+    waveMap.set(waveNum, entry);
+  }
+  if (waveMap.size === 0) return null;
+
+  return Array.from(waveMap.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([wave, { total, closed }]) => ({ wave, total, closed }));
+}
+
+/**
+ * Collect all unique wave numbers present across a set of apps.
+ * Returns sorted array of wave numbers, or empty array if no waves found.
+ */
+export function collectWaveNumbers(apps: FleetApp[]): number[] {
+  const waves = new Set<number>();
+  for (const app of apps) {
+    for (const child of app.children) {
+      const waveLabel = child.labels?.find((l) => l.startsWith("wave:"));
+      if (!waveLabel) continue;
+      const waveNum = parseInt(waveLabel.slice(5), 10);
+      if (!isNaN(waveNum)) waves.add(waveNum);
+    }
+  }
+  return Array.from(waves).sort((a, b) => a - b);
+}
+
+/**
+ * Check if an app has any children in a specific wave.
+ */
+export function appHasWave(app: FleetApp, wave: number): boolean {
+  return app.children.some((c) =>
+    c.labels?.includes(`wave:${wave}`) ?? false,
+  );
+}

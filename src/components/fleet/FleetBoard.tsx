@@ -8,6 +8,8 @@ import {
   IOS_ONLY_STAGES,
   VENTURE_ONLY_STAGES,
   buildFleetApps,
+  collectWaveNumbers,
+  appHasWave,
   type FleetStage,
   type ShipType,
   type EpicCost,
@@ -120,14 +122,23 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
   const [visibleColumns, setVisibleColumns] = useState<Set<FleetStage>>(loadVisibleColumns);
   const [filterOpen, setFilterOpen] = useState(false);
   const [shipTypeFilter, setShipTypeFilter] = useState<ShipTypeFilter>(loadShipTypeFilter);
+  const [waveFilter, setWaveFilter] = useState<number | null>(null);
   const filterRef = useRef<HTMLDivElement>(null);
 
   const allApps = buildFleetApps(issues);
 
-  // Filter apps by ship type
-  const apps = shipTypeFilter === "all"
+  // Filter apps by ship type, then by wave
+  let apps = shipTypeFilter === "all"
     ? allApps
     : allApps.filter((a) => a.shipType === shipTypeFilter);
+
+  // Collect available wave numbers from ship-type-filtered apps (for dynamic buttons)
+  const availableWaves = collectWaveNumbers(apps);
+
+  // Apply wave filter (ANDs with ship-type filter)
+  if (waveFilter !== null) {
+    apps = apps.filter((a) => appHasWave(a, waveFilter));
+  }
 
   const grouped = new Map<FleetStage, typeof apps>();
   for (const stage of FLEET_STAGES) {
@@ -211,6 +222,38 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
             );
           })}
         </div>
+
+        {/* Wave filter (only shown when waves exist) */}
+        {availableWaves.length > 0 && (
+          <>
+            <div className="w-px h-4 bg-border-default" />
+            <div className="flex items-center rounded-md border border-border-default overflow-hidden">
+              <button
+                onClick={() => setWaveFilter(null)}
+                className={`px-2 py-1 text-[10px] font-medium transition-colors ${
+                  waveFilter === null
+                    ? "bg-violet-500/20 text-violet-300"
+                    : "text-gray-500 hover:text-gray-300 hover:bg-surface-2"
+                }`}
+              >
+                All
+              </button>
+              {availableWaves.map((w) => (
+                <button
+                  key={w}
+                  onClick={() => setWaveFilter(waveFilter === w ? null : w)}
+                  className={`px-2 py-1 text-[10px] font-medium transition-colors ${
+                    waveFilter === w
+                      ? "bg-violet-500/20 text-violet-300"
+                      : "text-gray-500 hover:text-gray-300 hover:bg-surface-2"
+                  }`}
+                >
+                  Wave {w}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         {/* Divider */}
         <div className="w-px h-4 bg-border-default" />
