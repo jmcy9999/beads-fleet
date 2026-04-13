@@ -2,7 +2,8 @@
 // Tests for src/components/fleet/fleet-utils.ts
 // =============================================================================
 // Covers: detectStage (pipeline labels + legacy fallback), isAgentRunning,
-//         buildFleetApps, computeEpicCosts, FLEET_STAGES, FLEET_STAGE_CONFIG
+//         buildFleetApps, computeEpicCosts, getWaveInfo, collectWaveNumbers,
+//         appHasWave, FLEET_STAGES, FLEET_STAGE_CONFIG
 // =============================================================================
 
 import {
@@ -10,6 +11,9 @@ import {
   isAgentRunning,
   buildFleetApps,
   computeEpicCosts,
+  getWaveInfo,
+  collectWaveNumbers,
+  appHasWave,
   FLEET_STAGES,
   FLEET_STAGE_CONFIG,
   type FleetStage,
@@ -454,5 +458,247 @@ describe("computeEpicCosts", () => {
       "kit-management",
       "other",
     ]);
+  });
+});
+
+// =============================================================================
+// getWaveInfo (factory-core-cur.1.12)
+// =============================================================================
+
+describe("getWaveInfo", () => {
+  it("returns null when no children have wave labels", () => {
+    const children = [
+      makePlanIssue({ id: "T-1", labels: ["development"] }),
+      makePlanIssue({ id: "T-2", labels: [] }),
+    ];
+    expect(getWaveInfo(children)).toBeNull();
+  });
+
+  it("returns null for empty children array", () => {
+    expect(getWaveInfo([])).toBeNull();
+  });
+
+  it("returns wave progress for children with wave labels", () => {
+    const children = [
+      makePlanIssue({ id: "T-1", labels: ["wave:1"], status: "closed" }),
+      makePlanIssue({ id: "T-2", labels: ["wave:1"], status: "open" }),
+      makePlanIssue({ id: "T-3", labels: ["wave:2"], status: "open" }),
+    ];
+    const result = getWaveInfo(children)!;
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({ wave: 1, total: 2, closed: 1 });
+    expect(result[1]).toEqual({ wave: 2, total: 1, closed: 0 });
+  });
+
+  it("handles mixed children (some with wave labels, some without)", () => {
+    const children = [
+      makePlanIssue({ id: "T-1", labels: ["wave:1"], status: "closed" }),
+      makePlanIssue({ id: "T-2", labels: ["development"], status: "open" }),
+      makePlanIssue({ id: "T-3", labels: ["wave:2"], status: "open" }),
+    ];
+    const result = getWaveInfo(children)!;
+    expect(result).toHaveLength(2);
+    // T-2 is ignored (no wave label)
+    expect(result[0]).toEqual({ wave: 1, total: 1, closed: 1 });
+  });
+
+  it("correctly counts all closed beads in a wave", () => {
+    const children = [
+      makePlanIssue({ id: "T-1", labels: ["wave:1"], status: "closed" }),
+      makePlanIssue({ id: "T-2", labels: ["wave:1"], status: "closed" }),
+      makePlanIssue({ id: "T-3", labels: ["wave:1"], status: "closed" }),
+    ];
+    const result = getWaveInfo(children)!;
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ wave: 1, total: 3, closed: 3 });
+  });
+
+  it("returns waves sorted by wave number", () => {
+    const children = [
+      makePlanIssue({ id: "T-1", labels: ["wave:3"], status: "open" }),
+      makePlanIssue({ id: "T-2", labels: ["wave:1"], status: "closed" }),
+      makePlanIssue({ id: "T-3", labels: ["wave:2"], status: "open" }),
+    ];
+    const result = getWaveInfo(children)!;
+    expect(result.map(w => w.wave)).toEqual([1, 2, 3]);
+  });
+
+  it("ignores invalid wave labels (non-numeric)", () => {
+    const children = [
+      makePlanIssue({ id: "T-1", labels: ["wave:abc"], status: "open" }),
+      makePlanIssue({ id: "T-2", labels: ["wave:1"], status: "open" }),
+    ];
+    const result = getWaveInfo(children)!;
+    expect(result).toHaveLength(1);
+    expect(result[0].wave).toBe(1);
+  });
+
+  it("handles children with undefined labels", () => {
+    const children = [
+      makePlanIssue({ id: "T-1", labels: undefined }),
+      makePlanIssue({ id: "T-2", labels: ["wave:1"], status: "open" }),
+    ];
+    const result = getWaveInfo(children)!;
+    expect(result).toHaveLength(1);
+  });
+});
+
+// =============================================================================
+// collectWaveNumbers (factory-core-cur.1.12)
+// =============================================================================
+
+describe("collectWaveNumbers", () => {
+  it("returns empty array when no apps have waves", () => {
+    const epic = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const child = makePlanIssue({ id: "T-1", epic: "E-1", labels: [] });
+    const app = makeFleetApp(epic, [child]);
+    expect(collectWaveNumbers([app])).toEqual([]);
+  });
+
+  it("returns empty array for empty apps", () => {
+    expect(collectWaveNumbers([])).toEqual([]);
+  });
+
+  it("returns sorted unique wave numbers from one app", () => {
+    const epic = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const children = [
+      makePlanIssue({ id: "T-1", epic: "E-1", labels: ["wave:2"] }),
+      makePlanIssue({ id: "T-2", epic: "E-1", labels: ["wave:1"] }),
+      makePlanIssue({ id: "T-3", epic: "E-1", labels: ["wave:3"] }),
+    ];
+    const app = makeFleetApp(epic, children);
+    expect(collectWaveNumbers([app])).toEqual([1, 2, 3]);
+  });
+
+  it("deduplicates wave numbers across apps", () => {
+    const epic1 = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const epic2 = makePlanIssue({ id: "E-2", issue_type: "epic" });
+    const c1 = makePlanIssue({ id: "T-1", epic: "E-1", labels: ["wave:1"] });
+    const c2 = makePlanIssue({ id: "T-2", epic: "E-2", labels: ["wave:1"] });
+    const c3 = makePlanIssue({ id: "T-3", epic: "E-2", labels: ["wave:2"] });
+    const all = [epic1, epic2, c1, c2, c3];
+    const apps = buildFleetApps(all);
+    expect(collectWaveNumbers(apps)).toEqual([1, 2]);
+  });
+
+  it("ignores children without wave labels", () => {
+    const epic = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const children = [
+      makePlanIssue({ id: "T-1", epic: "E-1", labels: ["wave:1"] }),
+      makePlanIssue({ id: "T-2", epic: "E-1", labels: ["development"] }),
+    ];
+    const app = makeFleetApp(epic, children);
+    expect(collectWaveNumbers([app])).toEqual([1]);
+  });
+});
+
+// =============================================================================
+// appHasWave (factory-core-cur.1.12)
+// =============================================================================
+
+describe("appHasWave", () => {
+  it("returns true when app has children in the specified wave", () => {
+    const epic = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const child = makePlanIssue({ id: "T-1", epic: "E-1", labels: ["wave:2"] });
+    const app = makeFleetApp(epic, [child]);
+    expect(appHasWave(app, 2)).toBe(true);
+  });
+
+  it("returns false when app has no children in the specified wave", () => {
+    const epic = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const child = makePlanIssue({ id: "T-1", epic: "E-1", labels: ["wave:1"] });
+    const app = makeFleetApp(epic, [child]);
+    expect(appHasWave(app, 3)).toBe(false);
+  });
+
+  it("returns false when app has no wave labels at all", () => {
+    const epic = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const child = makePlanIssue({ id: "T-1", epic: "E-1", labels: ["development"] });
+    const app = makeFleetApp(epic, [child]);
+    expect(appHasWave(app, 1)).toBe(false);
+  });
+
+  it("returns false when app has no children", () => {
+    const epic = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const app = makeFleetApp(epic, []);
+    expect(appHasWave(app, 1)).toBe(false);
+  });
+
+  it("handles children with undefined labels", () => {
+    const epic = makePlanIssue({ id: "E-1", issue_type: "epic" });
+    const child = makePlanIssue({ id: "T-1", epic: "E-1", labels: undefined });
+    const app = makeFleetApp(epic, [child]);
+    expect(appHasWave(app, 1)).toBe(false);
+  });
+});
+
+// =============================================================================
+// detectStage -- New pipeline label mappings (factory-core-cur.1.19)
+// =============================================================================
+
+describe("detectStage -- CLAUDE.md pipeline label coverage", () => {
+  it("returns 'plan-review' for pipeline:plan-review", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:plan-review"] });
+    expect(detectStage(epic, [])).toBe("plan-review");
+  });
+
+  it("returns 'submission-prep' for pipeline:compliance-check", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:compliance-check"] });
+    expect(detectStage(epic, [])).toBe("submission-prep");
+  });
+
+  it("returns 'submission-prep' for pipeline:package", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:package"] });
+    expect(detectStage(epic, [])).toBe("submission-prep");
+  });
+
+  it("returns 'submitted' for pipeline:awaiting-review", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:awaiting-review"] });
+    expect(detectStage(epic, [])).toBe("submitted");
+  });
+
+  it("returns 'submitted' for pipeline:in-review", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:in-review"] });
+    expect(detectStage(epic, [])).toBe("submitted");
+  });
+
+  it("returns 'qa' for pipeline:qa-round-1", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:qa-round-1"] });
+    expect(detectStage(epic, [])).toBe("qa");
+  });
+
+  it("returns 'qa' for pipeline:qa-round-2", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:qa-round-2"] });
+    expect(detectStage(epic, [])).toBe("qa");
+  });
+
+  it("returns 'qa' for pipeline:ux-polish", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:ux-polish"] });
+    expect(detectStage(epic, [])).toBe("qa");
+  });
+
+  it("returns 'qa' for pipeline:qa-review", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:qa-review"] });
+    expect(detectStage(epic, [])).toBe("qa");
+  });
+
+  it("returns 'qa' for pipeline:security-review", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:security-review"] });
+    expect(detectStage(epic, [])).toBe("qa");
+  });
+
+  it("returns 'development' for pipeline:build-review", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:build-review"] });
+    expect(detectStage(epic, [])).toBe("development");
+  });
+
+  it("returns 'deploying' for pipeline:deploying", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:deploying"] });
+    expect(detectStage(epic, [])).toBe("deploying");
+  });
+
+  it("returns 'live' for pipeline:live", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:live"] });
+    expect(detectStage(epic, [])).toBe("live");
   });
 });
