@@ -29,7 +29,8 @@ export type PipelineActionType =
   | "mark-venture-live"
   | "mark-venture-complete"
   | "start-wave"
-  | "review-wave";
+  | "review-wave"
+  | "resume-build";
 
 export interface PipelineActionParams {
   epicId: string;

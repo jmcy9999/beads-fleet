@@ -15,6 +15,7 @@ import { createWriteStream, realpathSync, type WriteStream } from "fs";
 import { createInterface } from "readline";
 import path from "path";
 import os from "os";
+import { getBdPath, getBdEnv } from "./bd-path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -173,6 +174,35 @@ const EXIT_LABELS: Record<string, string[]> = {
 };
 
 // ---------------------------------------------------------------------------
+// Safe bd execution — uses getBdPath() and getBdEnv() for reliable resolution
+// (factory-core-cur.1.24: bare 'bd' in shell commands silently resolved to
+// wrong binary; combined with '|| echo ""' error swallowing, bug detection
+// returned empty strings and the pipeline advanced past QA with open bugs)
+// ---------------------------------------------------------------------------
+
+interface BdExecResult {
+  stdout: string;
+  success: boolean;
+}
+
+function execBdSync(args: string[], cwd: string, timeoutMs = 15000): BdExecResult {
+  const { execFileSync } = require("child_process");
+  const bd = getBdPath();
+  const env = getBdEnv();
+  try {
+    const output = execFileSync(bd, args, {
+      cwd,
+      encoding: "utf-8",
+      timeout: timeoutMs,
+      env,
+    }) as string;
+    return { stdout: output.trim(), success: true };
+  } catch {
+    return { stdout: "", success: false };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Wave status detection
 // ---------------------------------------------------------------------------
 
@@ -196,30 +226,19 @@ interface WaveStatus {
  *   (factory-core-cur.1.11: was hardcoded to FLEET_CORE_PATH)
  */
 export async function getWaveStatus(epicId: string, repoPath: string): Promise<WaveStatus> {
-  const { execSync } = await import("child_process");
-
   // Check if epic has wave-checkpoint:required label
   let hasCheckpointRequired = false;
-  try {
-    const epicInfo = execSync(
-      `cd ${repoPath} && bd show ${epicId} 2>/dev/null || echo ""`,
-      { encoding: "utf-8", timeout: 10000 },
-    );
-    hasCheckpointRequired = epicInfo.includes("wave-checkpoint:required");
-  } catch {
-    // ignore
+  const epicResult = execBdSync(["show", epicId], repoPath, 10000);
+  if (epicResult.success) {
+    hasCheckpointRequired = epicResult.stdout.includes("wave-checkpoint:required");
   }
 
   // Get all children and their statuses/labels
-  let childrenOutput = "";
-  try {
-    childrenOutput = execSync(
-      `cd ${repoPath} && bd list --status=all --parent=${epicId} 2>/dev/null || echo ""`,
-      { encoding: "utf-8", timeout: 10000 },
-    );
-  } catch {
+  const childrenResult = execBdSync(["list", "--status=all", `--parent=${epicId}`], repoPath, 10000);
+  if (!childrenResult.success) {
     return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
   }
+  const childrenOutput = childrenResult.stdout;
 
   // Parse wave labels from children output
   // Lines look like: ├── ○ factory-core-cur.1.1 ● P1 [wave:1] Title...
@@ -379,17 +398,23 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         return false;
       }
 
-      // Check if reviewer found P0/P1 issues (check for open bugs in the repo)
-      const { execSync } = await import("child_process");
+      // Check if reviewer found P0/P1 issues — scoped to this epic's children
+      // (factory-core-cur.1.22: was querying ALL repo bugs, not just epic children)
       let hasP0P1 = false;
-      try {
-        const bugCheck = execSync(
-          `cd ${session.repoPath} && bd list --status=open --type=bug 2>/dev/null | grep -cE "P[01]" || echo "0"`,
-          { encoding: "utf-8", timeout: 10000 },
-        ).trim();
-        hasP0P1 = parseInt(bugCheck) > 0;
-      } catch {
-        // No bugs found, proceed
+      const bugResult = execBdSync(
+        ["list", "--status=open", `--parent=${session.epicId}`],
+        session.repoPath,
+        10000,
+      );
+      if (bugResult.success) {
+        // Count lines that are bugs with P0 or P1 priority
+        const bugLines = bugResult.stdout.split("\n").filter(
+          (line) => (line.includes("[bug]") || line.includes("[BUG]")) && /P[01]/.test(line),
+        );
+        hasP0P1 = bugLines.length > 0;
+      } else {
+        // If we can't query beads, assume bugs may exist (fail-safe)
+        hasP0P1 = true;
       }
 
       if (hasP0P1) {
@@ -462,28 +487,41 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
 
   if (stage === "qa") {
     // After QA finishes, check if bugs were filed under this epic.
-    // FAIL-SAFE: if the check throws, stay at QA rather than advancing
-    // past it with unfixed bugs (factory-core-cur.1.16).
+    // FAIL-SAFE: if we can't determine bug status, stay at QA rather than
+    // advancing past unfixed bugs (factory-core-cur.1.16, .1.24).
+    //
+    // Root cause of .1.24: bare 'bd' in shell commands resolved to wrong
+    // binary via Next.js PATH; '2>/dev/null || echo ""' swallowed the error,
+    // returned empty string, hasBugs=false, pipeline advanced. Fix: use
+    // execBdSync (getBdPath + getBdEnv) and treat bd failures as fail-safe.
     try {
-      const { execSync } = await import("child_process");
-
       // Scope bug check to this epic's children (not all repo bugs)
-      const childrenOutput = execSync(
-        `cd ${session.repoPath} && bd list --status=open --parent=${session.epicId} 2>/dev/null || echo ""`,
-        { encoding: "utf-8", timeout: 15000 },
-      ).trim();
+      const childrenResult = execBdSync(
+        ["list", "--status=open", `--parent=${session.epicId}`],
+        session.repoPath,
+        15000,
+      );
+
+      // FAIL-SAFE: if bd command failed, stay at QA
+      if (!childrenResult.success) {
+        console.error("QA chain: bd list failed — staying at QA (fail-safe)");
+        return true;
+      }
 
       // Check for any open bug beads under the epic
-      const hasBugs = childrenOutput.includes("[bug]") || childrenOutput.includes("[BUG]");
+      const hasBugs = childrenResult.stdout.includes("[bug]") || childrenResult.stdout.includes("[BUG]");
 
       if (hasBugs) {
         // Check round count -- max 3 rounds
-        const roundResult = execSync(
-          `cd ${FLEET_CORE_PATH} && bd show ${session.epicId} 2>/dev/null | grep -o "qa:round-[0-9]*" | sort -t- -k2 -n | tail -1 || echo ""`,
-          { encoding: "utf-8", timeout: 10000 },
-        ).trim();
-
-        const currentRound = roundResult ? parseInt(roundResult.split("-")[1]) : 1;
+        const roundResult = execBdSync(["show", session.epicId!], FLEET_CORE_PATH, 10000);
+        let currentRound = 1;
+        if (roundResult.success) {
+          const roundMatch = roundResult.stdout.match(/qa:round-(\d+)/g);
+          if (roundMatch && roundMatch.length > 0) {
+            const rounds = roundMatch.map((m: string) => parseInt(m.split("-")[1]));
+            currentRound = Math.max(...rounds);
+          }
+        }
 
         if (currentRound >= 3) {
           // Max rounds -- flag for human review, don't loop
