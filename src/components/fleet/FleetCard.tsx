@@ -558,17 +558,29 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             </button>
           )}
 
-          {/* Research Complete: review recon, generate plan, or request more research */}
+          {/* Research Complete: venture → Generate Plan; non-venture → Run PM */}
+          {/* (factory-core-lxc.6) */}
           {app.stage === "research-complete" && (
             <>
-              <button
-                onClick={(e) => handleAction(e, "generate-plan")}
-                disabled={epicAgentRunning || isPendingThis}
-                className={BTN_BLUE}
-              >
-                {isPendingThis && <Spinner />}
-                {actionLabel("Generate Plan")}
-              </button>
+              {app.shipType === "venture" ? (
+                <button
+                  onClick={(e) => handleAction(e, "generate-plan")}
+                  disabled={epicAgentRunning || isPendingThis}
+                  className={BTN_BLUE}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Generate Plan")}
+                </button>
+              ) : (
+                <button
+                  onClick={(e) => handleAction(e, "run-pm")}
+                  disabled={epicAgentRunning || isPendingThis}
+                  className={BTN_BLUE}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Run PM")}
+                </button>
+              )}
               <button
                 onClick={(e) => handleFeedbackAction(e, "more-research")}
                 disabled={epicAgentRunning || isPendingThis}
@@ -585,6 +597,88 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                 Abandon
               </button>
             </>
+          )}
+
+          {/* Product Spec: review functional spec, run architect, or revise */}
+          {/* (factory-core-lxc.6) */}
+          {app.stage === "product-spec" && (
+            epicAgentRunning ? (
+              <button
+                onClick={(e) => handleAction(e, "stop-agent")}
+                disabled={isPendingThis}
+                className={BTN_RED}
+              >
+                {isPendingThis && <Spinner />}
+                Stop Agent
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={(e) => handleAction(e, "run-architect")}
+                  disabled={isPendingThis}
+                  className={BTN_BLUE}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Run Architect")}
+                </button>
+                <button
+                  onClick={(e) => handleFeedbackAction(e, "revise-spec")}
+                  disabled={isPendingThis}
+                  className={BTN_AMBER}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Revise Spec")}
+                </button>
+                <button
+                  onClick={(e) => handleAction(e, "deprioritise")}
+                  disabled={isPendingThis}
+                  className={BTN_RED}
+                >
+                  Abandon
+                </button>
+              </>
+            )
+          )}
+
+          {/* Architecture: review architecture, generate plan, or revise */}
+          {/* (factory-core-lxc.6) */}
+          {app.stage === "architecture" && (
+            epicAgentRunning ? (
+              <button
+                onClick={(e) => handleAction(e, "stop-agent")}
+                disabled={isPendingThis}
+                className={BTN_RED}
+              >
+                {isPendingThis && <Spinner />}
+                Stop Agent
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={(e) => handleAction(e, "generate-plan")}
+                  disabled={isPendingThis}
+                  className={BTN_BLUE}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Generate Plan")}
+                </button>
+                <button
+                  onClick={(e) => handleFeedbackAction(e, "revise-architecture")}
+                  disabled={isPendingThis}
+                  className={BTN_AMBER}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Revise Architecture")}
+                </button>
+                <button
+                  onClick={(e) => handleAction(e, "deprioritise")}
+                  disabled={isPendingThis}
+                  className={BTN_RED}
+                >
+                  Abandon
+                </button>
+              </>
+            )
           )}
 
           {/* Plan Review: feature approval, approve & build, or revise the plan */}
@@ -813,7 +907,8 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           {/* Abandon: available at every stage except bad-idea and completed */}
           {app.stage !== "bad-idea" && app.stage !== "completed" &&
             /* Skip stages that already have a Deprioritise button */
-            app.stage !== "research-complete" && app.stage !== "plan-review" && (
+            app.stage !== "research-complete" && app.stage !== "product-spec" &&
+            app.stage !== "architecture" && app.stage !== "plan-review" && (
             <button
               onClick={(e) => handleAction(e, "deprioritise")}
               disabled={epicAgentRunning || isPendingThis}
@@ -834,7 +929,11 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                     ? "What needs changing in the plan?"
                     : feedbackAction === "more-research"
                       ? "What areas need more research?"
-                      : "Feedback for the agent..."
+                      : feedbackAction === "revise-spec"
+                        ? "What needs changing in the spec?"
+                        : feedbackAction === "revise-architecture"
+                          ? "What needs changing in the architecture?"
+                          : "Feedback for the agent..."
                 }
                 rows={3}
                 autoFocus
