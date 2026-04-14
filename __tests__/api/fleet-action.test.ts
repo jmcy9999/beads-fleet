@@ -357,7 +357,7 @@ describe("POST /api/fleet/action", () => {
       expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["agent:running"], expect.any(String));
     });
 
-    it("launches submission prep agent with sonnet model", async () => {
+    it("launches submitter agent with opus model", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle",
@@ -367,9 +367,10 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: "sonnet",
+          model: "opus",
           maxTurns: 100,
           pipelineStage: "submission-prep",
+          agentName: "submitter",
         }),
       );
     });
