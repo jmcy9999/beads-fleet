@@ -8,6 +8,8 @@
 import {
   getPhaseHistory,
   PIPELINE_ORDER,
+  IOS_PIPELINE_ORDER,
+  VENTURE_PIPELINE_ORDER,
   FLEET_STAGE_CONFIG,
   type FleetStage,
   type PhaseHistoryEntry,
@@ -18,8 +20,8 @@ import {
 // =============================================================================
 
 describe("PIPELINE_ORDER", () => {
-  it("should contain 10 linear stages (excluding bad-idea)", () => {
-    expect(PIPELINE_ORDER).toHaveLength(10);
+  it("should contain 12 linear stages (excluding bad-idea)", () => {
+    expect(PIPELINE_ORDER).toHaveLength(12);
   });
 
   it("should be ordered from idea to completed", () => {
@@ -27,6 +29,8 @@ describe("PIPELINE_ORDER", () => {
       "idea",
       "research",
       "research-complete",
+      "product-spec",
+      "architecture",
       "plan-review",
       "development",
       "qa",
@@ -86,7 +90,7 @@ describe("getPhaseHistory -- idea stage", () => {
 
   it("marks all subsequent stages as future", () => {
     const futureStages = history.filter((h) => h.status === "future");
-    expect(futureStages).toHaveLength(9);
+    expect(futureStages).toHaveLength(11);
   });
 
   it("has no past stages", () => {
@@ -111,9 +115,9 @@ describe("getPhaseHistory -- development stage", () => {
     expect(current).toEqual({ stage: "development", status: "current" });
   });
 
-  it("marks idea, research, research-complete, plan-review as past", () => {
+  it("marks idea through plan-review as past", () => {
     const pastStages = history.filter((h) => h.status === "past").map((h) => h.stage);
-    expect(pastStages).toEqual(["idea", "research", "research-complete", "plan-review"]);
+    expect(pastStages).toEqual(["idea", "research", "research-complete", "product-spec", "architecture", "plan-review"]);
   });
 
   it("marks qa through completed as future", () => {
@@ -146,7 +150,7 @@ describe("getPhaseHistory -- completed stage", () => {
 
   it("marks all preceding stages as past", () => {
     const pastStages = history.filter((h) => h.status === "past");
-    expect(pastStages).toHaveLength(9);
+    expect(pastStages).toHaveLength(11);
   });
 
   it("has no future stages", () => {
@@ -172,10 +176,12 @@ describe("getPhaseHistory -- research-complete stage", () => {
     expect(current?.stage).toBe("research-complete");
   });
 
-  it("marks plan-review through completed as future", () => {
+  it("marks product-spec through completed as future", () => {
     const history = getPhaseHistory("research-complete");
     const futureStages = history.filter((h) => h.status === "future").map((h) => h.stage);
     expect(futureStages).toEqual([
+      "product-spec",
+      "architecture",
       "plan-review",
       "development",
       "qa",
@@ -209,7 +215,7 @@ describe("getPhaseHistory -- bad-idea stage", () => {
 
   it("marks all stages after idea as future (never reached)", () => {
     const futureStages = history.filter((h) => h.status === "future");
-    expect(futureStages).toHaveLength(9);
+    expect(futureStages).toHaveLength(11);
   });
 
   it("has no current entry (bad-idea is not in the linear pipeline)", () => {
@@ -224,7 +230,7 @@ describe("getPhaseHistory -- bad-idea stage", () => {
 
 describe("getPhaseHistory -- every linear stage has correct counts", () => {
   it.each(PIPELINE_ORDER.map((stage, idx) => [stage, idx] as [FleetStage, number]))(
-    "%s: %d past + 1 current + rest future = 10 total",
+    "%s: %d past + 1 current + rest future = 12 total",
     (stage, idx) => {
       const history = getPhaseHistory(stage);
       const past = history.filter((h) => h.status === "past").length;
@@ -237,6 +243,59 @@ describe("getPhaseHistory -- every linear stage has correct counts", () => {
       expect(past + current + future).toBe(PIPELINE_ORDER.length);
     },
   );
+});
+
+// =============================================================================
+// getPhaseHistory -- product-spec and architecture stages (factory-core-lxc.2)
+// =============================================================================
+
+describe("getPhaseHistory -- product-spec stage", () => {
+  it("marks idea, research, research-complete as past", () => {
+    const history = getPhaseHistory("product-spec");
+    const pastStages = history.filter((h) => h.status === "past").map((h) => h.stage);
+    expect(pastStages).toEqual(["idea", "research", "research-complete"]);
+  });
+
+  it("marks product-spec as current", () => {
+    const history = getPhaseHistory("product-spec");
+    const current = history.find((h) => h.status === "current");
+    expect(current?.stage).toBe("product-spec");
+  });
+});
+
+describe("getPhaseHistory -- architecture stage", () => {
+  it("marks idea through product-spec as past", () => {
+    const history = getPhaseHistory("architecture");
+    const pastStages = history.filter((h) => h.status === "past").map((h) => h.stage);
+    expect(pastStages).toEqual(["idea", "research", "research-complete", "product-spec"]);
+  });
+
+  it("marks architecture as current", () => {
+    const history = getPhaseHistory("architecture");
+    const current = history.find((h) => h.status === "current");
+    expect(current?.stage).toBe("architecture");
+  });
+});
+
+describe("getPhaseHistory -- venture pipeline excludes PM and Architect", () => {
+  it("does not include product-spec or architecture for venture ship type", () => {
+    const history = getPhaseHistory("research-complete", "venture");
+    const stages = history.map((h) => h.stage);
+    expect(stages).not.toContain("product-spec");
+    expect(stages).not.toContain("architecture");
+  });
+
+  it("uses VENTURE_PIPELINE_ORDER for venture ship type", () => {
+    const history = getPhaseHistory("research-complete", "venture");
+    expect(history.map((h) => h.stage)).toEqual(VENTURE_PIPELINE_ORDER);
+  });
+
+  it("includes product-spec and architecture for non-venture ship type", () => {
+    const history = getPhaseHistory("research-complete", "ios-app");
+    const stages = history.map((h) => h.stage);
+    expect(stages).toContain("product-spec");
+    expect(stages).toContain("architecture");
+  });
 });
 
 // =============================================================================

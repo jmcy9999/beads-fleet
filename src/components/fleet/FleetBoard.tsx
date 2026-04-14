@@ -40,7 +40,11 @@ export type PipelineAction =
   | "review-wave"
   | "resume-build"
   | "send-for-review"
-  | "send-for-polish";
+  | "send-for-polish"
+  | "run-pm"
+  | "run-architect"
+  | "revise-spec"
+  | "revise-architecture";
 
 export interface PipelineActionPayload {
   epicId: string;

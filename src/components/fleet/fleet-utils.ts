@@ -5,6 +5,8 @@ export type FleetStage =
   | "idea"
   | "research"
   | "research-complete"
+  | "product-spec"
+  | "architecture"
   | "plan-review"
   | "development"
   | "qa"
@@ -20,6 +22,8 @@ export const FLEET_STAGES: FleetStage[] = [
   "idea",
   "research",
   "research-complete",
+  "product-spec",
+  "architecture",
   "plan-review",
   "development",
   "qa",
@@ -79,6 +83,16 @@ export const FLEET_STAGE_CONFIG: Record<
     label: "Research Complete",
     color: "text-cyan-400",
     dotColor: "bg-cyan-400",
+  },
+  "product-spec": {
+    label: "Product Spec",
+    color: "text-rose-400",
+    dotColor: "bg-rose-400",
+  },
+  architecture: {
+    label: "Architecture",
+    color: "text-sky-400",
+    dotColor: "bg-sky-400",
   },
   "plan-review": {
     label: "Plan Review",
@@ -154,6 +168,8 @@ export const IOS_PIPELINE_ORDER: FleetStage[] = [
   "idea",
   "research",
   "research-complete",
+  "product-spec",
+  "architecture",
   "plan-review",
   "development",
   "qa",
@@ -280,6 +296,11 @@ export function detectStage(
     // pipeline:plan-review is the explicit label; pipeline:research-complete
     // with plan:* labels is the legacy detection. (factory-core-cur.1.19)
     if (labels.includes("pipeline:plan-review")) return "plan-review";
+    // Product spec and architecture stages (factory-core-lxc.2)
+    // Checked after plan-review (which is more advanced in the pipeline),
+    // architecture before product-spec (architecture is more advanced).
+    if (labels.includes("pipeline:architecture")) return "architecture";
+    if (labels.includes("pipeline:product-spec")) return "product-spec";
     if (labels.includes("pipeline:research-complete")) {
       // Split into plan-review sub-column when plan labels are present
       if (labels.includes("plan:pending") || labels.includes("plan:approved")) {

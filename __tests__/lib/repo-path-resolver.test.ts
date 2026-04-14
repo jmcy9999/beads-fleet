@@ -65,6 +65,19 @@ describe("resolveRepoPath", () => {
       );
       expect(result.planPath).toBeUndefined();
     });
+
+    it("returns undefined for specPath and architecturePath (ventures skip PM/Architect)", () => {
+      const result = resolveRepoPath(
+        "venture",
+        "LensCycle Opportunity",
+        appName,
+        epicId,
+        fleetCorePath
+      );
+
+      expect(result.specPath).toBeUndefined();
+      expect(result.architecturePath).toBeUndefined();
+    });
   });
 
   describe("internal ship type", () => {
@@ -131,6 +144,40 @@ describe("resolveRepoPath", () => {
         `${fleetCorePath}/.beads/plans/${epicId}.md`
       );
     });
+
+    it("returns correct specPath and architecturePath for internal fleet-core work", () => {
+      const result = resolveRepoPath(
+        "internal",
+        "Pipeline: Add new stage",
+        "Pipeline",
+        epicId,
+        fleetCorePath
+      );
+
+      expect(result.specPath).toBe(
+        `${fleetCorePath}/docs/research/pipeline-add-new-stage-functional-spec.md`
+      );
+      expect(result.architecturePath).toBe(
+        `${fleetCorePath}/docs/research/pipeline-add-new-stage-architecture.md`
+      );
+    });
+
+    it("returns correct specPath and architecturePath for beads_web work", () => {
+      const result = resolveRepoPath(
+        "internal",
+        "Dashboard: Add repo path resolver",
+        "Dashboard",
+        epicId,
+        fleetCorePath
+      );
+
+      expect(result.specPath).toBe(
+        `${fleetCorePath}/docs/research/dashboard-add-repo-path-resolver-functional-spec.md`
+      );
+      expect(result.architecturePath).toBe(
+        `${fleetCorePath}/docs/research/dashboard-add-repo-path-resolver-architecture.md`
+      );
+    });
   });
 
   describe("product ship types", () => {
@@ -150,6 +197,12 @@ describe("resolveRepoPath", () => {
       );
       expect(result.planPath).toBe(
         `${PRODUCT_REPO_BASE}/${appName}/.beads/plans/${epicId}.md`
+      );
+      expect(result.specPath).toBe(
+        `${fleetCorePath}/products/${appName}/research/functional-spec.md`
+      );
+      expect(result.architecturePath).toBe(
+        `${fleetCorePath}/products/${appName}/research/architecture.md`
       );
     });
 

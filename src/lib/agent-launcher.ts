@@ -151,11 +151,13 @@ async function recoverSessions(): Promise<AgentSession[]> {
  * label that should be applied when the agent exits successfully.
  *
  * Stages handled by handleChainAction (auto-chaining) are NOT listed here:
- *   research → auto-chains to planning
- *   planning → auto-chains to build
  *   development → auto-chains to QA
  *   qa → auto-chains to fix loop or submission-prep
  *   qa-fixes → auto-chains back to QA
+ *
+ * Stages that stop for human review use EXIT_LABELS instead:
+ *   research → exits to research-complete (human reviews, then clicks "Run PM")
+ *   planning → exits with plan:pending (human reviews plan)
  */
 const NEXT_STAGE: Record<string, string> = {
   // QA with no bugs falls through chain action → advances to submission-prep
@@ -166,10 +168,14 @@ const NEXT_STAGE: Record<string, string> = {
 
 /**
  * Pipeline stages that get special label handling on agent exit rather
- * than advancing to the next stage. Currently unused — planning now
- * auto-chains to build instead of waiting for plan approval.
+ * than advancing to the next stage. These stages stop for human review.
+ *
+ * research: stops at research-complete for human review before PM stage
+ *   (factory-core-lxc.1: removed auto-chain to generate-plan)
+ * planning: stops with plan:pending for human review before build
  */
 const EXIT_LABELS: Record<string, string[]> = {
+  research: ["pipeline:research-complete"],
   planning: ["plan:pending"],
 };
 
@@ -340,31 +346,13 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
   const stage = session.pipelineStage;
 
   // -------------------------------------------------------------------------
-  // research -> planning: auto-generate plan after research completes
+  // research -> research-complete: stop for human review (human gate)
+  // Human reviews research, then clicks "Run PM" from the dashboard.
+  // EXIT_LABELS handles the label transition. No auto-chain.
+  // (factory-core-lxc.1: removed auto-chain to generate-plan)
   // -------------------------------------------------------------------------
   if (stage === "research") {
-    try {
-      // First apply the research-complete label (replacing research)
-      const { addLabelsToEpic, removeLabelsFromEpic } = await import("./pipeline-labels");
-      await removeLabelsFromEpic(session.epicId!, ["pipeline:research"]);
-      await addLabelsToEpic(session.epicId!, ["pipeline:research-complete"]);
-
-      // Auto-chain to planning
-      await fetch("http://localhost:3000/api/fleet/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "generate-plan",
-          epicId: session.epicId,
-          epicTitle: session.repoName,
-          currentLabels: session.epicLabels,
-        }),
-      });
-      return true; // Chain handled (research -> planning)
-    } catch (err) {
-      console.error("Failed to chain planning after research:", err);
-      return false;
-    }
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -373,7 +361,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
   // Do NOT auto-chain to build — the plan must be reviewed first.
   // -------------------------------------------------------------------------
   if (stage === "planning") {
-    // plan:pending is added by the EXIT_LABELS map (line ~167).
+    // plan:pending is added by the EXIT_LABELS map.
     // No auto-chain — return false so the normal exit handler applies EXIT_LABELS.
     return false;
   }
@@ -810,9 +798,17 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
           await removeLabelsFromEpic(exitedSession.epicId, ["agent:running"]);
 
           if (exitCode === 0) {
-            // Check for special exit labels (e.g., planning -> plan:pending)
+            // Check for special exit labels (e.g., research -> pipeline:research-complete,
+            // planning -> plan:pending). When exit labels include a pipeline:* label,
+            // also remove the current pipeline label so only one is active.
+            // (factory-core-lxc.1)
             const exitLabels = EXIT_LABELS[exitedSession.pipelineStage];
             if (exitLabels) {
+              const hasNewPipelineLabel = exitLabels.some((l) => l.startsWith("pipeline:"));
+              if (hasNewPipelineLabel) {
+                const currentLabel = `pipeline:${exitedSession.pipelineStage}`;
+                await removeLabelsFromEpic(exitedSession.epicId, [currentLabel]);
+              }
               await addLabelsToEpic(exitedSession.epicId, exitLabels);
             }
 

@@ -68,8 +68,8 @@ function makeFleetApp(epic: PlanIssue, children: PlanIssue[]): FleetApp {
 // =============================================================================
 
 describe("FLEET_STAGES", () => {
-  it("should have 13 stages", () => {
-    expect(FLEET_STAGES).toHaveLength(13);
+  it("should have 15 stages", () => {
+    expect(FLEET_STAGES).toHaveLength(15);
   });
 
   it("should include all expected stages in order", () => {
@@ -77,6 +77,8 @@ describe("FLEET_STAGES", () => {
       "idea",
       "research",
       "research-complete",
+      "product-spec",
+      "architecture",
       "plan-review",
       "development",
       "qa",
@@ -635,6 +637,49 @@ describe("appHasWave", () => {
 // =============================================================================
 // detectStage -- New pipeline label mappings (factory-core-cur.1.19)
 // =============================================================================
+
+describe("detectStage -- product-spec and architecture stages (factory-core-lxc.2)", () => {
+  it("returns 'product-spec' for pipeline:product-spec", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:product-spec"] });
+    expect(detectStage(epic, [])).toBe("product-spec");
+  });
+
+  it("returns 'architecture' for pipeline:architecture", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:architecture"] });
+    expect(detectStage(epic, [])).toBe("architecture");
+  });
+
+  it("product-spec wins over research-complete", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:research-complete", "pipeline:product-spec"] });
+    expect(detectStage(epic, [])).toBe("product-spec");
+  });
+
+  it("architecture wins over product-spec", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:product-spec", "pipeline:architecture"] });
+    expect(detectStage(epic, [])).toBe("architecture");
+  });
+
+  it("plan-review wins over architecture", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:architecture", "pipeline:plan-review"] });
+    expect(detectStage(epic, [])).toBe("plan-review");
+  });
+
+  it("FLEET_STAGE_CONFIG has product-spec entry", () => {
+    expect(FLEET_STAGE_CONFIG["product-spec"]).toEqual({
+      label: "Product Spec",
+      color: "text-rose-400",
+      dotColor: "bg-rose-400",
+    });
+  });
+
+  it("FLEET_STAGE_CONFIG has architecture entry", () => {
+    expect(FLEET_STAGE_CONFIG["architecture"]).toEqual({
+      label: "Architecture",
+      color: "text-sky-400",
+      dotColor: "bg-sky-400",
+    });
+  });
+});
 
 describe("detectStage -- CLAUDE.md pipeline label coverage", () => {
   it("returns 'plan-review' for pipeline:plan-review", () => {

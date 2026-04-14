@@ -21,6 +21,10 @@ export interface RepoPathResult {
   researchPath: string;
   /** Absolute path to the build plan (undefined for ventures) */
   planPath?: string;
+  /** Absolute path to the functional spec (undefined for ventures) */
+  specPath?: string;
+  /** Absolute path to the architecture document (undefined for ventures) */
+  architecturePath?: string;
 }
 
 // Resolve fleet-core path: env var > hardcoded fallback
@@ -65,13 +69,13 @@ export function resolveRepoPath(
   productRepoBase: string = "/Users/janemckay/dev/claude_projects",
 ): RepoPathResult {
   // Venture: research-only in fleet-core
+  // No specPath, architecturePath, or planPath — ventures skip PM and Architect
   if (shipType === "venture") {
     const topic = sanitizeTopicName(epicTitle);
     return {
       repoPath: fleetCorePath,
       repoName: "fleet-core",
       researchPath: `${fleetCorePath}/docs/research/${topic}.md`,
-      // No plan path for ventures
     };
   }
 
@@ -96,6 +100,8 @@ export function resolveRepoPath(
         repoName: "beads_web",
         researchPath: `${fleetCorePath}/docs/research/${topic}.md`,
         planPath: `${productRepoBase}/beads_web/.beads/plans/${epicId}.md`,
+        specPath: `${fleetCorePath}/docs/research/${topic}-functional-spec.md`,
+        architecturePath: `${fleetCorePath}/docs/research/${topic}-architecture.md`,
       };
     } else {
       // Internal work on fleet-core itself
@@ -105,6 +111,8 @@ export function resolveRepoPath(
         repoName: "fleet-core",
         researchPath: `${fleetCorePath}/docs/research/${topic}.md`,
         planPath: `${fleetCorePath}/.beads/plans/${epicId}.md`,
+        specPath: `${fleetCorePath}/docs/research/${topic}-functional-spec.md`,
+        architecturePath: `${fleetCorePath}/docs/research/${topic}-architecture.md`,
       };
     }
   }
@@ -116,5 +124,7 @@ export function resolveRepoPath(
     repoName: appName,
     researchPath: `${fleetCorePath}/products/${appName}/research/report.md`,
     planPath: `${productRepoPath}/.beads/plans/${epicId}.md`,
+    specPath: `${fleetCorePath}/products/${appName}/research/functional-spec.md`,
+    architecturePath: `${fleetCorePath}/products/${appName}/research/architecture.md`,
   };
 }
