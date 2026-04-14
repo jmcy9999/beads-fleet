@@ -16,6 +16,7 @@ import { createInterface } from "readline";
 import path from "path";
 import os from "os";
 import { getBdPath, getBdEnv } from "./bd-path";
+import { buildOtelEnv, buildLangfuseTraceUrl, isLangfuseConfigured } from "./langfuse-env";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,6 +33,8 @@ export interface AgentSession {
   epicId?: string;
   pipelineStage?: string;
   epicLabels?: string[];
+  langfuseTraceUrl?: string;
+  langfuseSessionId?: string;
 }
 
 export interface LaunchOptions {
@@ -54,6 +57,8 @@ export interface LaunchOptions {
 interface ActiveAgent {
   session: AgentSession;
   process: ChildProcess;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  langfuseSpan?: any; // OTEL Span for lifecycle trace (typed as any to avoid hard dep)
 }
 
 const activeAgents = new Map<string, ActiveAgent>();
@@ -724,6 +729,15 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
   // Ensure cwd exists (planning agents run in app repos that may not exist yet)
   await fs.mkdir(options.repoPath, { recursive: true });
 
+  // Build OTEL env vars for Langfuse observability (factory-core-75e)
+  // Returns empty object if Langfuse credentials are not configured (graceful degradation)
+  const otelEnv = buildOtelEnv({
+    epicId: options.epicId,
+    agentType: options.agentName,
+    pipelineStage: options.pipelineStage,
+    repoName,
+  });
+
   // Spawn via /bin/bash to ensure claude binary resolves correctly
   // (Node's spawn with Mach-O binaries + symlinks can fail with ENOENT)
   const claudeBin = process.env.CLAUDE_BIN || "/Users/janemckay/.local/bin/claude";
@@ -734,6 +748,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
+      ...otelEnv, // OTEL env vars for Langfuse (empty object if not configured)
       PATH: `/Users/janemckay/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
       HOME: process.env.HOME || "/Users/janemckay",
       // Must unset CLAUDECODE to avoid "nested session" error
@@ -765,6 +780,10 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
   // stderr is also OTel telemetry — discard it
   child.stderr?.resume();
 
+  // Build Langfuse trace URL and session ID (factory-core-75e)
+  const langfuseTraceUrl = options.epicId ? buildLangfuseTraceUrl(options.epicId) : undefined;
+  const langfuseSessionId = options.epicId || undefined;
+
   const session: AgentSession = {
     pid: child.pid!,
     repoPath: options.repoPath,
@@ -776,9 +795,46 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     epicId: options.epicId,
     pipelineStage: options.pipelineStage,
     epicLabels: options.epicLabels,
+    langfuseTraceUrl,
+    langfuseSessionId,
   };
 
-  activeAgents.set(repoKey, { session, process: child });
+  // Create Langfuse lifecycle trace (factory-core-75e, ADR-003: try/catch required)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let langfuseSpan: any = undefined;
+  if (isLangfuseConfigured()) {
+    try {
+      const { getLangfuseTracer, LangfuseOtelSpanAttributes } = await import("@langfuse/tracing");
+      const tracer = getLangfuseTracer();
+      const traceName = `agent-${options.agentName || "unknown"}-${options.epicId || "no-epic"}`;
+      langfuseSpan = tracer.startSpan(traceName, {
+        attributes: {
+          [LangfuseOtelSpanAttributes.TRACE_NAME]: traceName,
+          [LangfuseOtelSpanAttributes.TRACE_SESSION_ID]: langfuseSessionId || "",
+          [LangfuseOtelSpanAttributes.TRACE_TAGS]: JSON.stringify(
+            ["agent-lifecycle", options.agentName || "unknown", options.pipelineStage || "unknown"],
+          ),
+          [LangfuseOtelSpanAttributes.TRACE_METADATA]: JSON.stringify({
+            epicId: options.epicId,
+            agentType: options.agentName,
+            pipelineStage: options.pipelineStage,
+            repoName,
+            repoPath: options.repoPath,
+            model,
+            pid: child.pid,
+          }),
+          [LangfuseOtelSpanAttributes.TRACE_INPUT]: JSON.stringify({
+            prompt: options.prompt.slice(0, 500),
+          }),
+        },
+      });
+    } catch (err) {
+      // ADR-003: Langfuse errors must never prevent agent launch
+      console.error("[langfuse] Failed to create lifecycle trace:", err);
+    }
+  }
+
+  activeAgents.set(repoKey, { session, process: child, langfuseSpan });
   await persistSession(session);
 
   // Clean up when process exits and handle pipeline label transitions
@@ -788,6 +844,30 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     if (exitedSession != null && exitedSession.pid === child.pid) {
       activeAgents.delete(repoKey);
       await clearPersistedSession(repoKey);
+
+      // Complete Langfuse lifecycle trace BEFORE pipeline transitions (factory-core-75e)
+      // Per ADR-003: independent try/catch — Langfuse errors must not affect pipeline logic
+      const lfSpan = exitedAgent?.langfuseSpan;
+      if (lfSpan) {
+        try {
+          const { LangfuseOtelSpanAttributes } = await import("@langfuse/tracing");
+          const duration = Date.now() - new Date(exitedSession.startedAt).getTime();
+          const status = exitCode === 0 ? "SUCCESS" : "ERROR";
+          lfSpan.setAttribute(
+            LangfuseOtelSpanAttributes.TRACE_OUTPUT,
+            JSON.stringify({ exitCode, durationMs: duration, status }),
+          );
+          if (exitCode !== 0) {
+            lfSpan.setStatus({ code: 2, message: `Agent exited with code ${exitCode}` }); // SpanStatusCode.ERROR = 2
+          } else {
+            lfSpan.setStatus({ code: 1 }); // SpanStatusCode.OK = 1
+          }
+          lfSpan.end();
+        } catch (err) {
+          // ADR-003: Langfuse errors must never prevent exit handling or pipeline transitions
+          console.error("[langfuse] Failed to complete lifecycle trace:", err);
+        }
+      }
 
       // Perform pipeline label transitions if epicId and pipelineStage are set
       if (exitedSession.epicId && exitedSession.pipelineStage) {
