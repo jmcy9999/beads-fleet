@@ -274,14 +274,14 @@ export async function POST(request: NextRequest) {
         const session = await launchAgent({
           repoPath: fleetCorePath,
           repoName: "fleet-core",
-          prompt: `Prepare submission for "${epicTitle}" (epic: ${epicId}). Follow the submission workflow instructions in CLAUDE.md.`,
+          prompt: `Prepare submission for "${epicTitle}" (epic: ${epicId}). Follow the submission workflow in .claude/agents/submitter.md. Ship type: ${shipType}.`,
           model: "sonnet",
           maxTurns: 100,
-          allowedTools: "Bash,Read,Write,Edit,Glob,Grep",
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
           epicLabels: labels,
           pipelineStage: "submission-prep",
-          agentName: "builder",
+          agentName: "submitter",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
