@@ -503,11 +503,11 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      // hnv.14 fix: generate-plan now correctly removes research-complete
-      // and adds plan-review (was incorrectly keeping research-complete)
+      // hnv.14 fix: generate-plan removes research-complete and plan-review
+      // lxc.5: also removes pipeline:architecture (new pre-plan stage)
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:research-complete"],
+        ["pipeline:research-complete", "pipeline:architecture"],
         expect.any(String),
       );
       expect(mockAddLabels).toHaveBeenCalledWith(
@@ -1246,6 +1246,204 @@ describe("POST /api/fleet/action", () => {
           model: "opus",
           pipelineStage: "ux-polish",
           agentName: "polish",
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // run-pm (factory-core-lxc.5)
+  // -------------------------------------------------------------------------
+
+  describe("run-pm", () => {
+    it("removes pipeline:research-complete and adds pipeline:product-spec + agent:running", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "run-pm",
+        currentLabels: ["pipeline:research-complete", "ship-type:ios-app"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:research-complete"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:product-spec", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("launches PM agent with sonnet model and product-manager agentName", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "run-pm",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "sonnet",
+          maxTurns: 150,
+          pipelineStage: "product-spec",
+          agentName: "product-manager",
+          epicId: "epic-1",
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // run-architect (factory-core-lxc.5)
+  // -------------------------------------------------------------------------
+
+  describe("run-architect", () => {
+    it("removes pipeline:product-spec and adds pipeline:architecture + agent:running", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "run-architect",
+        currentLabels: ["pipeline:product-spec", "ship-type:ios-app"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:product-spec"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:architecture", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("launches Architect agent with sonnet model and architect agentName", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "run-architect",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "sonnet",
+          maxTurns: 150,
+          pipelineStage: "architecture",
+          agentName: "architect",
+          epicId: "epic-1",
+        }),
+      );
+    });
+
+    it("includes specPath in the architect agent prompt", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "run-architect",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("Functional spec:"),
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // revise-spec (factory-core-lxc.5)
+  // -------------------------------------------------------------------------
+
+  describe("revise-spec", () => {
+    it("adds agent:running (stays in product-spec stage)", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "revise-spec",
+        feedback: "Add analytics section",
+        currentLabels: ["pipeline:product-spec", "ship-type:ios-app"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("includes feedback in the PM agent prompt", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "revise-spec",
+        feedback: "Add analytics section",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining('Add analytics section'),
+          agentName: "product-manager",
+          pipelineStage: "product-spec",
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // revise-architecture (factory-core-lxc.5)
+  // -------------------------------------------------------------------------
+
+  describe("revise-architecture", () => {
+    it("adds agent:running (stays in architecture stage)", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "revise-architecture",
+        feedback: "Simplify layer count",
+        currentLabels: ["pipeline:architecture", "ship-type:ios-app"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("includes feedback in the Architect agent prompt", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "revise-architecture",
+        feedback: "Simplify layer count",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining('Simplify layer count'),
+          agentName: "architect",
+          pipelineStage: "architecture",
         }),
       );
     });

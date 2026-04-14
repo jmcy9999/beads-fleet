@@ -42,7 +42,11 @@ type PipelineAction =
   | "review-wave"
   | "resume-build"
   | "send-for-review"
-  | "send-for-polish";
+  | "send-for-polish"
+  | "run-pm"
+  | "run-architect"
+  | "revise-spec"
+  | "revise-architecture";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -69,6 +73,10 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "resume-build",
   "send-for-review",
   "send-for-polish",
+  "run-pm",
+  "run-architect",
+  "revise-spec",
+  "revise-architecture",
 ]);
 
 // Resolve fleet-core path: env var > hardcoded fallback
@@ -247,6 +255,152 @@ export async function POST(request: NextRequest) {
       }
 
       // -------------------------------------------------------------------
+      // RUN PM: Research Complete -> Product Spec (launch PM agent)
+      // (factory-core-lxc.5)
+      // -------------------------------------------------------------------
+      case "run-pm": {
+        await removeLabelsFromEpic(epicId, ["pipeline:research-complete"], fleetCorePath);
+        await addLabelsToEpic(epicId, ["pipeline:product-spec", "agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: pmRepoPath, repoName: pmRepoName, researchPath: pmResearchPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const pmPrompt = `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${pmResearchPath}. Fleet-core: ${fleetCorePath}.`;
+
+        const pmSession = await launchAgent({
+          repoPath: pmRepoPath,
+          repoName: pmRepoName,
+          prompt: pmPrompt,
+          model: "sonnet",
+          maxTurns: 150,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "product-spec",
+          agentName: "product-manager",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: pmSession });
+      }
+
+      // -------------------------------------------------------------------
+      // RUN ARCHITECT: Product Spec -> Architecture (launch Architect agent)
+      // (factory-core-lxc.5)
+      // -------------------------------------------------------------------
+      case "run-architect": {
+        await removeLabelsFromEpic(epicId, ["pipeline:product-spec"], fleetCorePath);
+        await addLabelsToEpic(epicId, ["pipeline:architecture", "agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: archRepoPath, repoName: archRepoName, researchPath: archResearchPath, specPath: archSpecPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const archPrompt = `Design architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${archSpecPath}. Research report: ${archResearchPath}. Fleet-core: ${fleetCorePath}.`;
+
+        const archSession = await launchAgent({
+          repoPath: archRepoPath,
+          repoName: archRepoName,
+          prompt: archPrompt,
+          model: "sonnet",
+          maxTurns: 150,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "architecture",
+          agentName: "architect",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: archSession });
+      }
+
+      // -------------------------------------------------------------------
+      // REVISE SPEC: Re-run PM agent with feedback (stays in Product Spec)
+      // (factory-core-lxc.5)
+      // -------------------------------------------------------------------
+      case "revise-spec": {
+        await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: rsRepoPath, repoName: rsRepoName, researchPath: rsResearchPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const rsFeedbackStr = typeof feedback === "string" && feedback.trim()
+          ? ` Jane's feedback: "${feedback}".`
+          : "";
+
+        const rsPrompt = `Revise functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${rsResearchPath}. Fleet-core: ${fleetCorePath}.${rsFeedbackStr}`;
+
+        const rsSession = await launchAgent({
+          repoPath: rsRepoPath,
+          repoName: rsRepoName,
+          prompt: rsPrompt,
+          model: "sonnet",
+          maxTurns: 150,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "product-spec",
+          agentName: "product-manager",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: rsSession });
+      }
+
+      // -------------------------------------------------------------------
+      // REVISE ARCHITECTURE: Re-run Architect agent with feedback (stays in Architecture)
+      // (factory-core-lxc.5)
+      // -------------------------------------------------------------------
+      case "revise-architecture": {
+        await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: raRepoPath, repoName: raRepoName, researchPath: raResearchPath, specPath: raSpecPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const raFeedbackStr = typeof feedback === "string" && feedback.trim()
+          ? ` Jane's feedback: "${feedback}".`
+          : "";
+
+        const raPrompt = `Revise architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${raSpecPath}. Research report: ${raResearchPath}. Fleet-core: ${fleetCorePath}.${raFeedbackStr}`;
+
+        const raSession = await launchAgent({
+          repoPath: raRepoPath,
+          repoName: raRepoName,
+          prompt: raPrompt,
+          model: "sonnet",
+          maxTurns: 150,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "architecture",
+          agentName: "architect",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: raSession });
+      }
+
+      // -------------------------------------------------------------------
       // ABANDON: Any stage -> Bad Ideas
       // -------------------------------------------------------------------
       case "deprioritise": {
@@ -275,7 +429,7 @@ export async function POST(request: NextRequest) {
           repoPath: fleetCorePath,
           repoName: "fleet-core",
           prompt: `Prepare submission for "${epicTitle}" (epic: ${epicId}). Follow the submission workflow in .claude/agents/submitter.md. Ship type: ${shipType}.`,
-          model: "sonnet",
+          model: "opus",
           maxTurns: 100,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
@@ -362,8 +516,9 @@ export async function POST(request: NextRequest) {
       // GENERATE PLAN: Research Complete -> Planning (launch planning agent)
       // -------------------------------------------------------------------
       case "generate-plan": {
-        // Transition from research-complete to plan-review, add agent:running
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete"], fleetCorePath);
+        // Transition to plan-review from research-complete (ventures) or architecture (non-ventures)
+        // (factory-core-lxc.5: architecture is the new pre-plan stage for non-ventures)
+        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "pipeline:architecture"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:plan-review", "agent:running"], fleetCorePath);
         invalidateCache();
 
