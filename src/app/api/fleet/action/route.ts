@@ -522,7 +522,7 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:plan-review", "agent:running"], fleetCorePath);
         invalidateCache();
 
-        const { repoPath, repoName, researchPath } = resolveRepoPath(
+        const { repoPath, repoName, researchPath, specPath, architecturePath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -530,7 +530,10 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${repoPath}. Research report: ${researchPath}.`;
+        // Non-ventures have functional spec and architecture doc from PM/Architect stages
+        const specInfo = specPath ? ` Functional spec: ${specPath}.` : "";
+        const archInfo = architecturePath ? ` Architecture: ${architecturePath}.` : "";
+        const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${repoPath}. Research report: ${researchPath}.${specInfo}${archInfo}`;
 
         const session = await launchAgent({
           repoPath: repoPath,

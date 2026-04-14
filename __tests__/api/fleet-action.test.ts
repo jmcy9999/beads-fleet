@@ -568,6 +568,36 @@ describe("POST /api/fleet/action", () => {
         }),
       );
     });
+
+    it("includes specPath and architecturePath in the prompt for non-venture epics", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "generate-plan",
+      });
+      await POST(req);
+
+      const prompt = mockLaunchAgent.mock.calls[0][0].prompt;
+      expect(prompt).toContain("Functional spec:");
+      expect(prompt).toContain("functional-spec.md");
+      expect(prompt).toContain("Architecture:");
+      expect(prompt).toContain("architecture.md");
+    });
+
+    it("omits specPath and architecturePath for venture epics", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["ship-type:venture"]);
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "generate-plan",
+        currentLabels: ["ship-type:venture"],
+      });
+      await POST(req);
+
+      const prompt = mockLaunchAgent.mock.calls[0][0].prompt;
+      expect(prompt).not.toContain("Functional spec:");
+      expect(prompt).not.toContain("Architecture:");
+    });
   });
 
   // -------------------------------------------------------------------------
