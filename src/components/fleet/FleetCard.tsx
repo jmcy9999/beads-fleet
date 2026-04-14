@@ -59,6 +59,7 @@ interface FleetCardProps {
   onPipelineAction?: (payload: PipelineActionPayload) => void;
   agentRunning?: boolean;
   pendingEpicId?: string | null;
+  langfuseTraceUrl?: string;
 }
 
 const PHASE_COLORS: Record<string, string> = {
@@ -99,7 +100,7 @@ const BTN_RED = `${BTN_PRIMARY} text-red-400 hover:text-red-300 bg-red-500/10 ho
 /** Green action button (approve/complete). */
 const BTN_GREEN = `${BTN_PRIMARY} text-green-400 hover:text-green-300 bg-green-500/10 hover:bg-green-500/20 border border-green-500/30`;
 
-export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEpicId }: FleetCardProps) {
+export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrl }: FleetCardProps) {
   const { epic, children, progress } = app;
   const pct =
     progress.total > 0
@@ -322,6 +323,21 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           >
             Plan
           </span>
+        </div>
+      )}
+
+      {/* View in Langfuse link — shown when trace URL is available (factory-core-75e) */}
+      {langfuseTraceUrl && (
+        <div className="mb-2">
+          <a
+            href={langfuseTraceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="text-[10px] text-teal-400 hover:text-teal-300 hover:underline"
+          >
+            {epicAgentRunning ? "View in Langfuse" : "View Trace"}
+          </a>
         </div>
       )}
 

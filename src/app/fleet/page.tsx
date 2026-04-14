@@ -40,6 +40,15 @@ export default function FleetPage() {
     return sum;
   }, [epicCosts]);
 
+  // Build a map of epicId -> langfuseTraceUrl from agent sessions (factory-core-75e)
+  const langfuseTraceUrls = useMemo(() => {
+    const map = new Map<string, string>();
+    if (agentStatus?.session?.epicId && agentStatus.session.langfuseTraceUrl) {
+      map.set(agentStatus.session.epicId, agentStatus.session.langfuseTraceUrl);
+    }
+    return map;
+  }, [agentStatus?.session?.epicId, agentStatus?.session?.langfuseTraceUrl]);
+
   const handlePipelineAction = useCallback(
     (payload: PipelineActionPayload) => {
       // Look up current labels from issue data for label-aware actions
@@ -122,6 +131,7 @@ export default function FleetPage() {
           onPipelineAction={handlePipelineAction}
           agentRunning={agentStatus?.running ?? false}
           pendingEpicId={pendingEpicId}
+          langfuseTraceUrls={langfuseTraceUrls}
         />
       )}
 
