@@ -2,28 +2,31 @@
 // Beads Fleet -- Generic Agent Launcher
 // =============================================================================
 //
-// Spawns Claude Code CLI as a background subprocess to run autonomous tasks
-// in any configured beads-enabled repo. Tracks running processes by PID.
+// Spawns Claude Code CLI in tmux windows to run autonomous tasks in any
+// configured beads-enabled repo. Using tmux windows (instead of child_process)
+// enables Claude Code hooks which don't fire in -p mode.
 //
 // Extended for pipeline integration: tracks epicId and pipelineStage so that
 // label transitions can be applied when the agent exits.
 // =============================================================================
 
-import { spawn, type ChildProcess } from "child_process";
+import { exec, execFileSync } from "child_process";
 import { promises as fs } from "fs";
-import { createWriteStream, realpathSync, type WriteStream } from "fs";
-import { createInterface } from "readline";
+import { createWriteStream, realpathSync } from "fs";
 import path from "path";
 import os from "os";
+import { promisify } from "util";
 import { getBdPath, getBdEnv } from "./bd-path";
 import { buildOtelEnv, buildLangfuseTraceUrl, isLangfuseConfigured } from "./langfuse-env";
+
+const execAsync = promisify(exec);
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface AgentSession {
-  pid: number;
+  pid: number; // Kept for backwards compat, set to 0 for tmux sessions
   repoPath: string;
   repoName: string;
   prompt: string;
@@ -35,6 +38,11 @@ export interface AgentSession {
   epicLabels?: string[];
   langfuseTraceUrl?: string;
   langfuseSessionId?: string;
+  // New tmux-specific fields
+  tmuxWindow?: string;
+  statusFile?: string;
+  launcherScript?: string;
+  tmuxSessionName?: string; // Actual tmux session name for lifecycle management
 }
 
 export interface LaunchOptions {
@@ -56,15 +64,20 @@ export interface LaunchOptions {
 
 interface ActiveAgent {
   session: AgentSession;
-  process: ChildProcess;
+  pollInterval: NodeJS.Timeout; // Polls for tmux session exit + idle prompt
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   langfuseSpan?: any; // OTEL Span for lifecycle trace (typed as any to avoid hard dep)
+  idleDetectedAt?: number; // Timestamp of first idle prompt detection
+  exitSentAt?: number; // Timestamp when /exit was sent (undefined = not sent)
 }
 
 const activeAgents = new Map<string, ActiveAgent>();
 
 const LOG_DIR = path.join(os.tmpdir(), "beads-web-agent-logs");
 const SESSIONS_DIR = path.join(os.tmpdir(), "beads-web-agent-sessions");
+const STATUS_DIR = path.join(os.tmpdir(), "beads-web-agent-status");
+const LAUNCHER_DIR = path.join(os.tmpdir(), "beads-web-launchers");
+const TMUX_SESSION = "shipyard";
 
 // Backwards-compat: old single-session file (cleaned up on first use)
 const LEGACY_SESSION_FILE = path.join(os.tmpdir(), "beads-web-agent-session.json");
@@ -108,16 +121,13 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+// TODO: getFleetAgentStatus should call this on first request to recover sessions after hot-reload
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function recoverSessions(): Promise<AgentSession[]> {
   const recovered: AgentSession[] = [];
 
-  // Clean up legacy single-session file
+  // Clean up legacy single-session file (always old, pre-tmux format)
   try {
-    const data = await fs.readFile(LEGACY_SESSION_FILE, "utf-8");
-    const session = JSON.parse(data) as AgentSession;
-    if (session.pid && isPidAlive(session.pid)) {
-      recovered.push(session);
-    }
     await fs.unlink(LEGACY_SESSION_FILE).catch(() => {});
   } catch {
     // No legacy file
@@ -131,9 +141,21 @@ async function recoverSessions(): Promise<AgentSession[]> {
       try {
         const data = await fs.readFile(path.join(SESSIONS_DIR, file), "utf-8");
         const session = JSON.parse(data) as AgentSession;
-        if (session.pid && isPidAlive(session.pid)) {
+
+        // Check if tmux session still exists
+        const sessionName = session.tmuxSessionName || session.tmuxWindow;
+        if (sessionName) {
+          const stillRunning = await tmuxSessionAlive(sessionName);
+          if (stillRunning) {
+            recovered.push(session);
+          } else {
+            await fs.unlink(path.join(SESSIONS_DIR, file)).catch(() => {});
+          }
+        } else if (session.pid && isPidAlive(session.pid)) {
+          // Old format (pre-tmux), check PID
           recovered.push(session);
         } else {
+          // Dead session, clean up
           await fs.unlink(path.join(SESSIONS_DIR, file)).catch(() => {});
         }
       } catch {
@@ -145,6 +167,141 @@ async function recoverSessions(): Promise<AgentSession[]> {
   }
 
   return recovered;
+}
+
+// ---------------------------------------------------------------------------
+// tmux helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Ensure the Shipyard tmux session exists.
+ */
+async function ensureTmuxSession(): Promise<void> {
+  try {
+    await execAsync(`/opt/homebrew/bin/tmux has-session -t ${TMUX_SESSION} 2>/dev/null`);
+  } catch {
+    // Session doesn't exist, create it
+    await execAsync(`/opt/homebrew/bin/tmux new-session -d -s ${TMUX_SESSION}`);
+  }
+}
+
+/**
+ * Check if a tmux window exists.
+ */
+async function tmuxWindowExists(windowName: string): Promise<boolean> {
+  try {
+    await execAsync(`/opt/homebrew/bin/tmux list-windows -t ${TMUX_SESSION} -F '#{window_name}' 2>/dev/null | grep -q '^${windowName}$'`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read the status file written by the launcher script on exit.
+ */
+async function readStatusFile(statusFile: string): Promise<{exitCode: number} | null> {
+  try {
+    const data = await fs.readFile(statusFile, "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if a tmux session exists by name (not window — each agent gets its own session).
+ */
+async function tmuxSessionAlive(sessionName: string): Promise<boolean> {
+  try {
+    await execAsync(`/opt/homebrew/bin/tmux has-session -t "${sessionName}" 2>/dev/null`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect Claude Code's idle prompt (❯ followed by optional whitespace/nbsp).
+ * Uses tmux capture-pane which returns plain text (no ANSI codes by default).
+ */
+async function detectIdlePrompt(sessionName: string): Promise<boolean> {
+  try {
+    const { stdout } = await execAsync(
+      `/opt/homebrew/bin/tmux capture-pane -t "${sessionName}" -p 2>/dev/null`,
+    );
+    const lines = stdout.split("\n").filter((l) => l.trim().length > 0);
+    if (lines.length === 0) return false;
+    const lastLine = lines[lines.length - 1];
+    // Claude Code idle prompt: ❯ followed by zero or more space/nbsp chars
+    return /^❯[\s\u00a0]*$/.test(lastLine.trim());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Send /exit to a tmux session to trigger clean Claude Code shutdown.
+ * This fires the Stop hook (which sends Langfuse traces) before the process exits.
+ */
+async function sendTmuxExit(sessionName: string): Promise<void> {
+  const tmux = "/opt/homebrew/bin/tmux";
+  await execAsync(`${tmux} send-keys -t "${sessionName}" "/exit" Enter`);
+}
+
+// Timing constants for exit detection
+const STARTUP_GRACE_MS = 20000; // Don't check for idle during prompt injection window
+const IDLE_CONFIRM_MS = 10000; // Require 10s of continuous idle before sending /exit
+const EXIT_TIMEOUT_MS = 30000; // Force-kill 30s after /exit if session won't die
+
+/**
+ * Generate the launcher script that runs in the tmux window.
+ */
+function generateLauncherScript(
+  session: AgentSession,
+  otelEnv: Record<string, string>,
+  options: LaunchOptions,
+): string {
+  const model = options.model ?? "sonnet";
+  const maxTurns = options.maxTurns ?? 200;
+  const allowedTools = options.allowedTools ?? "Bash,Read,Write,Edit,Glob,Grep";
+
+  // Build env var exports
+  const envExports = Object.entries(otelEnv)
+    .map(([key, value]) => `export ${key}="${value}"`)
+    .join("\n");
+
+  // Escape single quotes in prompt for shell
+  const escapedPrompt = options.prompt.replace(/'/g, "'\\''");
+
+  const agentArg = options.agentName ? `--agent ${options.agentName}` : "";
+
+  return `#!/bin/bash
+# Keep it simple — match the Terminal.app approach that's proven to work.
+# Claude Code finds settings.local.json by walking up the directory tree,
+# which injects TRACE_TO_LANGFUSE and Langfuse keys into the process.
+# Hooks then inherit these env vars and send traces to Langfuse.
+
+cd "${session.repoPath}"
+unset ANTHROPIC_API_KEY
+unset CLAUDECODE
+
+/Users/janemckay/.local/bin/claude \\
+  ${agentArg} \\
+  --max-turns ${maxTurns} \\
+  --model ${model} \\
+  --dangerously-skip-permissions \\
+  --allowedTools ${allowedTools} \\
+  --append-system-prompt '${escapedPrompt}'
+
+EXIT_CODE=$?
+
+# Write status file so beads_web can detect exit
+mkdir -p "${STATUS_DIR}"
+cat > "${session.statusFile}" << STATUSEOF
+{"exitCode": $EXIT_CODE, "exitedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "epicId": "${session.epicId || ""}", "pipelineStage": "${session.pipelineStage || ""}", "repoPath": "${session.repoPath}"}
+STATUSEOF
+`;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +354,6 @@ interface BdExecResult {
 }
 
 function execBdSync(args: string[], cwd: string, timeoutMs = 15000): BdExecResult {
-  const { execFileSync } = require("child_process");
   const bd = getBdPath();
   const env = getBdEnv();
   try {
@@ -618,6 +774,86 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
 }
 
 // ---------------------------------------------------------------------------
+// Agent exit handler — extracted from inline handler for reusability
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle agent exit: complete Langfuse trace, update pipeline labels, trigger chain actions.
+ * Called by both the tmux polling mechanism and stopAgent().
+ */
+async function handleAgentExit(
+  session: AgentSession,
+  exitCode: number | null,
+  langfuseSpan: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+): Promise<void> {
+  // Complete Langfuse lifecycle trace BEFORE pipeline transitions (factory-core-75e)
+  // Per ADR-003: independent try/catch — Langfuse errors must not affect pipeline logic
+  if (langfuseSpan) {
+    try {
+      const { LangfuseOtelSpanAttributes } = await import("@langfuse/tracing");
+      const duration = Date.now() - new Date(session.startedAt).getTime();
+      const status = exitCode === 0 ? "SUCCESS" : "ERROR";
+      langfuseSpan.setAttribute(
+        LangfuseOtelSpanAttributes.TRACE_OUTPUT,
+        JSON.stringify({ exitCode, durationMs: duration, status }),
+      );
+      if (exitCode !== 0) {
+        langfuseSpan.setStatus({ code: 2, message: `Agent exited with code ${exitCode}` }); // SpanStatusCode.ERROR = 2
+      } else {
+        langfuseSpan.setStatus({ code: 1 }); // SpanStatusCode.OK = 1
+      }
+      langfuseSpan.end();
+    } catch (err) {
+      // ADR-003: Langfuse errors must never prevent exit handling or pipeline transitions
+      console.error("[langfuse] Failed to complete lifecycle trace:", err);
+    }
+  }
+
+  // Perform pipeline label transitions if epicId and pipelineStage are set
+  if (session.epicId && session.pipelineStage) {
+    try {
+      const { addLabelsToEpic, removeLabelsFromEpic } = await import("./pipeline-labels");
+
+      // Always remove agent:running
+      await removeLabelsFromEpic(session.epicId, ["agent:running"]);
+
+      if (exitCode === 0) {
+        // Check for special exit labels (e.g., research -> pipeline:research-complete,
+        // planning -> plan:pending). When exit labels include a pipeline:* label,
+        // also remove the current pipeline label so only one is active.
+        // (factory-core-lxc.1)
+        const exitLabels = EXIT_LABELS[session.pipelineStage];
+        if (exitLabels) {
+          const hasNewPipelineLabel = exitLabels.some((l) => l.startsWith("pipeline:"));
+          if (hasNewPipelineLabel) {
+            const currentLabel = `pipeline:${session.pipelineStage}`;
+            await removeLabelsFromEpic(session.epicId, [currentLabel]);
+          }
+          await addLabelsToEpic(session.epicId, exitLabels);
+        }
+
+        // Check if a chain action handles the transition (e.g., dev -> QA loop)
+        const chainHandled = await handleChainAction(session, exitCode);
+
+        // Advance to next pipeline stage only if no chain action took over
+        if (!chainHandled) {
+          const nextStage = NEXT_STAGE[session.pipelineStage];
+          if (nextStage) {
+            const currentLabel = `pipeline:${session.pipelineStage}`;
+            await removeLabelsFromEpic(session.epicId, [currentLabel]);
+            await addLabelsToEpic(session.epicId, [nextStage]);
+          }
+        }
+      }
+      // If non-zero exit, the pipeline label stays at the current stage
+      // (card stays in the same column with no agent indicator)
+    } catch (err) {
+      console.error("Failed to update pipeline labels on agent exit:", err);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Ensure log directory exists
 // ---------------------------------------------------------------------------
 
@@ -630,101 +866,34 @@ async function ensureLogDir(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// JSON log formatter — turns Claude CLI JSON output into readable progress
-// ---------------------------------------------------------------------------
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
-function formatAgentEvent(msg: any, ts: string, log: WriteStream): void {
-  // Claude CLI --output-format json emits different message types
-  const type = msg.type;
-
-  if (type === "assistant" && msg.message?.content) {
-    for (const block of msg.message.content) {
-      if (block.type === "text" && block.text) {
-        // Trim long text to keep log readable
-        const text = block.text.length > 300
-          ? block.text.slice(0, 300) + "..."
-          : block.text;
-        log.write(`[${ts}] THINKING: ${text}\n`);
-      }
-      if (block.type === "tool_use") {
-        const input = block.input ?? {};
-        const detail = formatToolDetail(block.name, input);
-        log.write(`[${ts}] TOOL: ${block.name} ${detail}\n`);
-      }
-    }
-  } else if (type === "result" && msg.result) {
-    // Final result message
-    const cost = msg.cost_usd ?? msg.result?.cost_usd;
-    const costStr = cost ? ` ($${Number(cost).toFixed(4)})` : "";
-    log.write(`[${ts}] RESULT: Agent finished${costStr}\n`);
-  }
-}
-
-function formatToolDetail(name: string, input: any): string {
-  switch (name) {
-    case "Read":
-      return input.file_path ? `→ ${input.file_path}` : "";
-    case "Write":
-      return input.file_path ? `→ ${input.file_path}` : "";
-    case "Edit":
-      return input.file_path ? `→ ${input.file_path}` : "";
-    case "Glob":
-      return input.pattern ? `→ ${input.pattern}` : "";
-    case "Grep":
-      return input.pattern ? `→ "${input.pattern}"` : "";
-    case "Bash": {
-      const cmd = input.command ?? "";
-      const short = cmd.length > 100 ? cmd.slice(0, 100) + "..." : cmd;
-      return `→ ${short}`;
-    }
-    case "Task":
-      return input.description ? `→ ${input.description}` : "";
-    default:
-      return "";
-  }
-}
-/* eslint-enable @typescript-eslint/no-explicit-any */
-
-// ---------------------------------------------------------------------------
 // Launch
 // ---------------------------------------------------------------------------
 
 export async function launchAgent(options: LaunchOptions): Promise<AgentSession> {
   const repoKey = realpathSync(options.repoPath);
   const existing = activeAgents.get(repoKey);
-  if (existing && !existing.process.killed && existing.process.exitCode === null) {
-    throw new Error(
-      `Agent already running (PID ${existing.session.pid}) in ${existing.session.repoName}. Stop it first.`,
-    );
+  if (existing) {
+    const stillRunning = existing.session.tmuxSessionName
+      ? await tmuxSessionAlive(existing.session.tmuxSessionName)
+      : false;
+    if (stillRunning) {
+      throw new Error(
+        `Agent already running in tmux window "${existing.session.tmuxWindow}" in ${existing.session.repoName}. Stop it first.`,
+      );
+    }
   }
 
   await ensureLogDir();
+  await fs.mkdir(STATUS_DIR, { recursive: true });
+  await fs.mkdir(LAUNCHER_DIR, { recursive: true });
 
   const model = options.model ?? "sonnet";
-  const maxTurns = options.maxTurns ?? 200;
-  const allowedTools = options.allowedTools ?? "Bash,Read,Write,Edit,Glob,Grep";
   const repoName = options.repoName ?? path.basename(options.repoPath);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = path.join(LOG_DIR, `agent-${repoName}-${timestamp}.log`);
-
-  const args = [
-    "-p",
-    options.prompt,
-    "--allowedTools",
-    allowedTools,
-    "--output-format",
-    "json",
-    "--max-turns",
-    String(maxTurns),
-    "--model",
-    model,
-  ];
-
-  // Add agent name if specified
-  if (options.agentName) {
-    args.push("--agent", options.agentName);
-  }
+  const statusFile = path.join(STATUS_DIR, `${options.epicId || repoName}-${options.pipelineStage || "unknown"}-${timestamp}.json`);
+  const launcherScript = path.join(LAUNCHER_DIR, `launcher-${options.epicId || repoName}-${options.pipelineStage || "unknown"}-${timestamp}.sh`);
+  const tmuxWindow = `${options.epicId || repoName}-${options.pipelineStage || "unknown"}`;
 
   // Ensure cwd exists (planning agents run in app repos that may not exist yet)
   await fs.mkdir(options.repoPath, { recursive: true });
@@ -738,54 +907,12 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     repoName,
   });
 
-  // Spawn via /bin/bash to ensure claude binary resolves correctly
-  // (Node's spawn with Mach-O binaries + symlinks can fail with ENOENT)
-  const claudeBin = process.env.CLAUDE_BIN || "/Users/janemckay/.local/bin/claude";
-  const shellCmd = [claudeBin, ...args].map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-  const child = spawn("/bin/bash", ["-c", shellCmd], {
-    cwd: options.repoPath,
-    detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      ...otelEnv, // OTEL env vars for Langfuse (empty object if not configured)
-      PATH: `/Users/janemckay/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
-      HOME: process.env.HOME || "/Users/janemckay",
-      // Must unset CLAUDECODE to avoid "nested session" error
-      CLAUDECODE: undefined,
-      // Must unset ANTHROPIC_API_KEY so agents use the subscription, not the API
-      // (beads_web loads this for Haiku title cleanup, but agents should not inherit it)
-      ANTHROPIC_API_KEY: undefined,
-      NO_COLOR: "1",
-    },
-  });
-
-  // Parse JSON stdout into human-readable log; discard stderr (OTel noise)
-  const writableLog = createWriteStream(logFile, { flags: "w" });
-  writableLog.write(`[${new Date().toISOString()}] Agent started: ${model} in ${repoName}\n`);
-  writableLog.write(`[${new Date().toISOString()}] Prompt: ${options.prompt.slice(0, 200)}...\n\n`);
-
-  if (child.stdout) {
-    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    rl.on("line", (line) => {
-      try {
-        const msg = JSON.parse(line);
-        const ts = new Date().toLocaleTimeString("en-GB", { hour12: false });
-        formatAgentEvent(msg, ts, writableLog);
-      } catch {
-        // Non-JSON lines are OTel telemetry noise — discard them
-      }
-    });
-  }
-  // stderr is also OTel telemetry — discard it
-  child.stderr?.resume();
-
   // Build Langfuse trace URL and session ID (factory-core-75e)
   const langfuseTraceUrl = options.epicId ? buildLangfuseTraceUrl(options.epicId) : undefined;
   const langfuseSessionId = options.epicId || undefined;
 
   const session: AgentSession = {
-    pid: child.pid!,
+    pid: 0, // Backwards compat — set to 0 for tmux sessions
     repoPath: options.repoPath,
     repoName,
     prompt: options.prompt,
@@ -797,7 +924,27 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     epicLabels: options.epicLabels,
     langfuseTraceUrl,
     langfuseSessionId,
+    tmuxWindow,
+    statusFile,
+    launcherScript,
   };
+
+  // Build the tmux session name — one session per agent
+  const tmuxSession = `shipyard-${(options.epicId || repoName).replace(/[^a-zA-Z0-9_-]/g, "-")}-${(options.pipelineStage || "unknown").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  session.tmuxSessionName = tmuxSession;
+
+  // Build the inline claude command for tmux
+  const allowedTools = options.allowedTools ?? "Bash,Read,Write,Edit,Glob,Grep";
+  const maxTurns = options.maxTurns ?? 200;
+  const agentFlag = options.agentName ? `--agent ${options.agentName}` : "";
+  const tmuxCmd = `cd ${session.repoPath} && unset ANTHROPIC_API_KEY && unset CLAUDECODE && /Users/janemckay/.local/bin/claude ${agentFlag} --max-turns ${maxTurns} --model ${model} --dangerously-skip-permissions --allowedTools ${allowedTools}`;
+
+  // Create initial log file
+  const writableLog = createWriteStream(logFile, { flags: "w" });
+  writableLog.write(`[${new Date().toISOString()}] Agent started in tmux: ${model} in ${repoName}\n`);
+  writableLog.write(`[${new Date().toISOString()}] Tmux session: ${tmuxSession}\n`);
+  writableLog.write(`[${new Date().toISOString()}] Prompt: ${options.prompt.slice(0, 200)}...\n\n`);
+  writableLog.end();
 
   // Create Langfuse lifecycle trace (factory-core-75e, ADR-003: try/catch required)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -821,7 +968,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
             repoName,
             repoPath: options.repoPath,
             model,
-            pid: child.pid,
+            tmuxWindow,
           }),
           [LangfuseOtelSpanAttributes.TRACE_INPUT]: JSON.stringify({
             prompt: options.prompt.slice(0, 500),
@@ -834,90 +981,102 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     }
   }
 
-  activeAgents.set(repoKey, { session, process: child, langfuseSpan });
-  await persistSession(session);
+  // Launch in tmux — gives a real TTY where hooks fire.
+  // One session per agent, named shipyard-{epicId}-{stage}.
+  await execAsync(`/opt/homebrew/bin/tmux new-session -d -s "${tmuxSession}" "${tmuxCmd}"`);
 
-  // Clean up when process exits and handle pipeline label transitions
-  child.on("exit", async (exitCode) => {
-    const exitedAgent = activeAgents.get(repoKey);
-    const exitedSession = exitedAgent?.session;
-    if (exitedSession != null && exitedSession.pid === child.pid) {
+  // Wait for claude to initialise, then paste the prompt via tmux buffer.
+  // Write prompt to file → load into tmux buffer → paste → Enter. No escaping needed.
+  const promptFile = path.join(LAUNCHER_DIR, `prompt-${tmuxSession}.txt`);
+  await fs.writeFile(promptFile, options.prompt);
+
+  setTimeout(async () => {
+    try {
+      const tmux = "/opt/homebrew/bin/tmux";
+      await execAsync(`${tmux} load-buffer "${promptFile}"`);
+      await execAsync(`${tmux} paste-buffer -t "${tmuxSession}"`);
+      await execAsync(`${tmux} send-keys -t "${tmuxSession}" Enter`);
+      await fs.unlink(promptFile).catch(() => {});
+    } catch (err) {
+      console.error("[tmux] Failed to send prompt:", err);
+    }
+  }, 6000);
+
+  // Poll tmux session for exit detection:
+  // 1. Session gone → agent exited (crash, max-turns, or post-/exit)
+  // 2. Session alive + idle prompt (❯) for 10s → send /exit for clean shutdown
+  // 3. After /exit, wait up to 30s for session to die, then force-kill
+  const pollInterval = setInterval(async () => {
+    const agent = activeAgents.get(repoKey);
+    if (!agent) { clearInterval(pollInterval); return; }
+
+    const alive = await tmuxSessionAlive(tmuxSession);
+
+    if (!alive) {
+      // Session is gone — agent exited
+      clearInterval(pollInterval);
       activeAgents.delete(repoKey);
       await clearPersistedSession(repoKey);
 
-      // Complete Langfuse lifecycle trace BEFORE pipeline transitions (factory-core-75e)
-      // Per ADR-003: independent try/catch — Langfuse errors must not affect pipeline logic
-      const lfSpan = exitedAgent?.langfuseSpan;
-      if (lfSpan) {
-        try {
-          const { LangfuseOtelSpanAttributes } = await import("@langfuse/tracing");
-          const duration = Date.now() - new Date(exitedSession.startedAt).getTime();
-          const status = exitCode === 0 ? "SUCCESS" : "ERROR";
-          lfSpan.setAttribute(
-            LangfuseOtelSpanAttributes.TRACE_OUTPUT,
-            JSON.stringify({ exitCode, durationMs: duration, status }),
-          );
-          if (exitCode !== 0) {
-            lfSpan.setStatus({ code: 2, message: `Agent exited with code ${exitCode}` }); // SpanStatusCode.ERROR = 2
-          } else {
-            lfSpan.setStatus({ code: 1 }); // SpanStatusCode.OK = 1
-          }
-          lfSpan.end();
-        } catch (err) {
-          // ADR-003: Langfuse errors must never prevent exit handling or pipeline transitions
-          console.error("[langfuse] Failed to complete lifecycle trace:", err);
-        }
-      }
+      // If we sent /exit, it was a clean exit; otherwise unknown
+      const exitCode = agent.exitSentAt ? 0 : null;
+      await handleAgentExit(session, exitCode, agent.langfuseSpan);
 
-      // Perform pipeline label transitions if epicId and pipelineStage are set
-      if (exitedSession.epicId && exitedSession.pipelineStage) {
-        try {
-          const { addLabelsToEpic, removeLabelsFromEpic } = await import("./pipeline-labels");
-
-          // Always remove agent:running
-          await removeLabelsFromEpic(exitedSession.epicId, ["agent:running"]);
-
-          if (exitCode === 0) {
-            // Check for special exit labels (e.g., research -> pipeline:research-complete,
-            // planning -> plan:pending). When exit labels include a pipeline:* label,
-            // also remove the current pipeline label so only one is active.
-            // (factory-core-lxc.1)
-            const exitLabels = EXIT_LABELS[exitedSession.pipelineStage];
-            if (exitLabels) {
-              const hasNewPipelineLabel = exitLabels.some((l) => l.startsWith("pipeline:"));
-              if (hasNewPipelineLabel) {
-                const currentLabel = `pipeline:${exitedSession.pipelineStage}`;
-                await removeLabelsFromEpic(exitedSession.epicId, [currentLabel]);
-              }
-              await addLabelsToEpic(exitedSession.epicId, exitLabels);
-            }
-
-            // Check if a chain action handles the transition (e.g., dev -> QA loop)
-            const chainHandled = await handleChainAction(exitedSession, exitCode);
-
-            // Advance to next pipeline stage only if no chain action took over
-            if (!chainHandled) {
-              const nextStage = NEXT_STAGE[exitedSession.pipelineStage];
-              if (nextStage) {
-                const currentLabel = `pipeline:${exitedSession.pipelineStage}`;
-                await removeLabelsFromEpic(exitedSession.epicId, [currentLabel]);
-                await addLabelsToEpic(exitedSession.epicId, [nextStage]);
-              }
-            }
-          }
-          // If non-zero exit, the pipeline label stays at the current stage
-          // (card stays in the same column with no agent indicator)
-        } catch (err) {
-          console.error("Failed to update pipeline labels on agent exit:", err);
-        }
-      }
+      const finalLog = createWriteStream(logFile, { flags: "a" });
+      finalLog.write(`\n[${new Date().toISOString()}] Agent exited (code ${exitCode})\n`);
+      finalLog.end();
+      return;
     }
-    writableLog.write(`\n[${new Date().toLocaleTimeString("en-GB", { hour12: false })}] Agent exited (code ${exitCode})\n`);
-    writableLog.end();
-  });
 
-  // Don't let the child keep our process alive
-  child.unref();
+    // Session alive — check for /exit timeout
+    if (agent.exitSentAt) {
+      if (Date.now() - agent.exitSentAt > EXIT_TIMEOUT_MS) {
+        // Timed out waiting for clean exit — force kill
+        clearInterval(pollInterval);
+        await killAgent(agent);
+        activeAgents.delete(repoKey);
+        await clearPersistedSession(repoKey);
+        await handleAgentExit(session, null, agent.langfuseSpan);
+
+        const finalLog = createWriteStream(logFile, { flags: "a" });
+        finalLog.write(`\n[${new Date().toISOString()}] Agent force-killed after /exit timeout\n`);
+        finalLog.end();
+      }
+      return; // Still waiting for /exit to take effect
+    }
+
+    // Skip idle detection during startup (prompt not yet injected)
+    if (Date.now() - new Date(session.startedAt).getTime() < STARTUP_GRACE_MS) {
+      return;
+    }
+
+    // Check for idle prompt
+    const isIdle = await detectIdlePrompt(tmuxSession);
+    if (isIdle) {
+      if (agent.idleDetectedAt && Date.now() - agent.idleDetectedAt >= IDLE_CONFIRM_MS) {
+        // Confirmed idle for 10s — send /exit for clean shutdown (fires Stop hook → Langfuse)
+        agent.exitSentAt = Date.now();
+        try {
+          await sendTmuxExit(tmuxSession);
+          const exitLog = createWriteStream(logFile, { flags: "a" });
+          exitLog.write(`[${new Date().toISOString()}] Idle prompt detected — sent /exit\n`);
+          exitLog.end();
+        } catch (err) {
+          console.error("[tmux] Failed to send /exit:", err);
+          agent.exitSentAt = undefined; // Reset — retry on next poll
+        }
+      } else if (!agent.idleDetectedAt) {
+        // First idle detection — start confirmation timer
+        agent.idleDetectedAt = Date.now();
+      }
+    } else {
+      // Not idle — reset detection
+      agent.idleDetectedAt = undefined;
+    }
+  }, 5000); // Poll every 5 seconds
+
+  activeAgents.set(repoKey, { session, pollInterval, langfuseSpan });
+  await persistSession(session);
 
   return session;
 }
@@ -962,9 +1121,12 @@ export async function getAgentStatus(repoPath?: string): Promise<AgentStatus> {
     const key = realpathSync(repoPath);
     const agent = activeAgents.get(key);
     if (!agent) return { running: false, session: null };
-    if (agent.process.killed || agent.process.exitCode !== null) {
-      activeAgents.delete(key);
-      return { running: false, session: null };
+    if (agent.session.tmuxSessionName) {
+      const stillRunning = await tmuxSessionAlive(agent.session.tmuxSessionName);
+      if (!stillRunning) {
+        activeAgents.delete(key);
+        return { running: false, session: null };
+      }
     }
     return {
       running: true,
@@ -975,9 +1137,12 @@ export async function getAgentStatus(repoPath?: string): Promise<AgentStatus> {
 
   // No repoPath: return first running agent (backwards compat)
   for (const [key, agent] of activeAgents) {
-    if (agent.process.killed || agent.process.exitCode !== null) {
-      activeAgents.delete(key);
-      continue;
+    if (agent.session.tmuxSessionName) {
+      const stillRunning = await tmuxSessionAlive(agent.session.tmuxSessionName);
+      if (!stillRunning) {
+        activeAgents.delete(key);
+        continue;
+      }
     }
     return {
       running: true,
@@ -993,9 +1158,12 @@ export async function getFleetAgentStatus(): Promise<FleetStatus> {
   const agents: AgentStatus[] = [];
 
   for (const [key, agent] of activeAgents) {
-    if (agent.process.killed || agent.process.exitCode !== null) {
-      activeAgents.delete(key);
-      continue;
+    if (agent.session.tmuxSessionName) {
+      const stillRunning = await tmuxSessionAlive(agent.session.tmuxSessionName);
+      if (!stillRunning) {
+        activeAgents.delete(key);
+        continue;
+      }
     }
     agents.push({
       running: true,
@@ -1019,7 +1187,7 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
   if (repoPath === "all") {
     let count = 0;
     for (const [key, agent] of activeAgents) {
-      killAgent(agent);
+      await killAgent(agent);
       activeAgents.delete(key);
       await clearPersistedSession(agent.session.repoPath);
       count++;
@@ -1032,7 +1200,11 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
     const agent = activeAgents.get(key);
     if (!agent) return { stopped: false };
     const pid = agent.session.pid;
-    killAgent(agent);
+    await killAgent(agent);
+
+    // Call exit handler immediately for manual stops
+    await handleAgentExit(agent.session, null, agent.langfuseSpan);
+
     activeAgents.delete(key);
     await clearPersistedSession(repoPath);
     return { stopped: true, pid };
@@ -1041,7 +1213,11 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
   // No repoPath: stop first running agent (backwards compat)
   for (const [key, agent] of activeAgents) {
     const pid = agent.session.pid;
-    killAgent(agent);
+    await killAgent(agent);
+
+    // Call exit handler immediately for manual stops
+    await handleAgentExit(agent.session, null, agent.langfuseSpan);
+
     activeAgents.delete(key);
     await clearPersistedSession(agent.session.repoPath);
     return { stopped: true, pid };
@@ -1049,14 +1225,17 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
   return { stopped: false };
 }
 
-function killAgent(agent: ActiveAgent): void {
-  try {
-    process.kill(-agent.session.pid, "SIGTERM");
-  } catch {
+async function killAgent(agent: ActiveAgent): Promise<void> {
+  // Stop the polling interval
+  clearInterval(agent.pollInterval);
+
+  // Kill the tmux session (each agent runs in its own session)
+  const sessionName = agent.session.tmuxSessionName;
+  if (sessionName) {
     try {
-      agent.process.kill("SIGTERM");
+      await execAsync(`/opt/homebrew/bin/tmux kill-session -t "${sessionName}"`);
     } catch {
-      // Already dead
+      // Session may already be gone
     }
   }
 }
