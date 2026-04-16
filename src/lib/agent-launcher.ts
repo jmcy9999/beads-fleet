@@ -68,6 +68,7 @@ interface ActiveAgent {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   langfuseSpan?: any; // OTEL Span for lifecycle trace (typed as any to avoid hard dep)
   idleDetectedAt?: number; // Timestamp of first idle prompt detection
+  flushSentAt?: number; // Timestamp when Langfuse flush message was sent
   exitSentAt?: number; // Timestamp when /exit was sent (undefined = not sent)
 }
 
@@ -238,6 +239,21 @@ async function detectIdlePrompt(sessionName: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Send /exit to a tmux session to trigger clean Claude Code shutdown.
+ * This fires the Stop hook (which sends Langfuse traces) before the process exits.
+ */
+/**
+ * Send a Langfuse flush message to a tmux session.
+ * "Thank you, that's all, goodbye." triggers one more assistant response →
+ * Stop hook fires → flushes the previous turn to Langfuse via the one-invocation
+ * delay. Without this, the agent's last real turn would be lost.
+ */
+async function sendTmuxFlush(sessionName: string): Promise<void> {
+  const tmux = "/opt/homebrew/bin/tmux";
+  await execAsync(`${tmux} send-keys -t "${sessionName}" "Thank you, that's all, goodbye." Enter`);
 }
 
 /**
@@ -1050,28 +1066,45 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
       return;
     }
 
-    // Check for idle prompt
+    // Check for idle prompt — two-phase shutdown:
+    // Phase 1: Send "goodbye" flush message → triggers Stop hook → flushes last real turn
+    // Phase 2: After Claude responds and goes idle again → send /exit
     const isIdle = await detectIdlePrompt(tmuxSession);
     if (isIdle) {
-      if (agent.idleDetectedAt && Date.now() - agent.idleDetectedAt >= IDLE_CONFIRM_MS) {
-        // Confirmed idle for 10s — send /exit for clean shutdown (fires Stop hook → Langfuse)
+      if (agent.flushSentAt && !agent.exitSentAt) {
+        // Phase 2: Flush message was sent, Claude responded, now idle again → send /exit
         agent.exitSentAt = Date.now();
         try {
           await sendTmuxExit(tmuxSession);
           const exitLog = createWriteStream(logFile, { flags: "a" });
-          exitLog.write(`[${new Date().toISOString()}] Idle prompt detected — sent /exit\n`);
+          exitLog.write(`[${new Date().toISOString()}] Post-flush idle detected — sent /exit\n`);
           exitLog.end();
         } catch (err) {
           console.error("[tmux] Failed to send /exit:", err);
-          agent.exitSentAt = undefined; // Reset — retry on next poll
+          agent.exitSentAt = undefined;
         }
-      } else if (!agent.idleDetectedAt) {
+      } else if (!agent.flushSentAt && agent.idleDetectedAt && Date.now() - agent.idleDetectedAt >= IDLE_CONFIRM_MS) {
+        // Phase 1: Confirmed idle for 10s — send flush message to trigger Langfuse
+        agent.flushSentAt = Date.now();
+        agent.idleDetectedAt = undefined; // Reset for Phase 2 detection
+        try {
+          await sendTmuxFlush(tmuxSession);
+          const flushLog = createWriteStream(logFile, { flags: "a" });
+          flushLog.write(`[${new Date().toISOString()}] Idle prompt detected — sent Langfuse flush message\n`);
+          flushLog.end();
+        } catch (err) {
+          console.error("[tmux] Failed to send flush message:", err);
+          agent.flushSentAt = undefined;
+        }
+      } else if (!agent.flushSentAt && !agent.idleDetectedAt) {
         // First idle detection — start confirmation timer
         agent.idleDetectedAt = Date.now();
       }
     } else {
-      // Not idle — reset detection
-      agent.idleDetectedAt = undefined;
+      // Not idle — reset detection (but not flushSentAt — that's permanent)
+      if (!agent.flushSentAt) {
+        agent.idleDetectedAt = undefined;
+      }
     }
   }, 5000); // Poll every 5 seconds
 
