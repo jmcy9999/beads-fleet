@@ -122,8 +122,6 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-// TODO: getFleetAgentStatus should call this on first request to recover sessions after hot-reload
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function recoverSessions(): Promise<AgentSession[]> {
   const recovered: AgentSession[] = [];
 
@@ -269,6 +267,139 @@ async function sendTmuxExit(sessionName: string): Promise<void> {
 const STARTUP_GRACE_MS = 20000; // Don't check for idle during prompt injection window
 const IDLE_CONFIRM_MS = 10000; // Require 10s of continuous idle before sending /exit
 const EXIT_TIMEOUT_MS = 30000; // Force-kill 30s after /exit if session won't die
+const RECOVERY_DEBOUNCE_MS = 10000; // Don't attempt recovery more than once per 10s
+
+// ---------------------------------------------------------------------------
+// Poll loop — extracted so both launchAgent() and recovery can use it
+// ---------------------------------------------------------------------------
+
+/**
+ * Start the poll loop that monitors a tmux session for exit detection.
+ * Handles: session death, idle prompt detection, two-phase shutdown
+ * (goodbye flush → /exit), and force-kill timeout.
+ */
+function startPollLoop(
+  session: AgentSession,
+  repoKey: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  langfuseSpan?: any,
+): NodeJS.Timeout {
+  const logFile = session.logFile;
+  const tmuxSession = session.tmuxSessionName!;
+
+  return setInterval(async () => {
+    const agent = activeAgents.get(repoKey);
+    if (!agent) return;
+
+    const alive = await tmuxSessionAlive(tmuxSession);
+
+    if (!alive) {
+      // Session is gone — agent exited
+      clearInterval(agent.pollInterval);
+      activeAgents.delete(repoKey);
+      await clearPersistedSession(repoKey);
+
+      const exitCode = agent.exitSentAt ? 0 : null;
+      await handleAgentExit(session, exitCode, agent.langfuseSpan);
+
+      const finalLog = createWriteStream(logFile, { flags: "a" });
+      finalLog.write(`\n[${new Date().toISOString()}] Agent exited (code ${exitCode})\n`);
+      finalLog.end();
+      return;
+    }
+
+    // Session alive — check for /exit timeout
+    if (agent.exitSentAt) {
+      if (Date.now() - agent.exitSentAt > EXIT_TIMEOUT_MS) {
+        clearInterval(agent.pollInterval);
+        await killAgent(agent);
+        activeAgents.delete(repoKey);
+        await clearPersistedSession(repoKey);
+        await handleAgentExit(session, null, agent.langfuseSpan);
+
+        const finalLog = createWriteStream(logFile, { flags: "a" });
+        finalLog.write(`\n[${new Date().toISOString()}] Agent force-killed after /exit timeout\n`);
+        finalLog.end();
+      }
+      return;
+    }
+
+    // Skip idle detection during startup (prompt not yet injected)
+    if (Date.now() - new Date(session.startedAt).getTime() < STARTUP_GRACE_MS) {
+      return;
+    }
+
+    // Two-phase shutdown:
+    // Phase 1: Send "goodbye" flush message → triggers Stop hook → flushes last real turn
+    // Phase 2: After Claude responds and goes idle again → send /exit
+    const isIdle = await detectIdlePrompt(tmuxSession);
+    if (isIdle) {
+      if (agent.flushSentAt && !agent.exitSentAt) {
+        agent.exitSentAt = Date.now();
+        try {
+          await sendTmuxExit(tmuxSession);
+          const exitLog = createWriteStream(logFile, { flags: "a" });
+          exitLog.write(`[${new Date().toISOString()}] Post-flush idle detected — sent /exit\n`);
+          exitLog.end();
+        } catch (err) {
+          console.error("[tmux] Failed to send /exit:", err);
+          agent.exitSentAt = undefined;
+        }
+      } else if (!agent.flushSentAt && agent.idleDetectedAt && Date.now() - agent.idleDetectedAt >= IDLE_CONFIRM_MS) {
+        agent.flushSentAt = Date.now();
+        agent.idleDetectedAt = undefined;
+        try {
+          await sendTmuxFlush(tmuxSession);
+          const flushLog = createWriteStream(logFile, { flags: "a" });
+          flushLog.write(`[${new Date().toISOString()}] Idle prompt detected — sent Langfuse flush message\n`);
+          flushLog.end();
+        } catch (err) {
+          console.error("[tmux] Failed to send flush message:", err);
+          agent.flushSentAt = undefined;
+        }
+      } else if (!agent.flushSentAt && !agent.idleDetectedAt) {
+        agent.idleDetectedAt = Date.now();
+      }
+    } else {
+      if (!agent.flushSentAt) {
+        agent.idleDetectedAt = undefined;
+      }
+    }
+  }, 5000);
+}
+
+// ---------------------------------------------------------------------------
+// Session recovery — restores tracking after hot-reloads
+// ---------------------------------------------------------------------------
+
+let lastRecoveryAttempt = 0;
+
+/**
+ * Recover agent sessions from persisted files after a hot-reload clears
+ * the in-memory activeAgents map. Starts poll loops for recovered sessions
+ * so exit detection and PID box display work again.
+ */
+async function attemptRecovery(): Promise<void> {
+  const now = Date.now();
+  if (now - lastRecoveryAttempt < RECOVERY_DEBOUNCE_MS) return;
+  lastRecoveryAttempt = now;
+
+  const sessions = await recoverSessions();
+  for (const session of sessions) {
+    if (!session.tmuxSessionName) continue;
+    let key: string;
+    try {
+      key = realpathSync(session.repoPath);
+    } catch {
+      continue; // Path doesn't exist
+    }
+    if (activeAgents.has(key)) continue; // Already tracked
+
+    const pollInterval = startPollLoop(session, key);
+    activeAgents.set(key, { session, pollInterval });
+    console.log(`[recovery] Recovered agent session for ${session.repoName} (tmux: ${session.tmuxSessionName})`);
+  }
+}
 
 /**
  * Generate the launcher script that runs in the tmux window.
@@ -1018,95 +1149,8 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     }
   }, 6000);
 
-  // Poll tmux session for exit detection:
-  // 1. Session gone → agent exited (crash, max-turns, or post-/exit)
-  // 2. Session alive + idle prompt (❯) for 10s → send /exit for clean shutdown
-  // 3. After /exit, wait up to 30s for session to die, then force-kill
-  const pollInterval = setInterval(async () => {
-    const agent = activeAgents.get(repoKey);
-    if (!agent) { clearInterval(pollInterval); return; }
-
-    const alive = await tmuxSessionAlive(tmuxSession);
-
-    if (!alive) {
-      // Session is gone — agent exited
-      clearInterval(pollInterval);
-      activeAgents.delete(repoKey);
-      await clearPersistedSession(repoKey);
-
-      // If we sent /exit, it was a clean exit; otherwise unknown
-      const exitCode = agent.exitSentAt ? 0 : null;
-      await handleAgentExit(session, exitCode, agent.langfuseSpan);
-
-      const finalLog = createWriteStream(logFile, { flags: "a" });
-      finalLog.write(`\n[${new Date().toISOString()}] Agent exited (code ${exitCode})\n`);
-      finalLog.end();
-      return;
-    }
-
-    // Session alive — check for /exit timeout
-    if (agent.exitSentAt) {
-      if (Date.now() - agent.exitSentAt > EXIT_TIMEOUT_MS) {
-        // Timed out waiting for clean exit — force kill
-        clearInterval(pollInterval);
-        await killAgent(agent);
-        activeAgents.delete(repoKey);
-        await clearPersistedSession(repoKey);
-        await handleAgentExit(session, null, agent.langfuseSpan);
-
-        const finalLog = createWriteStream(logFile, { flags: "a" });
-        finalLog.write(`\n[${new Date().toISOString()}] Agent force-killed after /exit timeout\n`);
-        finalLog.end();
-      }
-      return; // Still waiting for /exit to take effect
-    }
-
-    // Skip idle detection during startup (prompt not yet injected)
-    if (Date.now() - new Date(session.startedAt).getTime() < STARTUP_GRACE_MS) {
-      return;
-    }
-
-    // Check for idle prompt — two-phase shutdown:
-    // Phase 1: Send "goodbye" flush message → triggers Stop hook → flushes last real turn
-    // Phase 2: After Claude responds and goes idle again → send /exit
-    const isIdle = await detectIdlePrompt(tmuxSession);
-    if (isIdle) {
-      if (agent.flushSentAt && !agent.exitSentAt) {
-        // Phase 2: Flush message was sent, Claude responded, now idle again → send /exit
-        agent.exitSentAt = Date.now();
-        try {
-          await sendTmuxExit(tmuxSession);
-          const exitLog = createWriteStream(logFile, { flags: "a" });
-          exitLog.write(`[${new Date().toISOString()}] Post-flush idle detected — sent /exit\n`);
-          exitLog.end();
-        } catch (err) {
-          console.error("[tmux] Failed to send /exit:", err);
-          agent.exitSentAt = undefined;
-        }
-      } else if (!agent.flushSentAt && agent.idleDetectedAt && Date.now() - agent.idleDetectedAt >= IDLE_CONFIRM_MS) {
-        // Phase 1: Confirmed idle for 10s — send flush message to trigger Langfuse
-        agent.flushSentAt = Date.now();
-        agent.idleDetectedAt = undefined; // Reset for Phase 2 detection
-        try {
-          await sendTmuxFlush(tmuxSession);
-          const flushLog = createWriteStream(logFile, { flags: "a" });
-          flushLog.write(`[${new Date().toISOString()}] Idle prompt detected — sent Langfuse flush message\n`);
-          flushLog.end();
-        } catch (err) {
-          console.error("[tmux] Failed to send flush message:", err);
-          agent.flushSentAt = undefined;
-        }
-      } else if (!agent.flushSentAt && !agent.idleDetectedAt) {
-        // First idle detection — start confirmation timer
-        agent.idleDetectedAt = Date.now();
-      }
-    } else {
-      // Not idle — reset detection (but not flushSentAt — that's permanent)
-      if (!agent.flushSentAt) {
-        agent.idleDetectedAt = undefined;
-      }
-    }
-  }, 5000); // Poll every 5 seconds
+  // Start poll loop for exit detection (extracted for reuse by session recovery)
+  const pollInterval = startPollLoop(session, repoKey, langfuseSpan);
 
   activeAgents.set(repoKey, { session, pollInterval, langfuseSpan });
   await persistSession(session);
@@ -1150,6 +1194,11 @@ async function readRecentLog(logFile: string): Promise<string | undefined> {
  * (backwards-compatible for existing callers that expect a single agent).
  */
 export async function getAgentStatus(repoPath?: string): Promise<AgentStatus> {
+  // Recover sessions lost to hot-reloads
+  if (activeAgents.size === 0) {
+    await attemptRecovery();
+  }
+
   if (repoPath) {
     const key = realpathSync(repoPath);
     const agent = activeAgents.get(key);
@@ -1188,6 +1237,11 @@ export async function getAgentStatus(repoPath?: string): Promise<AgentStatus> {
 
 /** Get status of all running agents */
 export async function getFleetAgentStatus(): Promise<FleetStatus> {
+  // Recover sessions lost to hot-reloads
+  if (activeAgents.size === 0) {
+    await attemptRecovery();
+  }
+
   const agents: AgentStatus[] = [];
 
   for (const [key, agent] of activeAgents) {
