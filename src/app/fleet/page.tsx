@@ -13,6 +13,7 @@ import { useTokenUsageSummary } from "@/hooks/useTokenUsage";
 import { useAgentStatus, useAgentStop } from "@/hooks/useAgent";
 import { usePipelineAction } from "@/hooks/usePipelineAction";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
+import { AttentionBadge } from "@/components/fleet/AttentionBadge";
 
 export default function FleetPage() {
   const { data, isLoading, error, refetch } = useIssues();
@@ -77,7 +78,13 @@ export default function FleetPage() {
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">App Fleet</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-white">App Fleet</h1>
+            {/* Header attention badge — hidden when zero items need review.
+                Count derives from the same useAttentionItems computation as
+                the card banners (factory-core-509.8). */}
+            <AttentionBadge count={attention.totalCount} />
+          </div>
           <p className="text-sm text-gray-400 mt-0.5">
             Fleet voyage — apps tracked as ships through build stages
           </p>
