@@ -14,6 +14,8 @@ import {
   getWaveInfo,
   collectWaveNumbers,
   appHasWave,
+  getAttentionItems,
+  ATTENTION_CONFIG,
   FLEET_STAGES,
   FLEET_STAGE_CONFIG,
   type FleetStage,
@@ -745,5 +747,310 @@ describe("detectStage -- CLAUDE.md pipeline label coverage", () => {
   it("returns 'live' for pipeline:live", () => {
     const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:live"] });
     expect(detectStage(epic, [])).toBe("live");
+  });
+});
+
+// =============================================================================
+// getAttentionItems — surface human review gates (factory-core-509.1)
+// =============================================================================
+
+describe("getAttentionItems", () => {
+  function appOf(epic: PlanIssue, children: PlanIssue[] = []): FleetApp {
+    return makeFleetApp(epic, children);
+  }
+
+  // -------------------------------------------------------------------------
+  // Configuration sanity
+  // -------------------------------------------------------------------------
+
+  describe("ATTENTION_CONFIG", () => {
+    it("defines a config entry for every attention type", () => {
+      expect(ATTENTION_CONFIG["verification-needed"].sourceLabel).toBe("checkpoint:human-verify");
+      expect(ATTENTION_CONFIG["decision-required"].sourceLabel).toBe("checkpoint:decision");
+      expect(ATTENTION_CONFIG["human-action"].sourceLabel).toBe("checkpoint:human-action");
+      expect(ATTENTION_CONFIG["qa-review"].sourceLabel).toBe("qa:needs-review");
+      // human-flagged has no source label — driven by child label
+      expect(ATTENTION_CONFIG["human-flagged"].sourceLabel).toBeUndefined();
+    });
+
+    it("verification-needed offers Approve action", () => {
+      expect(ATTENTION_CONFIG["verification-needed"].actions).toEqual([
+        { name: "human-approve", label: "Approve" },
+      ]);
+    });
+
+    it("decision-required, human-action, qa-review, human-flagged offer Dismiss action", () => {
+      for (const t of ["decision-required", "human-action", "qa-review", "human-flagged"] as const) {
+        expect(ATTENTION_CONFIG[t].actions).toEqual([
+          { name: "human-dismiss", label: "Dismiss" },
+        ]);
+      }
+    });
+
+    it("uses canonical reason text for each type", () => {
+      expect(ATTENTION_CONFIG["verification-needed"].reason).toBe("Human Verification Required");
+      expect(ATTENTION_CONFIG["decision-required"].reason).toBe("Decision Required");
+      expect(ATTENTION_CONFIG["human-action"].reason).toBe("Human Action Required");
+      expect(ATTENTION_CONFIG["qa-review"].reason).toBe("QA Review Needed");
+      expect(ATTENTION_CONFIG["human-flagged"].reason).toBe("Flagged for Human Decision");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Detection — happy paths per attention type
+  // -------------------------------------------------------------------------
+
+  it("detects checkpoint:human-verify as verification-needed", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-1",
+      issue_type: "epic",
+      labels: ["pipeline:development", "checkpoint:human-verify"],
+    });
+    const items = getAttentionItems(appOf(epic));
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      epicId: "EPIC-1",
+      type: "verification-needed",
+      reason: "Human Verification Required",
+      targetLabel: "checkpoint:human-verify",
+      actions: [{ name: "human-approve", label: "Approve" }],
+    });
+  });
+
+  it("detects checkpoint:decision as decision-required", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-2",
+      issue_type: "epic",
+      labels: ["pipeline:plan-review", "checkpoint:decision"],
+    });
+    const items = getAttentionItems(appOf(epic));
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("decision-required");
+    expect(items[0].reason).toBe("Decision Required");
+    expect(items[0].targetLabel).toBe("checkpoint:decision");
+  });
+
+  it("detects checkpoint:human-action as human-action", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-3",
+      issue_type: "epic",
+      labels: ["pipeline:development", "checkpoint:human-action"],
+    });
+    const items = getAttentionItems(appOf(epic));
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("human-action");
+    expect(items[0].reason).toBe("Human Action Required");
+    expect(items[0].targetLabel).toBe("checkpoint:human-action");
+  });
+
+  it("detects qa:needs-review as qa-review", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-4",
+      issue_type: "epic",
+      labels: ["pipeline:qa", "qa:needs-review"],
+    });
+    const items = getAttentionItems(appOf(epic));
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("qa-review");
+    expect(items[0].reason).toBe("QA Review Needed");
+    expect(items[0].targetLabel).toBe("qa:needs-review");
+  });
+
+  it("detects child bead with `human` label as human-flagged with bead context", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-5",
+      issue_type: "epic",
+      labels: ["pipeline:development"],
+    });
+    const child = makePlanIssue({
+      id: "EPIC-5.1",
+      title: "Investigate Dolt connection failure",
+      epic: "EPIC-5",
+      labels: ["human"],
+    });
+    const items = getAttentionItems(appOf(epic, [child]));
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      epicId: "EPIC-5",
+      beadId: "EPIC-5.1",
+      beadTitle: "Investigate Dolt connection failure",
+      type: "human-flagged",
+      reason: "Flagged for Human Decision",
+    });
+    expect(items[0].targetLabel).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Detection — empty / negative cases
+  // -------------------------------------------------------------------------
+
+  it("returns empty array when no attention labels are present", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-N1",
+      issue_type: "epic",
+      labels: ["pipeline:development", "ship-type:internal"],
+    });
+    expect(getAttentionItems(appOf(epic))).toEqual([]);
+  });
+
+  it("returns empty array when epic has no labels at all", () => {
+    const epic = makePlanIssue({ id: "EPIC-N2", issue_type: "epic", labels: undefined });
+    expect(getAttentionItems(appOf(epic))).toEqual([]);
+  });
+
+  it("returns empty array for closed epic with stale checkpoint:human-verify", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-N3",
+      issue_type: "epic",
+      status: "closed",
+      labels: ["pipeline:completed", "checkpoint:human-verify"],
+    });
+    expect(getAttentionItems(appOf(epic))).toEqual([]);
+  });
+
+  it("returns empty array for closed epic with child carrying `human` label", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-N4",
+      issue_type: "epic",
+      status: "closed",
+      labels: ["pipeline:completed"],
+    });
+    const child = makePlanIssue({
+      id: "EPIC-N4.1",
+      epic: "EPIC-N4",
+      labels: ["human"],
+    });
+    expect(getAttentionItems(appOf(epic, [child]))).toEqual([]);
+  });
+
+  it("excludes a previously labelled epic once the label has been removed", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-N5",
+      issue_type: "epic",
+      labels: ["pipeline:development"], // checkpoint:human-verify removed
+    });
+    expect(getAttentionItems(appOf(epic))).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Detection — robustness
+  // -------------------------------------------------------------------------
+
+  it("safely skips children with null/undefined labels", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-R1",
+      issue_type: "epic",
+      labels: ["pipeline:development", "checkpoint:human-verify"],
+    });
+    const child1 = makePlanIssue({ id: "EPIC-R1.1", epic: "EPIC-R1", labels: undefined });
+    const child2 = makePlanIssue({ id: "EPIC-R1.2", epic: "EPIC-R1", labels: undefined });
+    const items = getAttentionItems(appOf(epic, [child1, child2]));
+    // Only the epic-level checkpoint should produce an item; no errors thrown.
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("verification-needed");
+  });
+
+  it("safely handles children with empty labels arrays", () => {
+    const epic = makePlanIssue({ id: "EPIC-R2", issue_type: "epic", labels: [] });
+    const child = makePlanIssue({ id: "EPIC-R2.1", epic: "EPIC-R2", labels: [] });
+    expect(getAttentionItems(appOf(epic, [child]))).toEqual([]);
+  });
+
+  it("returns multiple items when epic has multiple attention labels", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-M1",
+      issue_type: "epic",
+      labels: [
+        "pipeline:development",
+        "checkpoint:human-verify",
+        "checkpoint:decision",
+        "qa:needs-review",
+      ],
+    });
+    const items = getAttentionItems(appOf(epic));
+    expect(items).toHaveLength(3);
+    const types = items.map((i) => i.type).sort();
+    expect(types).toEqual(["decision-required", "qa-review", "verification-needed"]);
+  });
+
+  it("returns one item per child when multiple children carry `human`", () => {
+    const epic = makePlanIssue({ id: "EPIC-M2", issue_type: "epic", labels: ["pipeline:development"] });
+    const c1 = makePlanIssue({ id: "EPIC-M2.1", epic: "EPIC-M2", labels: ["human"], title: "Bead one" });
+    const c2 = makePlanIssue({ id: "EPIC-M2.2", epic: "EPIC-M2", labels: ["human"], title: "Bead two" });
+    const items = getAttentionItems(appOf(epic, [c1, c2]));
+    expect(items).toHaveLength(2);
+    expect(items.map((i) => i.beadId).sort()).toEqual(["EPIC-M2.1", "EPIC-M2.2"]);
+    expect(items.map((i) => i.beadTitle).sort()).toEqual(["Bead one", "Bead two"]);
+  });
+
+  it("combines epic-level and child-level items on the same app", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-M3",
+      issue_type: "epic",
+      labels: ["pipeline:development", "checkpoint:human-verify"],
+    });
+    const child = makePlanIssue({ id: "EPIC-M3.1", epic: "EPIC-M3", labels: ["human"] });
+    const items = getAttentionItems(appOf(epic, [child]));
+    expect(items).toHaveLength(2);
+    expect(items.find((i) => i.type === "verification-needed")).toBeDefined();
+    expect(items.find((i) => i.type === "human-flagged")).toBeDefined();
+  });
+
+  it("produces stable ids unique within an app", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-ID",
+      issue_type: "epic",
+      labels: ["pipeline:development", "checkpoint:human-verify", "checkpoint:decision"],
+    });
+    const child = makePlanIssue({ id: "EPIC-ID.1", epic: "EPIC-ID", labels: ["human"] });
+    const ids = getAttentionItems(appOf(epic, [child])).map((i) => i.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain("EPIC-ID:checkpoint:human-verify");
+    expect(ids).toContain("EPIC-ID:checkpoint:decision");
+    expect(ids).toContain("EPIC-ID:human:EPIC-ID.1");
+  });
+
+  // -------------------------------------------------------------------------
+  // Detection — performance & purity
+  // -------------------------------------------------------------------------
+
+  it("is a pure function — repeated calls return equivalent results", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-P1",
+      issue_type: "epic",
+      labels: ["pipeline:development", "checkpoint:human-verify"],
+    });
+    const a = getAttentionItems(appOf(epic));
+    const b = getAttentionItems(appOf(epic));
+    expect(a).toEqual(b);
+  });
+
+  it("completes synchronously for 50 epics × 20 children each (perf smoke)", () => {
+    // Build 50 apps, each with 20 children, half flagged with `human`.
+    const apps: FleetApp[] = [];
+    for (let e = 0; e < 50; e++) {
+      const epic = makePlanIssue({
+        id: `EPIC-PERF-${e}`,
+        issue_type: "epic",
+        labels: ["pipeline:development", "checkpoint:human-verify"],
+      });
+      const children: PlanIssue[] = [];
+      for (let c = 0; c < 20; c++) {
+        children.push(
+          makePlanIssue({
+            id: `EPIC-PERF-${e}.${c}`,
+            epic: `EPIC-PERF-${e}`,
+            labels: c % 2 === 0 ? ["human"] : [],
+          }),
+        );
+      }
+      apps.push(makeFleetApp(epic, children));
+    }
+    const start = Date.now();
+    const totals = apps.map((a) => getAttentionItems(a).length);
+    const elapsed = Date.now() - start;
+    // Each epic: 1 (checkpoint) + 10 (every other child) = 11 items
+    expect(totals.every((n) => n === 11)).toBe(true);
+    expect(elapsed).toBeLessThan(500); // generous — synchronous detection is microseconds
   });
 });

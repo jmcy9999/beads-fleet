@@ -506,3 +506,159 @@ export function appHasWave(app: FleetApp, wave: number): boolean {
     c.labels?.includes(`wave:${wave}`) ?? false,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Attention items — surface human review gates (factory-core-509)
+// ---------------------------------------------------------------------------
+
+/**
+ * Categories of attention an epic (or one of its children) can flag.
+ *
+ * - "verification-needed": checkpoint:human-verify on the epic
+ * - "decision-required":   checkpoint:decision on the epic
+ * - "human-action":        checkpoint:human-action on the epic
+ * - "qa-review":           qa:needs-review on the epic (QA reached max rounds)
+ * - "human-flagged":       a child bead carries the "human" label (set by `bd human`)
+ */
+export type AttentionType =
+  | "verification-needed"
+  | "decision-required"
+  | "human-action"
+  | "qa-review"
+  | "human-flagged";
+
+/** A response action available on an attention item (e.g. Approve / Dismiss). */
+export interface AttentionAction {
+  /** Server-side action name dispatched via POST /api/fleet/action. */
+  name: "human-approve" | "human-dismiss";
+  /** Display label shown on the button. */
+  label: string;
+}
+
+/** A single attention item rendered as an amber banner / counted in the badge. */
+export interface AttentionItem {
+  /** Stable id unique within a page render (epic + label or epic + bead). */
+  id: string;
+  /** Parent epic id this attention belongs to (used for grouping and dispatch). */
+  epicId: string;
+  /** For human-flagged child beads only: the originating child bead id. */
+  beadId?: string;
+  /** For human-flagged child beads only: the child bead title for context. */
+  beadTitle?: string;
+  /** Category of attention. */
+  type: AttentionType;
+  /** Display reason text (e.g. "Human Verification Required"). */
+  reason: string;
+  /** Response actions (Approve / Dismiss). */
+  actions: AttentionAction[];
+  /** For label-driven items: the source label to remove on action. */
+  targetLabel?: string;
+}
+
+/**
+ * Configuration table mapping each AttentionType to its source label,
+ * display reason, and available actions. Single source of truth for
+ * detection (fleet-utils.ts) and rendering (AttentionBanner.tsx).
+ */
+export const ATTENTION_CONFIG: Record<
+  AttentionType,
+  {
+    /** Label that triggers this attention type; absent for "human-flagged" (driven by child label). */
+    sourceLabel?: string;
+    /** Display text shown in the banner. */
+    reason: string;
+    /** Available actions (typically a single Approve or Dismiss). */
+    actions: AttentionAction[];
+  }
+> = {
+  "verification-needed": {
+    sourceLabel: "checkpoint:human-verify",
+    reason: "Human Verification Required",
+    actions: [{ name: "human-approve", label: "Approve" }],
+  },
+  "decision-required": {
+    sourceLabel: "checkpoint:decision",
+    reason: "Decision Required",
+    actions: [{ name: "human-dismiss", label: "Dismiss" }],
+  },
+  "human-action": {
+    sourceLabel: "checkpoint:human-action",
+    reason: "Human Action Required",
+    actions: [{ name: "human-dismiss", label: "Dismiss" }],
+  },
+  "qa-review": {
+    sourceLabel: "qa:needs-review",
+    reason: "QA Review Needed",
+    actions: [{ name: "human-dismiss", label: "Dismiss" }],
+  },
+  "human-flagged": {
+    reason: "Flagged for Human Decision",
+    actions: [{ name: "human-dismiss", label: "Dismiss" }],
+  },
+};
+
+/** Internal: the order epic-label-driven attention types are checked. */
+const EPIC_LABEL_ATTENTION_TYPES: AttentionType[] = [
+  "verification-needed",
+  "decision-required",
+  "human-action",
+  "qa-review",
+];
+
+/**
+ * Detect attention items on a fleet app.
+ *
+ * Pure function. Does not poll, hit any API, or spawn a process. It scans
+ * labels already loaded by useIssues and returns the items that need human
+ * review.
+ *
+ * Closed epics (terminal status) are excluded so stale labels on completed
+ * or abandoned work do not generate phantom attention items.
+ *
+ * Children with null/undefined labels are safely skipped.
+ */
+export function getAttentionItems(app: FleetApp): AttentionItem[] {
+  const items: AttentionItem[] = [];
+
+  // Exclude closed epics — stale checkpoint labels on terminal work
+  // should not produce attention items.
+  if (app.epic.status === "closed") return items;
+
+  const epicLabels = app.epic.labels ?? [];
+
+  // Epic-level label-driven attention types
+  for (const type of EPIC_LABEL_ATTENTION_TYPES) {
+    const config = ATTENTION_CONFIG[type];
+    const sourceLabel = config.sourceLabel;
+    if (!sourceLabel) continue;
+    if (epicLabels.includes(sourceLabel)) {
+      items.push({
+        id: `${app.epic.id}:${sourceLabel}`,
+        epicId: app.epic.id,
+        type,
+        reason: config.reason,
+        actions: config.actions,
+        targetLabel: sourceLabel,
+      });
+    }
+  }
+
+  // Child-level "human" label → human-flagged item per child bead
+  for (const child of app.children) {
+    const childLabels = child.labels ?? [];
+    if (childLabels.includes("human")) {
+      const config = ATTENTION_CONFIG["human-flagged"];
+      items.push({
+        id: `${app.epic.id}:human:${child.id}`,
+        epicId: app.epic.id,
+        beadId: child.id,
+        beadTitle: child.title,
+        type: "human-flagged",
+        reason: config.reason,
+        actions: config.actions,
+      });
+    }
+  }
+
+  return items;
+}
