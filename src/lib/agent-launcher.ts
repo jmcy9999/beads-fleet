@@ -221,8 +221,12 @@ async function tmuxSessionAlive(sessionName: string): Promise<boolean> {
 }
 
 /**
- * Detect Claude Code's idle prompt (❯ followed by optional whitespace/nbsp).
+ * Detect Claude Code's idle prompt (❯ on its own line).
  * Uses tmux capture-pane which returns plain text (no ANSI codes by default).
+ *
+ * The ❯ prompt is NOT the last non-empty line — Claude Code renders a separator
+ * line and status bar below it. So we scan the last 5 non-empty lines looking
+ * for a line that is just ❯ (with optional trailing whitespace/nbsp).
  */
 async function detectIdlePrompt(sessionName: string): Promise<boolean> {
   try {
@@ -231,9 +235,9 @@ async function detectIdlePrompt(sessionName: string): Promise<boolean> {
     );
     const lines = stdout.split("\n").filter((l) => l.trim().length > 0);
     if (lines.length === 0) return false;
-    const lastLine = lines[lines.length - 1];
-    // Claude Code idle prompt: ❯ followed by zero or more space/nbsp chars
-    return /^❯[\s\u00a0]*$/.test(lastLine.trim());
+    // Check the last 5 non-empty lines for the idle prompt
+    const tail = lines.slice(-5);
+    return tail.some((line) => /^❯[\s\u00a0]*$/.test(line.trim()));
   } catch {
     return false;
   }
