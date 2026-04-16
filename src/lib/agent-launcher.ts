@@ -11,6 +11,7 @@
 // =============================================================================
 
 import { exec, execFileSync } from "child_process";
+import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
 import { createWriteStream, realpathSync } from "fs";
 import path from "path";
@@ -1101,11 +1102,10 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
   const tmuxSession = `shipyard-${(options.epicId || repoName).replace(/[^a-zA-Z0-9_-]/g, "-")}-${(options.pipelineStage || "unknown").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   session.tmuxSessionName = tmuxSession;
 
-  // Build the inline claude command for tmux
+  // Build the inline claude command args
   const allowedTools = options.allowedTools ?? "Bash,Read,Write,Edit,Glob,Grep";
   const maxTurns = options.maxTurns ?? 200;
   const agentFlag = options.agentName ? `--agent ${options.agentName}` : "";
-  const tmuxCmd = `cd ${session.repoPath} && unset ANTHROPIC_API_KEY && unset CLAUDECODE && /Users/janemckay/.local/bin/claude ${agentFlag} --max-turns ${maxTurns} --model ${model} --dangerously-skip-permissions --allowedTools ${allowedTools}`;
 
   // Create initial log file
   const writableLog = createWriteStream(logFile, { flags: "w" });
@@ -1149,53 +1149,22 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     }
   }
 
-  // Snapshot existing .jsonl files BEFORE launch so we can detect the agent's transcript
+  // Generate a session ID so we know exactly which transcript file to read
+  const claudeSessionId = randomUUID();
   const safeCwd = options.repoPath.replace(/\//g, "-").replace(/^-/, "-");
   const projectDir = path.join(os.homedir(), ".claude", "projects", safeCwd);
-  let existingJsonl = new Set<string>();
-  try {
-    existingJsonl = new Set((await fs.readdir(projectDir)).filter((f) => f.endsWith(".jsonl")));
-  } catch {
-    // Directory may not exist yet
-  }
+  session.transcriptFile = path.join(projectDir, `${claudeSessionId}.jsonl`);
 
-  // Launch in tmux — gives a real TTY where hooks fire.
-  // One session per agent, named shipyard-{epicId}-{stage}.
+  // Launch in tmux with --session-id so the transcript file is predictable
+  const tmuxCmd = `cd ${session.repoPath} && unset ANTHROPIC_API_KEY && unset CLAUDECODE && /Users/janemckay/.local/bin/claude ${agentFlag} --session-id ${claudeSessionId} --max-turns ${maxTurns} --model ${model} --dangerously-skip-permissions --allowedTools ${allowedTools}`;
   await execAsync(`/opt/homebrew/bin/tmux new-session -d -s "${tmuxSession}" "${tmuxCmd}"`);
 
-  // Wait for claude to initialise, then paste the prompt via tmux buffer.
-  // Write prompt to file → load into tmux buffer → paste → Enter. No escaping needed.
+  // Wait for Claude Code to initialise, then paste the prompt
   const promptFile = path.join(LAUNCHER_DIR, `prompt-${tmuxSession}.txt`);
   await fs.writeFile(promptFile, options.prompt);
 
   setTimeout(async () => {
     try {
-      // Detect the agent's transcript file (new .jsonl that wasn't there before launch)
-      try {
-        const currentFiles = (await fs.readdir(projectDir)).filter((f) => f.endsWith(".jsonl"));
-        const newFiles = currentFiles.filter((f) => !existingJsonl.has(f));
-        if (newFiles.length === 1) {
-          session.transcriptFile = path.join(projectDir, newFiles[0]);
-          await persistSession(session); // Update persisted file with transcript path
-          console.log(`[agent] Detected transcript: ${newFiles[0]}`);
-        } else if (newFiles.length > 1) {
-          // Multiple new files — pick newest by mtime
-          let newest = "";
-          let newestMtime = 0;
-          for (const f of newFiles) {
-            const s = await fs.stat(path.join(projectDir, f));
-            if (s.mtimeMs > newestMtime) { newestMtime = s.mtimeMs; newest = f; }
-          }
-          if (newest) {
-            session.transcriptFile = path.join(projectDir, newest);
-            await persistSession(session);
-            console.log(`[agent] Detected transcript (from ${newFiles.length} new): ${newest}`);
-          }
-        }
-      } catch (err) {
-        console.error("[agent] Failed to detect transcript:", err);
-      }
-
       const tmux = "/opt/homebrew/bin/tmux";
       await execAsync(`${tmux} load-buffer "${promptFile}"`);
       await execAsync(`${tmux} paste-buffer -t "${tmuxSession}"`);
