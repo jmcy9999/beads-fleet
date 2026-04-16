@@ -42,7 +42,7 @@ export function AgentStatusBanner({ session, recentLog, onStop, isStopping }: Ag
               <span className="text-amber-400">{session.repoName}</span>
             </p>
             <p className="text-xs text-gray-400 mt-0.5">
-              {session.model} &middot; {elapsedLabel} elapsed &middot; PID {session.pid}
+              {session.model} &middot; {elapsedLabel} elapsed{session.tmuxSessionName ? ` · tmux: ${session.tmuxSessionName}` : session.pid ? ` · PID ${session.pid}` : ""}
             </p>
           </div>
         </div>
