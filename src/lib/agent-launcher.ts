@@ -221,23 +221,68 @@ async function tmuxSessionAlive(sessionName: string): Promise<boolean> {
 }
 
 /**
- * Detect Claude Code's idle prompt (❯ on its own line).
- * Uses tmux capture-pane which returns plain text (no ANSI codes by default).
+ * Detect whether Claude Code has finished its turn by reading the transcript JSONL.
+ * Looks for the last assistant message with stop_reason: "end_turn" — this means
+ * Claude completed its response and is waiting for user input.
  *
- * The ❯ prompt is NOT the last non-empty line — Claude Code renders a separator
- * line and status bar below it. So we scan the last 5 non-empty lines looking
- * for a line that is just ❯ (with optional trailing whitespace/nbsp).
+ * Returns true if the transcript's last meaningful entry is a completed assistant
+ * response and the file hasn't been modified in the last few seconds.
  */
-async function detectIdlePrompt(sessionName: string): Promise<boolean> {
+async function detectAgentDone(repoPath: string, startedAt: string): Promise<boolean> {
   try {
-    const { stdout } = await execAsync(
-      `/opt/homebrew/bin/tmux capture-pane -t "${sessionName}" -p 2>/dev/null`,
-    );
-    const lines = stdout.split("\n").filter((l) => l.trim().length > 0);
-    if (lines.length === 0) return false;
-    // Check the last 5 non-empty lines for the idle prompt
-    const tail = lines.slice(-5);
-    return tail.some((line) => /^❯[\s\u00a0]*$/.test(line.trim()));
+    // Find the transcript directory: ~/.claude/projects/-{safe-path}/
+    const safePath = repoPath.replace(/\//g, "-").replace(/^-/, "-");
+    const projectDir = path.join(os.homedir(), ".claude", "projects", safePath);
+
+    // Find the newest .jsonl file that was created after the agent started
+    const agentStart = new Date(startedAt).getTime();
+    const files = await fs.readdir(projectDir);
+    let newestFile = "";
+    let newestMtime = 0;
+    for (const f of files) {
+      if (!f.endsWith(".jsonl")) continue;
+      try {
+        const stat = await fs.stat(path.join(projectDir, f));
+        if (stat.mtimeMs > agentStart && stat.mtimeMs > newestMtime) {
+          newestMtime = stat.mtimeMs;
+          newestFile = f;
+        }
+      } catch { continue; }
+    }
+    if (!newestFile) return false;
+
+    // Check if file has been modified recently (still being written to)
+    if (Date.now() - newestMtime < 5000) return false;
+
+    // Read the last ~8KB of the file to find the last assistant message
+    const filePath = path.join(projectDir, newestFile);
+    const stat = await fs.stat(filePath);
+    const readSize = Math.min(stat.size, 8192);
+    const fh = await fs.open(filePath, "r");
+    const buf = Buffer.alloc(readSize);
+    await fh.read(buf, 0, readSize, Math.max(0, stat.size - readSize));
+    await fh.close();
+
+    const text = buf.toString("utf-8");
+    const lines = text.split("\n").filter((l) => l.trim().length > 0);
+
+    // Walk backward to find the last assistant message
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(lines[i]);
+        const msg = entry.message;
+        if (!msg) continue;
+        const role = entry.type === "assistant" ? "assistant" : msg.role;
+        if (role === "assistant" && msg.stop_reason === "end_turn") {
+          return true;
+        }
+        // If we hit a user message or tool_use stop_reason, Claude is still working
+        if (role === "user" || role === "assistant") {
+          return false;
+        }
+      } catch { continue; }
+    }
+    return false;
   } catch {
     return false;
   }
@@ -331,38 +376,43 @@ function startPollLoop(
       return;
     }
 
-    // Two-phase shutdown:
-    // Phase 1: Send "goodbye" flush message → triggers Stop hook → flushes last real turn
-    // Phase 2: After Claude responds and goes idle again → send /exit
-    const isIdle = await detectIdlePrompt(tmuxSession);
-    if (isIdle) {
+    // Detect agent completion via transcript JSONL (last assistant message has stop_reason: "end_turn"
+    // and file hasn't been written to for 5s). Two-phase shutdown:
+    // Phase 1: Send "Thank you" + "Goodbye" → triggers 2 Stop hooks → flushes real work to Langfuse
+    // Phase 2: Detect done again after flush messages → send /exit
+    const isDone = await detectAgentDone(session.repoPath, session.startedAt);
+    if (isDone) {
       if (agent.flushSentAt && !agent.exitSentAt) {
+        // Phase 2: Flush messages were sent, Claude responded, now done again → send /exit
         agent.exitSentAt = Date.now();
         try {
           await sendTmuxExit(tmuxSession);
           const exitLog = createWriteStream(logFile, { flags: "a" });
-          exitLog.write(`[${new Date().toISOString()}] Post-flush idle detected — sent /exit\n`);
+          exitLog.write(`[${new Date().toISOString()}] Post-flush completion detected — sent /exit\n`);
           exitLog.end();
         } catch (err) {
           console.error("[tmux] Failed to send /exit:", err);
           agent.exitSentAt = undefined;
         }
       } else if (!agent.flushSentAt && agent.idleDetectedAt && Date.now() - agent.idleDetectedAt >= IDLE_CONFIRM_MS) {
+        // Phase 1: Confirmed done for 10s — send flush messages
         agent.flushSentAt = Date.now();
         agent.idleDetectedAt = undefined;
         try {
           await sendTmuxFlush(tmuxSession);
           const flushLog = createWriteStream(logFile, { flags: "a" });
-          flushLog.write(`[${new Date().toISOString()}] Idle prompt detected — sent Langfuse flush message\n`);
+          flushLog.write(`[${new Date().toISOString()}] Agent done (end_turn) — sent Langfuse flush messages\n`);
           flushLog.end();
         } catch (err) {
-          console.error("[tmux] Failed to send flush message:", err);
+          console.error("[tmux] Failed to send flush messages:", err);
           agent.flushSentAt = undefined;
         }
       } else if (!agent.flushSentAt && !agent.idleDetectedAt) {
+        // First detection — start confirmation timer
         agent.idleDetectedAt = Date.now();
       }
     } else {
+      // Not done — reset detection (but not flushSentAt — that's permanent)
       if (!agent.flushSentAt) {
         agent.idleDetectedAt = undefined;
       }
