@@ -43,6 +43,7 @@ export interface AgentSession {
   statusFile?: string;
   launcherScript?: string;
   tmuxSessionName?: string; // Actual tmux session name for lifecycle management
+  transcriptFile?: string; // Path to the agent's JSONL transcript file
 }
 
 export interface LaunchOptions {
@@ -221,42 +222,24 @@ async function tmuxSessionAlive(sessionName: string): Promise<boolean> {
 }
 
 /**
- * Detect whether Claude Code has finished its turn by reading the transcript JSONL.
- * Looks for the last assistant message with stop_reason: "end_turn" — this means
- * Claude completed its response and is waiting for user input.
+ * Detect whether Claude Code has finished its turn by reading the agent's
+ * specific transcript JSONL file. Looks for the last assistant message with
+ * stop_reason: "end_turn" — this means Claude completed its response and is
+ * waiting for user input.
  *
- * Returns true if the transcript's last meaningful entry is a completed assistant
- * response and the file hasn't been modified in the last few seconds.
+ * Uses the transcript file detected at launch (session.transcriptFile) to
+ * avoid reading the wrong session's transcript in a shared project directory.
  */
-async function detectAgentDone(repoPath: string, startedAt: string): Promise<boolean> {
+async function detectAgentDone(session: AgentSession): Promise<boolean> {
   try {
-    // Find the transcript directory: ~/.claude/projects/-{safe-path}/
-    const safePath = repoPath.replace(/\//g, "-").replace(/^-/, "-");
-    const projectDir = path.join(os.homedir(), ".claude", "projects", safePath);
-
-    // Find the newest .jsonl file that was created after the agent started
-    const agentStart = new Date(startedAt).getTime();
-    const files = await fs.readdir(projectDir);
-    let newestFile = "";
-    let newestMtime = 0;
-    for (const f of files) {
-      if (!f.endsWith(".jsonl")) continue;
-      try {
-        const stat = await fs.stat(path.join(projectDir, f));
-        if (stat.mtimeMs > agentStart && stat.mtimeMs > newestMtime) {
-          newestMtime = stat.mtimeMs;
-          newestFile = f;
-        }
-      } catch { continue; }
-    }
-    if (!newestFile) return false;
+    const filePath = session.transcriptFile;
+    if (!filePath) return false;
 
     // Check if file has been modified recently (still being written to)
-    if (Date.now() - newestMtime < 5000) return false;
+    const stat = await fs.stat(filePath);
+    if (Date.now() - stat.mtimeMs < 5000) return false;
 
     // Read the last ~8KB of the file to find the last assistant message
-    const filePath = path.join(projectDir, newestFile);
-    const stat = await fs.stat(filePath);
     const readSize = Math.min(stat.size, 8192);
     const fh = await fs.open(filePath, "r");
     const buf = Buffer.alloc(readSize);
@@ -380,7 +363,7 @@ function startPollLoop(
     // and file hasn't been written to for 5s). Two-phase shutdown:
     // Phase 1: Send "Thank you" + "Goodbye" → triggers 2 Stop hooks → flushes real work to Langfuse
     // Phase 2: Detect done again after flush messages → send /exit
-    const isDone = await detectAgentDone(session.repoPath, session.startedAt);
+    const isDone = await detectAgentDone(session);
     if (isDone) {
       if (agent.flushSentAt && !agent.exitSentAt) {
         // Phase 2: Flush messages were sent, Claude responded, now done again → send /exit
@@ -1180,6 +1163,16 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     }
   }
 
+  // Snapshot existing .jsonl files BEFORE launch so we can detect the agent's transcript
+  const safeCwd = options.repoPath.replace(/\//g, "-").replace(/^-/, "-");
+  const projectDir = path.join(os.homedir(), ".claude", "projects", safeCwd);
+  let existingJsonl = new Set<string>();
+  try {
+    existingJsonl = new Set((await fs.readdir(projectDir)).filter((f) => f.endsWith(".jsonl")));
+  } catch {
+    // Directory may not exist yet
+  }
+
   // Launch in tmux — gives a real TTY where hooks fire.
   // One session per agent, named shipyard-{epicId}-{stage}.
   await execAsync(`/opt/homebrew/bin/tmux new-session -d -s "${tmuxSession}" "${tmuxCmd}"`);
@@ -1191,6 +1184,32 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
 
   setTimeout(async () => {
     try {
+      // Detect the agent's transcript file (new .jsonl that wasn't there before launch)
+      try {
+        const currentFiles = (await fs.readdir(projectDir)).filter((f) => f.endsWith(".jsonl"));
+        const newFiles = currentFiles.filter((f) => !existingJsonl.has(f));
+        if (newFiles.length === 1) {
+          session.transcriptFile = path.join(projectDir, newFiles[0]);
+          await persistSession(session); // Update persisted file with transcript path
+          console.log(`[agent] Detected transcript: ${newFiles[0]}`);
+        } else if (newFiles.length > 1) {
+          // Multiple new files — pick newest by mtime
+          let newest = "";
+          let newestMtime = 0;
+          for (const f of newFiles) {
+            const s = await fs.stat(path.join(projectDir, f));
+            if (s.mtimeMs > newestMtime) { newestMtime = s.mtimeMs; newest = f; }
+          }
+          if (newest) {
+            session.transcriptFile = path.join(projectDir, newest);
+            await persistSession(session);
+            console.log(`[agent] Detected transcript (from ${newFiles.length} new): ${newest}`);
+          }
+        }
+      } catch (err) {
+        console.error("[agent] Failed to detect transcript:", err);
+      }
+
       const tmux = "/opt/homebrew/bin/tmux";
       await execAsync(`${tmux} load-buffer "${promptFile}"`);
       await execAsync(`${tmux} paste-buffer -t "${tmuxSession}"`);
