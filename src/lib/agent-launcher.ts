@@ -65,12 +65,11 @@ export interface LaunchOptions {
 
 interface ActiveAgent {
   session: AgentSession;
-  pollInterval: NodeJS.Timeout; // Polls for tmux session exit + idle prompt
+  pollInterval: NodeJS.Timeout; // Polls transcript for end_turn
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   langfuseSpan?: any; // OTEL Span for lifecycle trace (typed as any to avoid hard dep)
-  idleDetectedAt?: number; // Timestamp of first idle prompt detection
-  flushSentAt?: number; // Timestamp when Langfuse flush message was sent
-  exitSentAt?: number; // Timestamp when /exit was sent (undefined = not sent)
+  flushSentAt?: number; // Timestamp when Langfuse flush messages were sent
+  exitSentAt?: number; // Timestamp when /exit was sent
 }
 
 const activeAgents = new Map<string, ActiveAgent>();
@@ -293,9 +292,7 @@ async function sendTmuxExit(sessionName: string): Promise<void> {
   await execAsync(`${tmux} send-keys -t "${sessionName}" "/exit" Enter`);
 }
 
-// Timing constants for exit detection
-const STARTUP_GRACE_MS = 20000; // Don't check for idle during prompt injection window
-const IDLE_CONFIRM_MS = 10000; // Require 10s of continuous idle before sending /exit
+// Timing constants
 const EXIT_TIMEOUT_MS = 30000; // Force-kill 30s after /exit if session won't die
 const RECOVERY_DEBOUNCE_MS = 10000; // Don't attempt recovery more than once per 10s
 
@@ -304,9 +301,15 @@ const RECOVERY_DEBOUNCE_MS = 10000; // Don't attempt recovery more than once per
 // ---------------------------------------------------------------------------
 
 /**
- * Start the poll loop that monitors a tmux session for exit detection.
- * Handles: session death, idle prompt detection, two-phase shutdown
- * (goodbye flush → /exit), and force-kill timeout.
+ * Start the poll loop that monitors a pipeline agent's tmux session.
+ *
+ * Pipeline agents get one prompt and produce one end_turn when done.
+ * The loop is simple:
+ *   1. Poll transcript for end_turn (file stale for 5s)
+ *   2. Send "Thank you" → wait 5s → send "Goodbye" (triggers 2 Stop hooks for Langfuse)
+ *   3. Wait for next end_turn → send /exit
+ *
+ * If the session dies unexpectedly, handle exit immediately.
  */
 function startPollLoop(
   session: AgentSession,
@@ -324,7 +327,7 @@ function startPollLoop(
     const alive = await tmuxSessionAlive(tmuxSession);
 
     if (!alive) {
-      // Session is gone — agent exited
+      // Session is gone — agent exited (crash, max-turns, or post-/exit)
       clearInterval(agent.pollInterval);
       activeAgents.delete(repoKey);
       await clearPersistedSession(repoKey);
@@ -338,7 +341,7 @@ function startPollLoop(
       return;
     }
 
-    // Session alive — check for /exit timeout
+    // Force-kill if /exit was sent but session won't die
     if (agent.exitSentAt) {
       if (Date.now() - agent.exitSentAt > EXIT_TIMEOUT_MS) {
         clearInterval(agent.pollInterval);
@@ -354,50 +357,33 @@ function startPollLoop(
       return;
     }
 
-    // Skip idle detection during startup (prompt not yet injected)
-    if (Date.now() - new Date(session.startedAt).getTime() < STARTUP_GRACE_MS) {
-      return;
-    }
-
-    // Detect agent completion via transcript JSONL (last assistant message has stop_reason: "end_turn"
-    // and file hasn't been written to for 5s). Two-phase shutdown:
-    // Phase 1: Send "Thank you" + "Goodbye" → triggers 2 Stop hooks → flushes real work to Langfuse
-    // Phase 2: Detect done again after flush messages → send /exit
+    // Check transcript for end_turn
     const isDone = await detectAgentDone(session);
-    if (isDone) {
-      if (agent.flushSentAt && !agent.exitSentAt) {
-        // Phase 2: Flush messages were sent, Claude responded, now done again → send /exit
-        agent.exitSentAt = Date.now();
-        try {
-          await sendTmuxExit(tmuxSession);
-          const exitLog = createWriteStream(logFile, { flags: "a" });
-          exitLog.write(`[${new Date().toISOString()}] Post-flush completion detected — sent /exit\n`);
-          exitLog.end();
-        } catch (err) {
-          console.error("[tmux] Failed to send /exit:", err);
-          agent.exitSentAt = undefined;
-        }
-      } else if (!agent.flushSentAt && agent.idleDetectedAt && Date.now() - agent.idleDetectedAt >= IDLE_CONFIRM_MS) {
-        // Phase 1: Confirmed done for 10s — send flush messages
-        agent.flushSentAt = Date.now();
-        agent.idleDetectedAt = undefined;
-        try {
-          await sendTmuxFlush(tmuxSession);
-          const flushLog = createWriteStream(logFile, { flags: "a" });
-          flushLog.write(`[${new Date().toISOString()}] Agent done (end_turn) — sent Langfuse flush messages\n`);
-          flushLog.end();
-        } catch (err) {
-          console.error("[tmux] Failed to send flush messages:", err);
-          agent.flushSentAt = undefined;
-        }
-      } else if (!agent.flushSentAt && !agent.idleDetectedAt) {
-        // First detection — start confirmation timer
-        agent.idleDetectedAt = Date.now();
+    if (!isDone) return;
+
+    if (!agent.flushSentAt) {
+      // First end_turn: agent finished its work → send flush messages for Langfuse
+      agent.flushSentAt = Date.now();
+      try {
+        await sendTmuxFlush(tmuxSession);
+        const flushLog = createWriteStream(logFile, { flags: "a" });
+        flushLog.write(`[${new Date().toISOString()}] Agent done (end_turn) — sent Langfuse flush messages\n`);
+        flushLog.end();
+      } catch (err) {
+        console.error("[tmux] Failed to send flush messages:", err);
+        agent.flushSentAt = undefined;
       }
     } else {
-      // Not done — reset detection (but not flushSentAt — that's permanent)
-      if (!agent.flushSentAt) {
-        agent.idleDetectedAt = undefined;
+      // Second end_turn: Claude responded to flush messages → send /exit
+      agent.exitSentAt = Date.now();
+      try {
+        await sendTmuxExit(tmuxSession);
+        const exitLog = createWriteStream(logFile, { flags: "a" });
+        exitLog.write(`[${new Date().toISOString()}] Post-flush end_turn — sent /exit\n`);
+        exitLog.end();
+      } catch (err) {
+        console.error("[tmux] Failed to send /exit:", err);
+        agent.exitSentAt = undefined;
       }
     }
   }, 5000);
