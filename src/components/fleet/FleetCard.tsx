@@ -13,9 +13,11 @@ import {
   FLEET_STAGE_CONFIG,
   type FleetApp,
   type EpicCost,
+  type AttentionItem,
 } from "./fleet-utils";
 import type { PipelineActionPayload } from "./FleetBoard";
 import { FeatureApprovalPanel } from "./FeatureApprovalPanel";
+import { AttentionBanner } from "./AttentionBanner";
 
 /**
  * Extract the first 2-3 sentences from the Executive Summary section
@@ -60,6 +62,12 @@ interface FleetCardProps {
   agentRunning?: boolean;
   pendingEpicId?: string | null;
   langfuseTraceUrl?: string;
+  /**
+   * Attention items that belong to this card's epic. Derived upstream by
+   * useAttentionItems so the header badge and this banner share one source
+   * of truth (factory-core-509.7). Undefined or empty → no banner.
+   */
+  attentionItems?: AttentionItem[];
 }
 
 const PHASE_COLORS: Record<string, string> = {
@@ -100,7 +108,7 @@ const BTN_RED = `${BTN_PRIMARY} text-red-400 hover:text-red-300 bg-red-500/10 ho
 /** Green action button (approve/complete). */
 const BTN_GREEN = `${BTN_PRIMARY} text-green-400 hover:text-green-300 bg-green-500/10 hover:bg-green-500/20 border border-green-500/30`;
 
-export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrl }: FleetCardProps) {
+export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrl, attentionItems }: FleetCardProps) {
   const { epic, children, progress } = app;
   const pct =
     progress.total > 0
@@ -167,6 +175,27 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
     e.preventDefault();
     e.stopPropagation();
     onPipelineAction?.({ epicId: epic.id, epicTitle: epic.title, action });
+  }
+
+  /**
+   * Dispatch a human-review action from the AttentionBanner. Maps the
+   * attention item's shape into a PipelineActionPayload, filling in
+   * `targetLabel` (for checkpoint/qa label removal) or `targetBeadId`
+   * (for `bd human dismiss` on a flagged child). (factory-core-509.7)
+   *
+   * The AttentionBanner already calls preventDefault/stopPropagation on
+   * the button click, so we don't receive the event here — just the item
+   * and the action name.
+   */
+  function handleAttentionAction(item: AttentionItem, actionName: string) {
+    if (actionName !== "human-approve" && actionName !== "human-dismiss") return;
+    onPipelineAction?.({
+      epicId: epic.id,
+      epicTitle: epic.title,
+      action: actionName,
+      targetLabel: item.targetLabel,
+      targetBeadId: item.beadId,
+    });
   }
 
   /** Open the inline feedback textarea for actions that need comments. */
@@ -423,6 +452,13 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           );
         })}
       </div>
+
+      {/* ---- Attention banners (checkpoint hooks & human flags) ---- */}
+      {/* Placed above the stage CTAs so human review gates always read first. */}
+      {/* (factory-core-509.7) */}
+      {attentionItems && attentionItems.length > 0 && onPipelineAction && (
+        <AttentionBanner items={attentionItems} onAction={handleAttentionAction} />
+      )}
 
       {/* ---- Stage-specific action buttons ---- */}
       {onPipelineAction && (

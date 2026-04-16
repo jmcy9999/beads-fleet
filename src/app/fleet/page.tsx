@@ -12,6 +12,7 @@ import { useIssues } from "@/hooks/useIssues";
 import { useTokenUsageSummary } from "@/hooks/useTokenUsage";
 import { useAgentStatus, useAgentStop } from "@/hooks/useAgent";
 import { usePipelineAction } from "@/hooks/usePipelineAction";
+import { useAttentionItems } from "@/hooks/useAttentionItems";
 
 export default function FleetPage() {
   const { data, isLoading, error, refetch } = useIssues();
@@ -39,6 +40,11 @@ export default function FleetPage() {
     for (const cost of epicCosts.values()) sum += cost.totalCost;
     return sum;
   }, [epicCosts]);
+
+  // Derive attention items (human review gates) from the same useIssues data.
+  // Card-level banners and the header badge share this one computation so they
+  // never disagree (ADR-002 single source of truth). (factory-core-509.7)
+  const attention = useAttentionItems(allIssues);
 
   // Build a map of epicId -> langfuseTraceUrl from agent sessions (factory-core-75e)
   const langfuseTraceUrls = useMemo(() => {
@@ -132,6 +138,7 @@ export default function FleetPage() {
           agentRunning={agentStatus?.running ?? false}
           pendingEpicId={pendingEpicId}
           langfuseTraceUrls={langfuseTraceUrls}
+          attentionByEpic={attention.countByEpic}
         />
       )}
 

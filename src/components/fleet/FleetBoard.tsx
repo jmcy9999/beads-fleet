@@ -13,6 +13,7 @@ import {
   type FleetStage,
   type ShipType,
   type EpicCost,
+  type AttentionItem,
 } from "./fleet-utils";
 import type { PlanIssue } from "@/lib/types";
 
@@ -44,7 +45,10 @@ export type PipelineAction =
   | "run-pm"
   | "run-architect"
   | "revise-spec"
-  | "revise-architecture";
+  | "revise-architecture"
+  // Human review gate actions, dispatched from AttentionBanner (factory-core-509.7).
+  | "human-approve"
+  | "human-dismiss";
 
 export interface PipelineActionPayload {
   epicId: string;
@@ -52,6 +56,10 @@ export interface PipelineActionPayload {
   action: PipelineAction;
   feedback?: string;
   waveNumber?: number;
+  /** For human-approve / human-dismiss: the epic label to remove. (factory-core-509.7) */
+  targetLabel?: string;
+  /** For human-dismiss on a child bead: the child bead id. (factory-core-509.7) */
+  targetBeadId?: string;
 }
 
 interface FleetBoardProps {
@@ -61,6 +69,13 @@ interface FleetBoardProps {
   agentRunning?: boolean;
   pendingEpicId?: string | null;
   langfuseTraceUrls?: Map<string, string>;
+  /**
+   * Attention items grouped by epic id — surfaces human review gates as
+   * amber banners on the matching FleetCard. Derived in the parent via
+   * useAttentionItems so the badge count and card indicators share one
+   * source of truth (factory-core-509.7).
+   */
+  attentionByEpic?: Map<string, AttentionItem[]>;
 }
 
 const DEFAULT_SCALE = 1;
@@ -128,7 +143,7 @@ function saveVisibleColumns(columns: Set<FleetStage>) {
 const TOOLBAR_BTN =
   "p-1.5 rounded-md text-gray-400 hover:text-gray-200 hover:bg-surface-2 transition-colors";
 
-export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrls }: FleetBoardProps) {
+export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrls, attentionByEpic }: FleetBoardProps) {
   const [scale, setScale] = useState(DEFAULT_SCALE);
   const [visibleColumns, setVisibleColumns] = useState<Set<FleetStage>>(loadVisibleColumns);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -391,6 +406,7 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
                 agentRunning={agentRunning}
                 pendingEpicId={pendingEpicId}
                 langfuseTraceUrls={langfuseTraceUrls}
+                attentionByEpic={attentionByEpic}
               />
             ))}
           </div>

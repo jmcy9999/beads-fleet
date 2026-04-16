@@ -4,6 +4,7 @@ import {
   type FleetApp,
   type FleetStage,
   type EpicCost,
+  type AttentionItem,
 } from "./fleet-utils";
 import type { PipelineActionPayload } from "./FleetBoard";
 
@@ -15,9 +16,11 @@ interface FleetColumnProps {
   agentRunning?: boolean;
   pendingEpicId?: string | null;
   langfuseTraceUrls?: Map<string, string>;
+  /** Per-epic attention items (factory-core-509.7). */
+  attentionByEpic?: Map<string, AttentionItem[]>;
 }
 
-export function FleetColumn({ stage, apps, epicCosts, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrls }: FleetColumnProps) {
+export function FleetColumn({ stage, apps, epicCosts, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrls, attentionByEpic }: FleetColumnProps) {
   const config = FLEET_STAGE_CONFIG[stage];
 
   return (
@@ -50,6 +53,7 @@ export function FleetColumn({ stage, apps, epicCosts, onPipelineAction, agentRun
               agentRunning={agentRunning}
               pendingEpicId={pendingEpicId}
               langfuseTraceUrl={langfuseTraceUrls?.get(app.epic.id)}
+              attentionItems={attentionByEpic?.get(app.epic.id)}
             />
           ))
         )}
