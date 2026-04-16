@@ -358,34 +358,37 @@ function startPollLoop(
       return;
     }
 
+    if (agent.flushSentAt) {
+      // Flush was sent — wait 15s for Claude to respond and Stop hooks to fire, then /exit
+      if (Date.now() - agent.flushSentAt > 15000) {
+        agent.exitSentAt = Date.now();
+        try {
+          await sendTmuxExit(tmuxSession);
+          const exitLog = createWriteStream(logFile, { flags: "a" });
+          exitLog.write(`[${new Date().toISOString()}] Post-flush timeout — sent /exit\n`);
+          exitLog.end();
+        } catch (err) {
+          console.error("[tmux] Failed to send /exit:", err);
+          agent.exitSentAt = undefined;
+        }
+      }
+      return;
+    }
+
     // Check transcript for end_turn
     const isDone = await detectAgentDone(session);
     if (!isDone) return;
 
-    if (!agent.flushSentAt) {
-      // First end_turn: agent finished its work → send flush messages for Langfuse
-      agent.flushSentAt = Date.now();
-      try {
-        await sendTmuxFlush(tmuxSession);
-        const flushLog = createWriteStream(logFile, { flags: "a" });
-        flushLog.write(`[${new Date().toISOString()}] Agent done (end_turn) — sent Langfuse flush messages\n`);
-        flushLog.end();
-      } catch (err) {
-        console.error("[tmux] Failed to send flush messages:", err);
-        agent.flushSentAt = undefined;
-      }
-    } else {
-      // Second end_turn: Claude responded to flush messages → send /exit
-      agent.exitSentAt = Date.now();
-      try {
-        await sendTmuxExit(tmuxSession);
-        const exitLog = createWriteStream(logFile, { flags: "a" });
-        exitLog.write(`[${new Date().toISOString()}] Post-flush end_turn — sent /exit\n`);
-        exitLog.end();
-      } catch (err) {
-        console.error("[tmux] Failed to send /exit:", err);
-        agent.exitSentAt = undefined;
-      }
+    // Agent finished its work → send flush messages for Langfuse
+    agent.flushSentAt = Date.now();
+    try {
+      await sendTmuxFlush(tmuxSession);
+      const flushLog = createWriteStream(logFile, { flags: "a" });
+      flushLog.write(`[${new Date().toISOString()}] Agent done (end_turn) — sent Langfuse flush messages\n`);
+      flushLog.end();
+    } catch (err) {
+      console.error("[tmux] Failed to send flush messages:", err);
+      agent.flushSentAt = undefined;
     }
   }, 5000);
 }
