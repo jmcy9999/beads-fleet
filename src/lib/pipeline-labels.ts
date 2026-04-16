@@ -170,3 +170,21 @@ export async function updateEpicStatus(
     env: { ...process.env, NO_COLOR: "1" },
   });
 }
+
+/**
+ * Dismiss a child bead's "human" flag via `bd human dismiss <beadId>`.
+ *
+ * Used by the fleet board when Jane clicks "Dismiss" on a human-flagged
+ * child bead indicator. Runs in the repo that owns the bead.
+ * (factory-core-509.2)
+ */
+export async function dismissHumanItem(
+  beadId: string,
+  repoPath: string,
+): Promise<void> {
+  await execFile(BD(), ["human", "dismiss", beadId], {
+    cwd: repoPath,
+    timeout: BD_TIMEOUT,
+    env: { ...process.env, NO_COLOR: "1" },
+  });
+}

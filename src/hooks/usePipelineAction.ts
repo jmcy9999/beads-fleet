@@ -34,7 +34,9 @@ export type PipelineActionType =
   | "run-pm"
   | "run-architect"
   | "revise-spec"
-  | "revise-architecture";
+  | "revise-architecture"
+  | "human-approve"
+  | "human-dismiss";
 
 export interface PipelineActionParams {
   epicId: string;
@@ -43,6 +45,10 @@ export interface PipelineActionParams {
   feedback?: string;
   currentLabels?: string[];
   waveNumber?: number;
+  /** Label to remove for human-approve / human-dismiss (factory-core-509.2). */
+  targetLabel?: string;
+  /** Child bead id to dismiss for human-dismiss (factory-core-509.2). */
+  targetBeadId?: string;
 }
 
 interface PipelineActionResult {
@@ -66,7 +72,7 @@ export function usePipelineAction() {
   const { addToast } = useToast();
 
   return useMutation<PipelineActionResult, Error, PipelineActionParams>({
-    mutationFn: async ({ epicId, epicTitle, action, feedback, currentLabels, waveNumber }) => {
+    mutationFn: async ({ epicId, epicTitle, action, feedback, currentLabels, waveNumber, targetLabel, targetBeadId }) => {
       const res = await fetch("/api/fleet/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -77,6 +83,8 @@ export function usePipelineAction() {
           feedback,
           currentLabels,
           waveNumber,
+          targetLabel,
+          targetBeadId,
         }),
       });
       if (!res.ok) {

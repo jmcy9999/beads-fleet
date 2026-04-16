@@ -10,7 +10,10 @@ export function useIssues() {
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
       return res.json();
     },
-    refetchInterval: 30_000,
+    // 15s ensures attention items (checkpoint labels, qa:needs-review, child
+    // `human` flags) become visible on the fleet board within the staleness
+    // budget from factory-core-509's functional spec. (factory-core-509.3)
+    refetchInterval: 15_000,
     placeholderData: keepPreviousData,
   });
 }

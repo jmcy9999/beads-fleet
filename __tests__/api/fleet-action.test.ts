@@ -13,6 +13,7 @@ const mockRemoveAllPipeline = jest.fn().mockResolvedValue(undefined);
 const mockCloseEpic = jest.fn().mockResolvedValue(undefined);
 const mockUpdateStatus = jest.fn().mockResolvedValue(undefined);
 const mockGetEpicLabels = jest.fn().mockResolvedValue([]);
+const mockDismissHumanItem = jest.fn().mockResolvedValue(undefined);
 
 jest.mock("@/lib/pipeline-labels", () => ({
   addLabelsToEpic: (...args: unknown[]) => mockAddLabels(...args),
@@ -21,6 +22,7 @@ jest.mock("@/lib/pipeline-labels", () => ({
   closeEpic: (...args: unknown[]) => mockCloseEpic(...args),
   updateEpicStatus: (...args: unknown[]) => mockUpdateStatus(...args),
   getEpicLabels: (...args: unknown[]) => mockGetEpicLabels(...args),
+  dismissHumanItem: (...args: unknown[]) => mockDismissHumanItem(...args),
 }));
 
 // Mock agent-launcher module
@@ -1477,6 +1479,246 @@ describe("POST /api/fleet/action", () => {
           pipelineStage: "architecture",
         }),
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // human-approve (factory-core-509.2)
+  // -------------------------------------------------------------------------
+
+  describe("human-approve", () => {
+    it("removes the target label from the epic", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "human-approve",
+        targetLabel: "checkpoint:human-verify",
+        currentLabels: ["pipeline:development", "checkpoint:human-verify"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["checkpoint:human-verify"],
+        expect.any(String),
+      );
+    });
+
+    it("does NOT launch any agent", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-approve",
+        targetLabel: "checkpoint:human-verify",
+      });
+      await POST(req);
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("does NOT close the epic or change pipeline labels", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-approve",
+        targetLabel: "checkpoint:human-verify",
+      });
+      await POST(req);
+      expect(mockCloseEpic).not.toHaveBeenCalled();
+      expect(mockAddLabels).not.toHaveBeenCalled();
+      expect(mockRemoveAllPipeline).not.toHaveBeenCalled();
+    });
+
+    it("returns success payload with targetLabel", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-approve",
+        targetLabel: "checkpoint:human-verify",
+      });
+      const res = await POST(req);
+      const data = await res.json();
+      expect(data).toMatchObject({
+        success: true,
+        action: "human-approve",
+        epicId: "epic-1",
+        targetLabel: "checkpoint:human-verify",
+      });
+    });
+
+    it("returns 400 when targetLabel is missing", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-approve",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("targetLabel");
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 when targetLabel is not a string", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-approve",
+        targetLabel: 123,
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // human-dismiss (factory-core-509.2)
+  // -------------------------------------------------------------------------
+
+  describe("human-dismiss", () => {
+    it("removes the target label when targetLabel is provided", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-dismiss",
+        targetLabel: "qa:needs-review",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["qa:needs-review"],
+        expect.any(String),
+      );
+      expect(mockDismissHumanItem).not.toHaveBeenCalled();
+    });
+
+    it("calls dismissHumanItem when targetBeadId is provided", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "human-dismiss",
+        targetBeadId: "epic-1.3",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockDismissHumanItem).toHaveBeenCalledWith(
+        "epic-1.3",
+        expect.any(String),
+      );
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+    });
+
+    it("prefers targetLabel over targetBeadId when both are provided", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-dismiss",
+        targetLabel: "checkpoint:decision",
+        targetBeadId: "epic-1.3",
+      });
+      await POST(req);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["checkpoint:decision"],
+        expect.any(String),
+      );
+      expect(mockDismissHumanItem).not.toHaveBeenCalled();
+    });
+
+    it("does NOT launch any agent", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-dismiss",
+        targetLabel: "checkpoint:human-action",
+      });
+      await POST(req);
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("returns success payload with targetLabel", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-dismiss",
+        targetLabel: "checkpoint:decision",
+      });
+      const res = await POST(req);
+      const data = await res.json();
+      expect(data).toMatchObject({
+        success: true,
+        action: "human-dismiss",
+        epicId: "epic-1",
+        targetLabel: "checkpoint:decision",
+      });
+    });
+
+    it("returns success payload with targetBeadId", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "human-dismiss",
+        targetBeadId: "epic-1.3",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      const res = await POST(req);
+      const data = await res.json();
+      expect(data).toMatchObject({
+        success: true,
+        action: "human-dismiss",
+        epicId: "epic-1",
+        targetBeadId: "epic-1.3",
+      });
+    });
+
+    it("returns 400 when neither targetLabel nor targetBeadId provided", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-dismiss",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("targetLabel");
+      expect(data.error).toContain("targetBeadId");
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockDismissHumanItem).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 when both targetLabel and targetBeadId are empty strings", async () => {
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-dismiss",
+        targetLabel: "",
+        targetBeadId: "",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockDismissHumanItem).not.toHaveBeenCalled();
+    });
+
+    it("propagates errors from bd CLI as 500 with no silent swallow", async () => {
+      mockRemoveLabels.mockRejectedValueOnce(new Error("bd: connection refused"));
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-dismiss",
+        targetLabel: "checkpoint:decision",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data.error).toContain("human-dismiss");
+      expect(data.error).toContain("connection refused");
     });
   });
 });

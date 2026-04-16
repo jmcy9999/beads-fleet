@@ -6,6 +6,7 @@ import {
   closeEpic,
   updateEpicStatus,
   getEpicLabels,
+  dismissHumanItem,
 } from "@/lib/pipeline-labels";
 import { launchAgent, stopAgent, getWaveStatus } from "@/lib/agent-launcher";
 import { getRepos } from "@/lib/repo-config";
@@ -46,7 +47,9 @@ type PipelineAction =
   | "run-pm"
   | "run-architect"
   | "revise-spec"
-  | "revise-architecture";
+  | "revise-architecture"
+  | "human-approve"
+  | "human-dismiss";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -77,6 +80,8 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "run-architect",
   "revise-spec",
   "revise-architecture",
+  "human-approve",
+  "human-dismiss",
 ]);
 
 // Resolve fleet-core path: env var > hardcoded fallback
@@ -134,7 +139,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { epicId, epicTitle, action, feedback, currentLabels, waveNumber } = body;
+  const {
+    epicId,
+    epicTitle,
+    action,
+    feedback,
+    currentLabels,
+    waveNumber,
+    targetLabel,
+    targetBeadId,
+  } = body;
 
   if (!epicId || typeof epicId !== "string") {
     return NextResponse.json({ error: "Missing epicId" }, { status: 400 });
@@ -1090,6 +1104,60 @@ export async function POST(request: NextRequest) {
         invalidateCache();
         const result = await stopAgent();
         return NextResponse.json({ success: true, action, epicId, ...result });
+      }
+
+      // -------------------------------------------------------------------
+      // HUMAN APPROVE: Clear a checkpoint:human-verify (or similar) label
+      // from an epic. No agent launched, no pipeline transition — this only
+      // removes the attention flag so it disappears from the fleet board.
+      // (factory-core-509.2)
+      // -------------------------------------------------------------------
+      case "human-approve": {
+        if (!targetLabel || typeof targetLabel !== "string") {
+          return NextResponse.json(
+            { error: "human-approve requires targetLabel" },
+            { status: 400 },
+          );
+        }
+        await removeLabelsFromEpic(epicId, [targetLabel], fleetCorePath);
+        invalidateCache();
+        return NextResponse.json({ success: true, action, epicId, targetLabel });
+      }
+
+      // -------------------------------------------------------------------
+      // HUMAN DISMISS: Clear an attention indicator. Two variants:
+      //   a. targetLabel provided → remove that label from the epic
+      //      (checkpoint:decision, checkpoint:human-action, qa:needs-review)
+      //   b. targetBeadId provided → run `bd human dismiss <beadId>` on the
+      //      child bead to clear the `human` flag
+      // (factory-core-509.2)
+      // -------------------------------------------------------------------
+      case "human-dismiss": {
+        const hasLabel = typeof targetLabel === "string" && targetLabel.length > 0;
+        const hasBeadId = typeof targetBeadId === "string" && targetBeadId.length > 0;
+        if (!hasLabel && !hasBeadId) {
+          return NextResponse.json(
+            { error: "human-dismiss requires either targetLabel or targetBeadId" },
+            { status: 400 },
+          );
+        }
+        if (hasLabel) {
+          await removeLabelsFromEpic(epicId, [targetLabel as string], fleetCorePath);
+          invalidateCache();
+          return NextResponse.json({ success: true, action, epicId, targetLabel });
+        }
+        // hasBeadId case: resolve the repo that owns the bead (child beads
+        // may live in a different repo than fleet-core).
+        const { repoPath: beadRepoPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath,
+        );
+        await dismissHumanItem(targetBeadId as string, beadRepoPath);
+        invalidateCache();
+        return NextResponse.json({ success: true, action, epicId, targetBeadId });
       }
 
       default:
