@@ -1320,7 +1320,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: "sonnet",
+          model: "opus",
           maxTurns: 150,
           pipelineStage: "product-spec",
           agentName: "product-manager",
@@ -1368,7 +1368,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: "sonnet",
+          model: "opus",
           maxTurns: 150,
           pipelineStage: "architecture",
           agentName: "architect",

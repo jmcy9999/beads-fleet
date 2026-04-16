@@ -118,7 +118,7 @@ describe("buildOtelEnv", () => {
     it("returns OTEL env vars with default base URL", () => {
       const result = buildOtelEnv();
       expect(result.CLAUDE_CODE_ENABLE_TELEMETRY).toBe("1");
-      expect(result.OTEL_EXPORTER_OTLP_PROTOCOL).toBe("http/json");
+      expect(result.OTEL_EXPORTER_OTLP_PROTOCOL).toBe("http/protobuf");
       expect(result.OTEL_EXPORTER_OTLP_ENDPOINT).toBe("https://cloud.langfuse.com/api/public/otel");
     });
 
