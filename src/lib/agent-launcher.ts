@@ -244,18 +244,16 @@ async function detectIdlePrompt(sessionName: string): Promise<boolean> {
 }
 
 /**
- * Send /exit to a tmux session to trigger clean Claude Code shutdown.
- * This fires the Stop hook (which sends Langfuse traces) before the process exits.
- */
-/**
- * Send a Langfuse flush message to a tmux session.
- * "Thank you, that's all, goodbye." triggers one more assistant response →
- * Stop hook fires → flushes the previous turn to Langfuse via the one-invocation
- * delay. Without this, the agent's last real turn would be lost.
+ * Send two Langfuse flush messages to a tmux session, spaced 5s apart.
+ * "Thank you" triggers Stop 1 → stores real work as pending.
+ * "Goodbye" triggers Stop 2 → emits the pending real work.
+ * After this, the caller sends /exit — which only loses the throwaway goodbye turn.
  */
 async function sendTmuxFlush(sessionName: string): Promise<void> {
   const tmux = "/opt/homebrew/bin/tmux";
-  await execAsync(`${tmux} send-keys -t "${sessionName}" "Thank you, that's all, goodbye." Enter`);
+  await execAsync(`${tmux} send-keys -t "${sessionName}" "Thank you, that's all." Enter`);
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  await execAsync(`${tmux} send-keys -t "${sessionName}" "Goodbye." Enter`);
 }
 
 /**
