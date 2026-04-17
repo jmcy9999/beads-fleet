@@ -437,7 +437,9 @@ export function buildFleetApps(allIssues: PlanIssue[]): FleetApp[] {
   const epics = allIssues.filter((i) => i.issue_type === "epic");
 
   return epics.map((epic) => {
-    const children = allIssues.filter((i) => i.epic === epic.id);
+    const children = allIssues.filter((i) =>
+      i.epic === epic.id || i.labels?.includes(`epic:${epic.id}`),
+    );
     const stage = detectStage(epic, children);
     const shipType = getShipType(epic);
     const closed = children.filter((c) => c.status === "closed").length;
