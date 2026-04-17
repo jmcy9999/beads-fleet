@@ -910,7 +910,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       const hasBugs = childrenResult.stdout.split("\n").some((line) => lineIsBugType(line));
 
       if (hasBugs) {
-        // Check round count -- max 3 rounds
+        // Check round count -- max 20 rounds
         const roundResult = execBdSync(["show", session.epicId!], FLEET_CORE_PATH, 10000);
         let currentRound = 1;
         if (roundResult.success) {
@@ -921,7 +921,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           }
         }
 
-        if (currentRound >= 3) {
+        if (currentRound >= 20) {
           // Max rounds -- flag for human review, don't loop
           console.log(`QA round ${currentRound}: max rounds reached, flagging for human review`);
           const { addLabelsToEpic } = await import("./pipeline-labels");
