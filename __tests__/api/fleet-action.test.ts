@@ -1769,4 +1769,107 @@ describe("POST /api/fleet/action", () => {
       expect(data.error).toContain("timeout");
     });
   });
+
+  // -------------------------------------------------------------------------
+  // start-wave (factory-core-z9h.2 — fresh builder session per wave)
+  // -------------------------------------------------------------------------
+  //
+  // These tests cover the z9h.2 AC: when the auto-chain fires wave N+1, the
+  // new builder session must be visibly distinct from wave N's — i.e. the
+  // waveNumber flows through to launchAgent so the tmux session name / disk
+  // file names can include the wave suffix and not collide with the previous
+  // wave's state.
+
+  describe("start-wave", () => {
+    it("returns 400 for a missing waveNumber", async () => {
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("waveNumber");
+    });
+
+    it("returns 400 for waveNumber < 1", async () => {
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 0,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+    });
+
+    it("launches a builder agent with waveNumber passed through to launchAgent (z9h.2)", async () => {
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 1,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          epicId: "factory-core-z9h",
+          pipelineStage: "development",
+          agentName: "builder",
+          waveNumber: 1,
+        }),
+      );
+    });
+
+    it("passes a distinct waveNumber per call so successive waves don't collide (z9h.2)", async () => {
+      // Wave 1
+      await POST(makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 1,
+        currentLabels: ["ship-type:internal"],
+      }));
+      // Wave 2
+      await POST(makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      }));
+
+      expect(mockLaunchAgent).toHaveBeenCalledTimes(2);
+      const call1 = mockLaunchAgent.mock.calls[0][0];
+      const call2 = mockLaunchAgent.mock.calls[1][0];
+      expect(call1.waveNumber).toBe(1);
+      expect(call2.waveNumber).toBe(2);
+      // Both calls target the same epic but the wave scope differs — this is
+      // the hook launchAgent uses to produce distinct tmux session names.
+      expect(call1.epicId).toBe(call2.epicId);
+      expect(call1.waveNumber).not.toBe(call2.waveNumber);
+    });
+
+    it("scopes the prompt to the specific wave — builder is told 'ONLY work beads with wave:N label'", async () => {
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      await POST(req);
+
+      const call = mockLaunchAgent.mock.calls.at(-1)![0];
+      expect(call.prompt).toContain("Wave 2");
+      expect(call.prompt).toContain("wave:2");
+      expect(call.prompt).toContain("Do not advance to the next wave");
+    });
+  });
 });

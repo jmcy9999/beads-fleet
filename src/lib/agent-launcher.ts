@@ -39,6 +39,10 @@ export interface AgentSession {
   epicLabels?: string[];
   langfuseTraceUrl?: string;
   langfuseSessionId?: string;
+  /** Wave number this agent is scoped to (factory-core-z9h.2). */
+  waveNumber?: number;
+  /** Bead ID this agent is scoped to (factory-core-z9h.3). */
+  beadId?: string;
   // New tmux-specific fields
   tmuxWindow?: string;
   statusFile?: string;
@@ -58,6 +62,22 @@ export interface LaunchOptions {
   pipelineStage?: string;
   agentName?: string;
   epicLabels?: string[];
+  /**
+   * Wave number this agent is working (factory-core-z9h.2).
+   * Included in the tmux session name and session file so that each wave
+   * gets a visibly distinct session — no name collision between successive
+   * waves of the same epic. When unset, session naming falls back to the
+   * legacy <epicId>-<pipelineStage> form.
+   */
+  waveNumber?: number;
+  /**
+   * Bead ID this agent is scoped to (factory-core-z9h.3).
+   * When set, the agent is a per-bead parallel builder and its session name,
+   * session file, and activeAgents key all include the bead ID so that
+   * multiple agents can run concurrently in the same repo and wave without
+   * clobbering each other's state.
+   */
+  beadId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,16 +108,45 @@ const LEGACY_SESSION_FILE = path.join(os.tmpdir(), "beads-web-agent-session.json
 // Session persistence — survives hot-reloads and server restarts
 // ---------------------------------------------------------------------------
 
-function sessionFileFor(repoPath: string): string {
+/**
+ * Compute the scope suffix used in session/tmux/launcher/status file names.
+ *
+ * factory-core-z9h.2 introduces wave scoping so that successive waves of the
+ * same epic get visibly distinct tmux sessions (and distinct persisted state
+ * files) — preventing collisions when the auto-chain hands off wave N → N+1.
+ *
+ * factory-core-z9h.3 will extend this by also including beadId so that
+ * parallel per-bead builders within the same wave don't clobber each other.
+ *
+ * Returns an empty string when no scope is set — legacy single-agent-per-repo
+ * callers keep the pre-z9h session naming pattern.
+ */
+export function sessionScopeSuffix(waveNumber?: number, beadId?: string): string {
+  const parts: string[] = [];
+  if (typeof waveNumber === "number" && Number.isFinite(waveNumber)) {
+    parts.push(`wave${waveNumber}`);
+  }
+  if (beadId) {
+    parts.push(beadId.replace(/[^a-zA-Z0-9_.-]/g, "-"));
+  }
+  return parts.length > 0 ? `-${parts.join("-")}` : "";
+}
+
+function sessionFileFor(
+  repoPath: string,
+  waveNumber?: number,
+  beadId?: string,
+): string {
   const safe = repoPath.replace(/\//g, "_");
-  return path.join(SESSIONS_DIR, `agent-${safe}.json`);
+  const suffix = sessionScopeSuffix(waveNumber, beadId);
+  return path.join(SESSIONS_DIR, `agent-${safe}${suffix}.json`);
 }
 
 async function persistSession(session: AgentSession): Promise<void> {
   try {
     await fs.mkdir(SESSIONS_DIR, { recursive: true });
     await fs.writeFile(
-      sessionFileFor(session.repoPath),
+      sessionFileFor(session.repoPath, session.waveNumber, session.beadId),
       JSON.stringify(session, null, 2),
       "utf-8",
     );
@@ -106,9 +155,13 @@ async function persistSession(session: AgentSession): Promise<void> {
   }
 }
 
-async function clearPersistedSession(repoPath: string): Promise<void> {
+async function clearPersistedSession(
+  repoPath: string,
+  waveNumber?: number,
+  beadId?: string,
+): Promise<void> {
   try {
-    await fs.unlink(sessionFileFor(repoPath));
+    await fs.unlink(sessionFileFor(repoPath, waveNumber, beadId));
   } catch {
     // File may not exist
   }
@@ -381,7 +434,7 @@ function startPollLoop(
       // Session is gone — agent exited (crash, max-turns, or post-/exit)
       clearInterval(agent.pollInterval);
       activeAgents.delete(repoKey);
-      await clearPersistedSession(repoKey);
+      await clearPersistedSession(repoKey, session.waveNumber, session.beadId);
 
       const exitCode = agent.exitSentAt ? 0 : null;
       await handleAgentExit(session, exitCode, agent.langfuseSpan);
@@ -398,7 +451,7 @@ function startPollLoop(
         clearInterval(agent.pollInterval);
         await killAgent(agent);
         activeAgents.delete(repoKey);
-        await clearPersistedSession(repoKey);
+        await clearPersistedSession(repoKey, session.waveNumber, session.beadId);
         await handleAgentExit(session, null, agent.langfuseSpan);
 
         const finalLog = createWriteStream(logFile, { flags: "a" });
@@ -425,7 +478,7 @@ function startPollLoop(
 
       // Clean up — session is dead after /exit
       activeAgents.delete(repoKey);
-      await clearPersistedSession(repoKey);
+      await clearPersistedSession(repoKey, session.waveNumber, session.beadId);
       await handleAgentExit(session, 0, agent.langfuseSpan);
     } catch (err) {
       console.error("[flush-exit] Sequence failed:", err);
@@ -1115,10 +1168,14 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
   const model = options.model ?? "sonnet";
   const repoName = options.repoName ?? path.basename(options.repoPath);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const logFile = path.join(LOG_DIR, `agent-${repoName}-${timestamp}.log`);
-  const statusFile = path.join(STATUS_DIR, `${options.epicId || repoName}-${options.pipelineStage || "unknown"}-${timestamp}.json`);
-  const launcherScript = path.join(LAUNCHER_DIR, `launcher-${options.epicId || repoName}-${options.pipelineStage || "unknown"}-${timestamp}.sh`);
-  const tmuxWindow = `${options.epicId || repoName}-${options.pipelineStage || "unknown"}`;
+  // factory-core-z9h.2: wave/bead scope is embedded in all per-agent file names
+  // so successive waves (and, for z9h.3, parallel per-bead builders) don't
+  // share status files, launcher scripts, or tmux window/session names.
+  const scopeSuffix = sessionScopeSuffix(options.waveNumber, options.beadId);
+  const logFile = path.join(LOG_DIR, `agent-${repoName}${scopeSuffix}-${timestamp}.log`);
+  const statusFile = path.join(STATUS_DIR, `${options.epicId || repoName}-${options.pipelineStage || "unknown"}${scopeSuffix}-${timestamp}.json`);
+  const launcherScript = path.join(LAUNCHER_DIR, `launcher-${options.epicId || repoName}-${options.pipelineStage || "unknown"}${scopeSuffix}-${timestamp}.sh`);
+  const tmuxWindow = `${options.epicId || repoName}-${options.pipelineStage || "unknown"}${scopeSuffix}`;
 
   // Ensure cwd exists (planning agents run in app repos that may not exist yet)
   await fs.mkdir(options.repoPath, { recursive: true });
@@ -1149,13 +1206,17 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     epicLabels: options.epicLabels,
     langfuseTraceUrl,
     langfuseSessionId,
+    waveNumber: options.waveNumber,
+    beadId: options.beadId,
     tmuxWindow,
     statusFile,
     launcherScript,
   };
 
-  // Build the tmux session name — one session per agent
-  const tmuxSession = `shipyard-${(options.epicId || repoName).replace(/[^a-zA-Z0-9_-]/g, "-")}-${(options.pipelineStage || "unknown").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  // Build the tmux session name — one session per agent.
+  // factory-core-z9h.2: wave/bead suffix ensures successive waves (and, for
+  // z9h.3, parallel per-bead builders) get distinct tmux session names.
+  const tmuxSession = `shipyard-${(options.epicId || repoName).replace(/[^a-zA-Z0-9_-]/g, "-")}-${(options.pipelineStage || "unknown").replace(/[^a-zA-Z0-9_-]/g, "-")}${scopeSuffix}`;
   session.tmuxSessionName = tmuxSession;
 
   // Build the inline claude command args
@@ -1358,7 +1419,11 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
     for (const [key, agent] of activeAgents) {
       await killAgent(agent);
       activeAgents.delete(key);
-      await clearPersistedSession(agent.session.repoPath);
+      await clearPersistedSession(
+        agent.session.repoPath,
+        agent.session.waveNumber,
+        agent.session.beadId,
+      );
       count++;
     }
     return { stopped: count > 0, stoppedCount: count };
@@ -1375,7 +1440,11 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
     await handleAgentExit(agent.session, null, agent.langfuseSpan);
 
     activeAgents.delete(key);
-    await clearPersistedSession(repoPath);
+    await clearPersistedSession(
+      repoPath,
+      agent.session.waveNumber,
+      agent.session.beadId,
+    );
     return { stopped: true, pid };
   }
 
@@ -1388,7 +1457,11 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
     await handleAgentExit(agent.session, null, agent.langfuseSpan);
 
     activeAgents.delete(key);
-    await clearPersistedSession(agent.session.repoPath);
+    await clearPersistedSession(
+      agent.session.repoPath,
+      agent.session.waveNumber,
+      agent.session.beadId,
+    );
     return { stopped: true, pid };
   }
   return { stopped: false };

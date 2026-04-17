@@ -1006,6 +1006,11 @@ export async function POST(request: NextRequest) {
           epicLabels: labels,
           pipelineStage: "development",
           agentName: "builder",
+          // factory-core-z9h.2: wave number scopes the tmux session / session
+          // file / launcher script names so successive waves of the same epic
+          // get visibly distinct sessions and no leftover state from the prior
+          // wave can collide on disk.
+          waveNumber: wave,
         });
 
         return NextResponse.json({ success: true, action, epicId, waveNumber: wave, session: startWaveSession });
