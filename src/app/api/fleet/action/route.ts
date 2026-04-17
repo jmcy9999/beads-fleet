@@ -245,10 +245,24 @@ export async function POST(request: NextRequest) {
         // Inspect wave labels on the epic's children BEFORE transitioning
         // labels — if we detect an inconsistency we reject without mutating
         // epic state. (Regression #7 Type Confusion: all-labelled vs
-        // none-labelled vs mixed must be three explicit branches.)
-        // getWaveStatus tolerates `bd` errors by returning hasWaves=false
-        // + totalChildren=0, which falls through to legacy below.
+        // none-labelled vs UNKNOWN must be three explicit branches.)
         const waveStatus = await getWaveStatus(epicId as string, repoPath);
+
+        // factory-core-z9h.10: before this guard, getWaveStatus tolerated
+        // bd errors by returning hasWaves=false + totalChildren=0, which
+        // silently fell through to the legacy single-session path — a
+        // wave-labelled epic would bypass the whole z9h parallel-builder
+        // mechanism because one `bd list` flaked. We now surface an error
+        // on the WaveStatus and refuse to proceed when wave state is
+        // unknown (regression patterns #13 / #7).
+        if (waveStatus.error) {
+          return NextResponse.json(
+            {
+              error: `Cannot determine wave state for epic ${epicId}: ${waveStatus.error}. Epic state not mutated. Re-run once bd is reachable.`,
+            },
+            { status: 500 },
+          );
+        }
 
         const allHaveWaves =
           waveStatus.totalChildren > 0 &&

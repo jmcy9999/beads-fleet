@@ -489,6 +489,50 @@ describe("POST /api/fleet/action", () => {
       expect(mockLaunchAgent).not.toHaveBeenCalled();
     });
 
+    // -----------------------------------------------------------------------
+    // factory-core-z9h.10 — bd failure must not advance the pipeline
+    // -----------------------------------------------------------------------
+    //
+    // Before this guard, a `bd list` failure caused getWaveStatus to return
+    // hasWaves=false + totalChildren=0 with no error flag. send-for-development
+    // then silently fell through to the legacy single-session path — a
+    // wave-labelled epic would bypass the whole z9h parallel-builder
+    // mechanism because one bd call flaked. The fix surfaces `error` on
+    // WaveStatus and rejects with 500 on unknown wave state.
+    //
+    // Regression patterns: #13 Silent Exception Swallowing, #7 Type Confusion.
+    it("z9h.10: returns 500 and does NOT mutate epic state when getWaveStatus reports an error", async () => {
+      mockGetWaveStatus.mockResolvedValueOnce({
+        hasWaves: false,
+        waves: new Map(),
+        currentWave: 0,
+        totalWaves: 0,
+        currentWaveComplete: false,
+        allWavesComplete: false,
+        hasCheckpointRequired: false,
+        totalChildren: 0,
+        childrenWithWaveLabels: 0,
+        error: "bd list failed for epic epic-1 (filter=--parent=epic-1) — cannot determine wave state",
+      });
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-development",
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data.error).toContain("Cannot determine wave state");
+      // CRITICAL: epic state must NOT have been mutated on the unknown
+      // path — no labels changed, no agent launched, no fall-through to
+      // the legacy single-session path.
+      expect(mockAddLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
     it("z9h.4: returns 400 when every child is already closed (epic has no open beads)", async () => {
       mockGetWaveStatus.mockResolvedValueOnce({
         hasWaves: true,

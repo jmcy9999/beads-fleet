@@ -765,6 +765,27 @@ export interface WaveStatus {
    * waved and un-waved beads in the same epic.
    */
   childrenWithWaveLabels: number;
+  /**
+   * Present when wave state COULD NOT BE DETERMINED because one or more
+   * underlying `bd` commands failed (factory-core-z9h.10).
+   *
+   * Callers must treat a non-empty `error` as "unknown wave state" and
+   * MUST NOT proceed as if the wave were complete or as if the epic had
+   * no wave labels. Specifically:
+   *   - handleChainAction returns false (pipeline label stays unchanged)
+   *   - send-for-development returns a 500 (does not fall through to the
+   *     legacy single-session path)
+   *
+   * This enforces the three-branch contract from regression pattern #7
+   * (Type Confusion): all-labelled / none-labelled / UNKNOWN are three
+   * distinct states. "Unknown" must not silently collapse into
+   * "none-labelled" — that was the silent-advance bug this field closes.
+   *
+   * Regression patterns:
+   *   #13 Silent Exception Swallowing — a bd-command failure must not
+   *   be reinterpreted as a successful result that says "no waves here".
+   */
+  error?: string;
 }
 
 /**
@@ -793,7 +814,22 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
     : ["list", "--status=all", "--label", `epic:${epicId}`];
   const childrenResult = execBdSync(filterArgs, repoPath, 10000);
   if (!childrenResult.success) {
-    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: 0, childrenWithWaveLabels: 0 };
+    // factory-core-z9h.10: do NOT silently collapse a bd failure into
+    // hasWaves=false. Surface an error so callers (handleChainAction,
+    // send-for-development) can refuse to advance the pipeline on
+    // unknown wave state (regression pattern #13 / #7).
+    return {
+      hasWaves: false,
+      waves: new Map(),
+      currentWave: 0,
+      totalWaves: 0,
+      currentWaveComplete: false,
+      allWavesComplete: false,
+      hasCheckpointRequired,
+      totalChildren: 0,
+      childrenWithWaveLabels: 0,
+      error: `bd list failed for epic ${epicId} (filter=${filterArgs.slice(1).join(" ")}) — cannot determine wave state`,
+    };
   }
 
   const children = parseChildrenFromTree(childrenResult.stdout);
@@ -1079,6 +1115,19 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       // Use session.repoPath: for internal products that's fleet-core,
       // for other ship types it's the product repo where wave-labeled beads live
       const waveStatus = await getWaveStatus(session.epicId!, session.repoPath);
+
+      // factory-core-z9h.10: a bd failure means wave state is UNKNOWN.
+      // Before this guard, a failed `bd list` returned hasWaves=false and
+      // the code below fell through to an unconditional send-for-qa —
+      // silently advancing an epic with unclosed beads. Returning false
+      // here keeps the pipeline label at `pipeline:development` and
+      // prevents the silent advance (regression patterns #13 / #7).
+      if (waveStatus.error) {
+        console.error(
+          `chain (development): refusing to advance — ${waveStatus.error}`,
+        );
+        return false;
+      }
 
       if (waveStatus.hasWaves && !waveStatus.allWavesComplete) {
         // Waves exist and not all complete — chain to review-wave for the completed wave
