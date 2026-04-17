@@ -25,6 +25,8 @@ export interface RepoPathResult {
   specPath?: string;
   /** Absolute path to the architecture document (undefined for ventures) */
   architecturePath?: string;
+  /** Absolute path to the test scenarios document (undefined for ventures) */
+  testScenariosPath?: string;
 }
 
 // Resolve fleet-core path: env var > hardcoded fallback
@@ -102,6 +104,7 @@ export function resolveRepoPath(
         planPath: `${productRepoBase}/beads_web/.beads/plans/${epicId}.md`,
         specPath: `${fleetCorePath}/docs/research/${topic}-functional-spec.md`,
         architecturePath: `${fleetCorePath}/docs/research/${topic}-architecture.md`,
+        testScenariosPath: `${fleetCorePath}/docs/research/${topic}-test-scenarios.md`,
       };
     } else {
       // Internal work on fleet-core itself
@@ -113,6 +116,7 @@ export function resolveRepoPath(
         planPath: `${fleetCorePath}/.beads/plans/${epicId}.md`,
         specPath: `${fleetCorePath}/docs/research/${topic}-functional-spec.md`,
         architecturePath: `${fleetCorePath}/docs/research/${topic}-architecture.md`,
+        testScenariosPath: `${fleetCorePath}/docs/research/${topic}-test-scenarios.md`,
       };
     }
   }
@@ -126,5 +130,6 @@ export function resolveRepoPath(
     planPath: `${productRepoPath}/.beads/plans/${epicId}.md`,
     specPath: `${fleetCorePath}/products/${appName}/research/functional-spec.md`,
     architecturePath: `${fleetCorePath}/products/${appName}/research/architecture.md`,
+    testScenariosPath: `${fleetCorePath}/products/${appName}/research/test-scenarios.md`,
   };
 }

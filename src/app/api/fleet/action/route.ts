@@ -49,6 +49,8 @@ type PipelineAction =
   | "run-architect"
   | "revise-spec"
   | "revise-architecture"
+  | "run-test-spec"
+  | "revise-test-spec"
   | "human-approve"
   | "human-dismiss";
 
@@ -81,6 +83,8 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "run-architect",
   "revise-spec",
   "revise-architecture",
+  "run-test-spec",
+  "revise-test-spec",
   "human-approve",
   "human-dismiss",
 ]);
@@ -206,11 +210,11 @@ export async function POST(request: NextRequest) {
       // SEND FOR DEVELOPMENT: Research Complete -> In Development
       // -------------------------------------------------------------------
       case "send-for-development": {
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending", "plan:approved"], fleetCorePath);
+        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "pipeline:test-spec", "plan:pending", "plan:approved"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
         invalidateCache();
 
-        const { repoPath, repoName, researchPath, planPath } = resolveRepoPath(
+        const { repoPath, repoName, researchPath, planPath, testScenariosPath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -218,7 +222,8 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}. Standing orders and agent instructions are in fleet-core — read them before starting.`;
+        const testScenariosInfo = testScenariosPath ? ` Test scenarios: ${testScenariosPath}.` : "";
+        const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}.${testScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting.`;
 
         const session = await launchAgent({
           repoPath: repoPath,
@@ -415,6 +420,79 @@ export async function POST(request: NextRequest) {
         });
 
         return NextResponse.json({ success: true, action, epicId, session: raSession });
+      }
+
+      // -------------------------------------------------------------------
+      // RUN TEST-SPEC: Plan Review -> Test Spec (launch test-spec agent)
+      // (factory-core-a7qf.10)
+      // -------------------------------------------------------------------
+      case "run-test-spec": {
+        await removeLabelsFromEpic(epicId, ["pipeline:plan-review"], fleetCorePath);
+        await addLabelsToEpic(epicId, ["pipeline:test-spec", "agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: tsRepoPath, researchPath: tsResearchPath, specPath: tsSpecPath, architecturePath: tsArchPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const tsPrompt = `Write test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${tsSpecPath}. Architecture: ${tsArchPath}. Research: ${tsResearchPath}. Product repo: ${tsRepoPath}. Fleet-core: ${fleetCorePath}.`;
+
+        const tsSession = await launchAgent({
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
+          prompt: tsPrompt,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "test-spec",
+          agentName: "test-spec",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: tsSession });
+      }
+
+      // -------------------------------------------------------------------
+      // REVISE TEST-SPEC: Re-run test-spec agent with feedback (stays in Test Spec)
+      // (factory-core-a7qf.10)
+      // -------------------------------------------------------------------
+      case "revise-test-spec": {
+        await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
+        invalidateCache();
+
+        const { repoPath: rtsRepoPath, researchPath: rtsResearchPath, specPath: rtsSpecPath, architecturePath: rtsArchPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath
+        );
+
+        const rtsFeedbackStr = typeof feedback === "string" && feedback.trim()
+          ? ` Jane's feedback: "${feedback}".`
+          : "";
+
+        const rtsPrompt = `Revise test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${rtsSpecPath}. Architecture: ${rtsArchPath}. Research: ${rtsResearchPath}. Product repo: ${rtsRepoPath}. Fleet-core: ${fleetCorePath}.${rtsFeedbackStr}`;
+
+        const rtsSession = await launchAgent({
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
+          prompt: rtsPrompt,
+          model: "opus",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "test-spec",
+          agentName: "test-spec",
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: rtsSession });
       }
 
       // -------------------------------------------------------------------
@@ -928,7 +1006,7 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache();
 
-        const { repoPath: waveRepoPath, repoName: waveRepoName, researchPath: waveResearchPath, planPath: wavePlanPath } = resolveRepoPath(
+        const { repoPath: waveRepoPath, repoName: waveRepoName, researchPath: waveResearchPath, planPath: wavePlanPath, testScenariosPath: waveTestScenariosPath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -936,7 +1014,8 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}. Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+        const waveTestScenariosInfo = waveTestScenariosPath ? ` Test scenarios: ${waveTestScenariosPath}.` : "";
+        const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
 
         const startWaveSession = await launchAgent({
           repoPath: waveRepoPath,
