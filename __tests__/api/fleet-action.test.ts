@@ -100,12 +100,17 @@ const mockGroupBeadsByFileConflict = jest.fn((beads: Array<{ id: string; files: 
   return Array.from(groups.values());
 });
 
+// factory-core-z9h.6: start-wave now checks isAgentActive to skip heads
+// that already have a live agent (tail-bead launch idempotency).
+const mockIsAgentActive = jest.fn().mockReturnValue(false);
+
 jest.mock("@/lib/agent-launcher", () => ({
   launchAgent: (...args: unknown[]) => mockLaunchAgent(...args),
   stopAgent: () => mockStopAgent(),
   getWaveStatus: (...args: unknown[]) => mockGetWaveStatus(...args),
   listOpenWaveBeads: (...args: unknown[]) => mockListOpenWaveBeads(...args),
   groupBeadsByFileConflict: (...args: unknown[]) => mockGroupBeadsByFileConflict(...(args as [Array<{ id: string; files: string[] }>])),
+  isAgentActive: (...args: unknown[]) => mockIsAgentActive(...args),
 }));
 
 // Mock repo-config module
@@ -2308,6 +2313,84 @@ describe("POST /api/fleet/action", () => {
       expect(data.totalGroups).toBe(1); // all three collapsed into one sequential chain
       expect(data.launched).toHaveLength(1);
       expect(data.deferred).toHaveLength(2);
+    });
+
+    // ---------------------------------------------------------------------
+    // factory-core-z9h.6 — start-wave skips heads with active agents
+    // (tail-bead launch idempotency)
+    // ---------------------------------------------------------------------
+
+    it("z9h.6: skips heads that already have an active agent (idempotent re-invocation)", async () => {
+      // Scenario: start-wave is re-invoked by the auto-chain after a
+      // per-bead agent closes. Three open beads: z9h.A already has an
+      // active agent; z9h.B and z9h.C do not. Only B and C should launch.
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.A", title: "Alpha", files: ["a.ts"] },
+        { id: "z9h.B", title: "Beta", files: ["b.ts"] },
+        { id: "z9h.C", title: "Gamma", files: ["c.ts"] },
+      ]);
+      mockIsAgentActive.mockImplementation((_repo: string, beadId?: string) => {
+        return beadId === "z9h.A";
+      });
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("per-bead");
+      expect(data.totalBeads).toBe(3);
+      expect(data.totalGroups).toBe(3);
+      // Only B and C launch. A is skipped because it's already active.
+      expect(data.launched).toHaveLength(2);
+      expect(data.skipped).toHaveLength(1);
+      expect(data.skipped[0].beadId).toBe("z9h.A");
+      expect(data.skipped[0].reason).toMatch(/agent already active/i);
+
+      const launchedIds = data.launched.map((l: { beadId: string }) => l.beadId).sort();
+      expect(launchedIds).toEqual(["z9h.B", "z9h.C"]);
+
+      // Reset mock for next test
+      mockIsAgentActive.mockImplementation(() => false);
+    });
+
+    it("z9h.6: skipped heads don't count against deferred — a skipped head is neither launched nor queued", async () => {
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.A", title: "Alpha", files: ["shared.ts", "a.ts"] },
+        { id: "z9h.B", title: "Beta", files: ["shared.ts", "b.ts"] },
+      ]);
+      mockIsAgentActive.mockImplementation((_repo: string, beadId?: string) => {
+        return beadId === "z9h.A";
+      });
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      const data = await res.json();
+
+      expect(data.totalBeads).toBe(2);
+      expect(data.totalGroups).toBe(1); // A and B share a file
+      // A (head) is active → skipped. B is the tail and stays deferred.
+      expect(data.skipped.map((s: { beadId: string }) => s.beadId)).toEqual([
+        "z9h.A",
+      ]);
+      expect(data.deferred.map((d: { beadId: string }) => d.beadId)).toEqual([
+        "z9h.B",
+      ]);
+      expect(data.launched).toHaveLength(0);
+
+      mockIsAgentActive.mockImplementation(() => false);
     });
   });
 });

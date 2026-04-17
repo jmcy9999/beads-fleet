@@ -11,6 +11,10 @@ import {
   sessionScopeSuffix,
   parseFilesManifest,
   groupBeadsByFileConflict,
+  shouldFireWaveReview,
+  markWaveReviewFired,
+  clearWaveReviewGuard,
+  isAgentActive,
   type WaveBead,
 } from "@/lib/agent-launcher";
 
@@ -224,5 +228,114 @@ describe("groupBeadsByFileConflict", () => {
     ]);
     const ab = groups.find((g) => g.length === 2)!;
     expect(ab.map((x) => x.id)).toEqual(["A", "B"]);
+  });
+});
+
+// ===========================================================================
+// factory-core-z9h.6 — Wave review idempotency guard
+// ===========================================================================
+
+describe("shouldFireWaveReview / markWaveReviewFired / clearWaveReviewGuard", () => {
+  // Each test uses a unique epicId so the module-level Set doesn't leak.
+  let counter = 0;
+  const nextEpic = () => `test-epic-${++counter}`;
+
+  it("shouldFireWaveReview returns true for a fresh (epic, wave) pair", () => {
+    const epic = nextEpic();
+    expect(shouldFireWaveReview(epic, 1)).toBe(true);
+  });
+
+  it("markWaveReviewFired prevents a second fire for the same pair (idempotency guard)", () => {
+    const epic = nextEpic();
+    expect(shouldFireWaveReview(epic, 1)).toBe(true);
+    markWaveReviewFired(epic, 1);
+    expect(shouldFireWaveReview(epic, 1)).toBe(false);
+  });
+
+  it("different waves on the same epic are tracked independently", () => {
+    const epic = nextEpic();
+    markWaveReviewFired(epic, 1);
+    // Wave 2 hasn't been fired yet.
+    expect(shouldFireWaveReview(epic, 2)).toBe(true);
+    markWaveReviewFired(epic, 2);
+    expect(shouldFireWaveReview(epic, 1)).toBe(false);
+    expect(shouldFireWaveReview(epic, 2)).toBe(false);
+  });
+
+  it("different epics on the same wave don't interfere — no residual state leak (regression #3)", () => {
+    const epicA = nextEpic();
+    const epicB = nextEpic();
+    markWaveReviewFired(epicA, 1);
+    // Epic B's wave 1 is still free to fire.
+    expect(shouldFireWaveReview(epicB, 1)).toBe(true);
+  });
+
+  it("clearWaveReviewGuard(epic, wave) resets only that wave", () => {
+    const epic = nextEpic();
+    markWaveReviewFired(epic, 1);
+    markWaveReviewFired(epic, 2);
+    clearWaveReviewGuard(epic, 1);
+    expect(shouldFireWaveReview(epic, 1)).toBe(true);
+    expect(shouldFireWaveReview(epic, 2)).toBe(false);
+  });
+
+  it("clearWaveReviewGuard(epic) without wave resets all waves for that epic", () => {
+    const epic = nextEpic();
+    markWaveReviewFired(epic, 1);
+    markWaveReviewFired(epic, 2);
+    markWaveReviewFired(epic, 3);
+    clearWaveReviewGuard(epic);
+    expect(shouldFireWaveReview(epic, 1)).toBe(true);
+    expect(shouldFireWaveReview(epic, 2)).toBe(true);
+    expect(shouldFireWaveReview(epic, 3)).toBe(true);
+  });
+
+  it("clearWaveReviewGuard only clears the specified epic, not others", () => {
+    const epicA = nextEpic();
+    const epicB = nextEpic();
+    markWaveReviewFired(epicA, 1);
+    markWaveReviewFired(epicB, 1);
+    clearWaveReviewGuard(epicA);
+    expect(shouldFireWaveReview(epicA, 1)).toBe(true);
+    expect(shouldFireWaveReview(epicB, 1)).toBe(false); // untouched
+  });
+
+  it("simulated race: two near-simultaneous exits both check and only one fires", () => {
+    // This is the canonical z9h.6 scenario — two per-bead agents exit,
+    // both see currentWaveComplete=true. The guard ensures review-wave
+    // is dispatched exactly once.
+    const epic = nextEpic();
+    let fireCount = 0;
+
+    // Agent 1 exits
+    if (shouldFireWaveReview(epic, 1)) {
+      markWaveReviewFired(epic, 1);
+      fireCount += 1;
+      // simulate async fetch here
+    }
+    // Agent 2 exits near-simultaneously
+    if (shouldFireWaveReview(epic, 1)) {
+      markWaveReviewFired(epic, 1);
+      fireCount += 1;
+    }
+    // Agent 3 is the poll-loop duplicate of agent 1
+    if (shouldFireWaveReview(epic, 1)) {
+      markWaveReviewFired(epic, 1);
+      fireCount += 1;
+    }
+
+    expect(fireCount).toBe(1);
+  });
+});
+
+describe("isAgentActive", () => {
+  it("returns false when no agent is tracked for the given repo", () => {
+    // No agents are launched in a unit test; the activeAgents map is empty.
+    // /tmp is a valid resolvable path on macOS + Linux so realpathSync won't throw.
+    expect(isAgentActive("/tmp")).toBe(false);
+  });
+
+  it("returns false for a (repo, beadId) pair with no tracked agent", () => {
+    expect(isAgentActive("/tmp", "factory-core-z9h.99")).toBe(false);
   });
 });

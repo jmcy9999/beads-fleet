@@ -95,6 +95,75 @@ interface ActiveAgent {
 
 const activeAgents = new Map<string, ActiveAgent>();
 
+// ---------------------------------------------------------------------------
+// Wave review idempotency guard (factory-core-z9h.6)
+// ---------------------------------------------------------------------------
+//
+// When N parallel builders run in a wave, each one's exit fires
+// handleChainAction. Two (or more) near-simultaneous exits can both see
+// `currentWaveComplete === true` and both try to fire `review-wave`. This
+// module-level Set keyed on `${epicId}::${wave}` ensures `review-wave`
+// fires exactly once per (epic, wave) pair.
+//
+// The poll loop can also double-fire handleAgentExit for a single agent
+// (session death + final poll). The same guard covers that case.
+//
+// The set is cleared when review-wave itself closes (via clearWaveReviewGuard)
+// so a RE-run of the same wave (e.g. after a bug fix) can re-trigger review.
+// ---------------------------------------------------------------------------
+const firedWaveReviews = new Set<string>();
+
+/**
+ * Returns true if `review-wave` has NOT yet been fired for this (epic, wave)
+ * pair. Callers should check this BEFORE firing review-wave and call
+ * {@link markWaveReviewFired} immediately after a successful dispatch.
+ *
+ * Exported for tests.
+ */
+export function shouldFireWaveReview(epicId: string, wave: number): boolean {
+  return !firedWaveReviews.has(`${epicId}::${wave}`);
+}
+
+/**
+ * Record that review-wave has been dispatched for this (epic, wave) pair.
+ * Subsequent shouldFireWaveReview calls return false until the guard is
+ * cleared.
+ *
+ * Exported for tests.
+ */
+export function markWaveReviewFired(epicId: string, wave: number): void {
+  firedWaveReviews.add(`${epicId}::${wave}`);
+}
+
+/**
+ * Clear the wave review guard for an epic — optionally for a specific wave.
+ * Called when the reviewer round completes and the next wave launches, so a
+ * future re-run of the same wave (after bug fixes) can re-trigger review.
+ *
+ * Exported for tests.
+ */
+export function clearWaveReviewGuard(epicId: string, wave?: number): void {
+  if (typeof wave === "number") {
+    firedWaveReviews.delete(`${epicId}::${wave}`);
+    return;
+  }
+  // Clear all waves for this epic (e.g. on epic close / reset).
+  for (const key of Array.from(firedWaveReviews)) {
+    if (key.startsWith(`${epicId}::`)) firedWaveReviews.delete(key);
+  }
+}
+
+/**
+ * Returns true if an agent is currently running for (repoPath, beadId).
+ * Exported so route.ts can skip re-launching heads that are already active
+ * when start-wave is called from the auto-chain after a bead closes
+ * (factory-core-z9h.6 tail-bead launch).
+ */
+export function isAgentActive(repoPath: string, beadId?: string): boolean {
+  const key = activeAgentKey(repoPath, beadId);
+  return activeAgents.has(key);
+}
+
 const LOG_DIR = path.join(os.tmpdir(), "beads-web-agent-logs");
 const SESSIONS_DIR = path.join(os.tmpdir(), "beads-web-agent-sessions");
 const STATUS_DIR = path.join(os.tmpdir(), "beads-web-agent-status");
@@ -1014,7 +1083,13 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       if (waveStatus.hasWaves && !waveStatus.allWavesComplete) {
         // Waves exist and not all complete — chain to review-wave for the completed wave
         if (waveStatus.currentWaveComplete) {
-          // Current wave is complete — launch reviewer for it
+          // factory-core-z9h.6: With N parallel per-bead builders, two exits
+          // may race and both see currentWaveComplete=true. The guard
+          // ensures review-wave is dispatched exactly once per (epic, wave).
+          if (!shouldFireWaveReview(session.epicId!, waveStatus.currentWave)) {
+            return true; // Already handled by an earlier exit.
+          }
+          markWaveReviewFired(session.epicId!, waveStatus.currentWave);
           await fetch("http://localhost:3000/api/fleet/action", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1028,7 +1103,29 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           });
           return true; // Chain handled (development -> wave review)
         }
-        // Current wave not complete — builder didn't finish all beads, no chain
+
+        // factory-core-z9h.6: wave not complete. If this was a per-bead
+        // agent (session.beadId set), re-fire start-wave so the orchestrator
+        // can launch any newly-unblocked tail beads from the same
+        // conflict group. start-wave skips heads with active agents
+        // (isAgentActive) so parallel heads in other groups are not
+        // re-launched.
+        if (session.beadId) {
+          await fetch("http://localhost:3000/api/fleet/action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "start-wave",
+              epicId: session.epicId,
+              epicTitle: session.repoName,
+              currentLabels: session.epicLabels,
+              waveNumber: waveStatus.currentWave,
+            }),
+          });
+          return true; // Chain handled (bead close -> launch next deferred bead)
+        }
+        // Wave-session agent (pre-z9h.3 or legacy fallback) exited without
+        // closing all beads — no chain, stay at development.
         return false;
       }
 
@@ -1045,6 +1142,10 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       });
       return true; // Chain handled (development -> qa)
     } catch (err) {
+      // factory-core-z9h.6 + regression pattern #13 (Silent Exception
+      // Swallowing): log the failure explicitly. Returning false means the
+      // normal NEXT_STAGE transition will NOT silently treat the wave as
+      // complete — the pipeline label stays at `pipeline:development`.
       console.error("Failed to chain after build:", err);
       return false;
     }
@@ -1090,6 +1191,11 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         // Extract wave number from the prompt (e.g., "Review Wave 2 changes for epic...")
         const waveMatch = session.prompt.match(/Wave (\d+)/);
         const reviewedWave = waveMatch ? parseInt(waveMatch[1], 10) : waveStatus.currentWave;
+
+        // factory-core-z9h.6: reviewer closed with bugs → start-wave re-runs
+        // the wave. Clear the review guard for this wave so the NEXT wave
+        // completion (after fixes) can re-fire review-wave.
+        clearWaveReviewGuard(session.epicId!, reviewedWave);
 
         await fetch("http://localhost:3000/api/fleet/action", {
           method: "POST",

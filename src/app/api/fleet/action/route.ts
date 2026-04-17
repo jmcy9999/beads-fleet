@@ -15,6 +15,7 @@ import {
   getWaveStatus,
   listOpenWaveBeads,
   groupBeadsByFileConflict,
+  isAgentActive,
 } from "@/lib/agent-launcher";
 import {
   loadBeadDetail,
@@ -1178,6 +1179,7 @@ export async function POST(request: NextRequest) {
           sessionName?: string;
         }> = [];
         const deferred: Array<{ beadId: string; group: number; groupIndex: number }> = [];
+        const skipped: Array<{ beadId: string; group: number; reason: string }> = [];
 
         for (let g = 0; g < groups.length; g++) {
           const group = groups[g];
@@ -1188,6 +1190,20 @@ export async function POST(request: NextRequest) {
               continue;
             }
             const head = group[0];
+
+            // factory-core-z9h.6: when start-wave is re-invoked by the
+            // auto-chain (e.g. after a per-bead agent closes its bead),
+            // skip heads that already have a live agent. This keeps the
+            // re-invocation idempotent for already-launched heads while
+            // still picking up any newly-unblocked tail beads.
+            if (isAgentActive(waveRepoPath, head.id)) {
+              skipped.push({
+                beadId: head.id,
+                group: g,
+                reason: "agent already active",
+              });
+              continue;
+            }
 
             // Build the focused per-bead prompt (factory-core-z9h.5).
             // Any failure in bd show / fs read degrades gracefully to a
@@ -1258,6 +1274,7 @@ export async function POST(request: NextRequest) {
           groups: groups.map((g) => g.map((b) => b.id)),
           launched,
           deferred,
+          skipped,
           totalBeads: openBeads.length,
           totalGroups: groups.length,
         });
