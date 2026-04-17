@@ -1226,7 +1226,9 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           return true; // Chain handled (paused for owner)
         }
 
-        // Auto-advance to next wave
+        // Auto-advance to next wave — clear the guard for the wave we just reviewed
+        // so the Set doesn't leak entries for the lifetime of the process (z9h.6 P2).
+        clearWaveReviewGuard(session.epicId!, reviewedWave);
         await fetch("http://localhost:3000/api/fleet/action", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1241,7 +1243,8 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         return true; // Chain handled (review -> next wave)
       }
 
-      // Final wave passed — chain to QA
+      // Final wave passed — chain to QA. Clear guard for the reviewed wave (z9h.6 P2).
+      clearWaveReviewGuard(session.epicId!, reviewedWave);
       await fetch("http://localhost:3000/api/fleet/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
