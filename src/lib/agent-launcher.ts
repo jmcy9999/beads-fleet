@@ -1204,7 +1204,9 @@ const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fle
  * Returns true if the chain action handled the stage transition (so NEXT_STAGE
  * should be skipped), or false if normal NEXT_STAGE logic should proceed.
  */
-async function handleChainAction(session: AgentSession, exitCode: number | null): Promise<boolean> {
+// Exported for unit tests (factory-core-z9h.14). The production entry point
+// remains the in-module call from the poll loop on agent exit.
+export async function handleChainAction(session: AgentSession, exitCode: number | null): Promise<boolean> {
   if (exitCode !== 0) return false; // Only chain on success
 
   const stage = session.pipelineStage;
@@ -1252,8 +1254,22 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         return false;
       }
 
-      if (waveStatus.hasWaves && !waveStatus.allWavesComplete) {
-        // Waves exist and not all complete — chain to review-wave for the completed wave
+      if (waveStatus.hasWaves) {
+        // factory-core-z9h.14: the guard used to read
+        //   hasWaves && !allWavesComplete
+        // which collapsed TWO distinct states into the "done" branch below:
+        //   (a) final wave just completed (allWavesComplete=true, current
+        //       wave's review gate has NOT yet run) — must fire review-wave.
+        //   (b) epic fully complete AFTER review — chain to QA.
+        // The pre-fix code sent (a) straight to send-for-qa, silently
+        // skipping the build-review gate for the last wave. Now we
+        // differentiate: any wave-labelled epic whose current wave is
+        // complete fires review-wave; the "no wave labels" case below is
+        // the ONLY path to send-for-qa from development. Regression
+        // pattern #7 (Type Confusion on Enum Branching): the three states
+        // are (i) mid-wave with open beads, (ii) any wave complete but
+        // not yet reviewed, (iii) epic fully reviewed — the legacy guard
+        // merged (ii-final-wave) into (iii).
         if (waveStatus.currentWaveComplete) {
           // factory-core-z9h.6: With N parallel per-bead builders, two exits
           // may race and both see currentWaveComplete=true. The guard
@@ -1323,7 +1339,11 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         return false;
       }
 
-      // No waves or all waves complete — normal chain to QA
+      // factory-core-z9h.14: ONLY the "no wave labels" (legacy / pre-z9h)
+      // path falls through to send-for-qa. Wave-labelled epics always go
+      // through review-wave first — even the final wave. Review-wave's
+      // build-review handler at line 1440 handles "no next wave → QA" once
+      // the reviewer passes.
       await fetch("http://localhost:3000/api/fleet/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1334,7 +1354,7 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           currentLabels: session.epicLabels,
         }),
       });
-      return true; // Chain handled (development -> qa)
+      return true; // Chain handled (development -> qa, legacy no-wave-labels only)
     } catch (err) {
       // factory-core-z9h.6 + regression pattern #13 (Silent Exception
       // Swallowing): log the failure explicitly. Returning false means the
@@ -1819,12 +1839,18 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     const tmux = "/opt/homebrew/bin/tmux";
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    // Use a named tmux buffer per session to avoid race conditions when
+    // parallel builders all call load-buffer simultaneously. The default
+    // buffer is global — concurrent load-buffer calls overwrite each other.
+    const bufName = tmuxSession.slice(0, 50);
+
     const injectPrompt = async (): Promise<boolean> => {
       try {
-        await execAsync(`${tmux} load-buffer "${promptFile}"`);
-        await execAsync(`${tmux} paste-buffer -t "${tmuxSession}"`);
+        await execAsync(`${tmux} load-buffer -b "${bufName}" "${promptFile}"`);
+        await execAsync(`${tmux} paste-buffer -b "${bufName}" -t "${tmuxSession}"`);
         await wait(500);
         await execAsync(`${tmux} send-keys -t "${tmuxSession}" Enter`);
+        await execAsync(`${tmux} delete-buffer -b "${bufName}"`).catch(() => {});
         return true;
       } catch (err) {
         console.error("[tmux] Prompt injection failed:", err);
