@@ -550,11 +550,12 @@ export async function POST(request: NextRequest) {
         // Non-ventures have functional spec and architecture doc from PM/Architect stages
         const specInfo = specPath ? ` Functional spec: ${specPath}.` : "";
         const archInfo = architecturePath ? ` Architecture: ${architecturePath}.` : "";
-        const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${repoPath}. Research report: ${researchPath}.${specInfo}${archInfo}`;
+        // Planner runs in fleet-core (where specs/research live) but creates beads in the product repo
+        const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${repoPath}. Research report: ${researchPath}.${specInfo}${archInfo} Fleet-core: ${fleetCorePath}.`;
 
         const session = await launchAgent({
-          repoPath: repoPath,
-          repoName: repoName,
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
           prompt: planPrompt,
           model: "opus",
           maxTurns: 200,
@@ -661,11 +662,11 @@ export async function POST(request: NextRequest) {
           ? ` Jane's feedback: "${feedback}".`
           : "";
 
-        const revisePlanPrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}.${feedbackStr3}`;
+        const revisePlanPrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr3}`;
 
         const session = await launchAgent({
-          repoPath: repoPath,
-          repoName: repoName,
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
           prompt: revisePlanPrompt,
           model: "opus",
           maxTurns: 200,
