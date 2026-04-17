@@ -286,11 +286,12 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
+        // PM always runs in fleet-core — research and specs live there, product repo doesn't exist yet
         const pmPrompt = `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${pmResearchPath}. Fleet-core: ${fleetCorePath}.`;
 
         const pmSession = await launchAgent({
-          repoPath: pmRepoPath,
-          repoName: pmRepoName,
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
           prompt: pmPrompt,
           model: "opus",
           maxTurns: 150,
@@ -321,11 +322,12 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
+        // Architect always runs in fleet-core — specs and research live there, product repo doesn't exist yet
         const archPrompt = `Design architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${archSpecPath}. Research report: ${archResearchPath}. Fleet-core: ${fleetCorePath}.`;
 
         const archSession = await launchAgent({
-          repoPath: archRepoPath,
-          repoName: archRepoName,
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
           prompt: archPrompt,
           model: "opus",
           maxTurns: 150,
