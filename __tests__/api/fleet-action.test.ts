@@ -54,10 +54,58 @@ const mockGetWaveStatus = jest.fn().mockResolvedValue({
   childrenWithWaveLabels: 0,
 });
 
+// factory-core-z9h.3: start-wave lists open wave beads and groups them by
+// file conflict to decide parallel vs sequential launches. Default mock
+// returns an empty array — that exercises the "no enumerable beads →
+// legacy single-session wave launch" fallback. Tests that need per-bead
+// orchestration override with mockResolvedValueOnce.
+const mockListOpenWaveBeads = jest.fn().mockResolvedValue([]);
+const mockGroupBeadsByFileConflict = jest.fn((beads: Array<{ id: string; files: string[] }>) => {
+  // Passthrough implementation: import the real helper only when needed.
+  // Groups beads that share files sequentially; non-overlapping beads go
+  // into their own group. Mirrors the real algorithm closely enough for
+  // test assertions to remain meaningful.
+  if (beads.length === 0) return [];
+  const parent = beads.map((_, i) => i);
+  const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  const union = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+  const fileToIdx = new Map<string, number[]>();
+  const unknown: number[] = [];
+  for (let i = 0; i < beads.length; i++) {
+    if (beads[i].files.length === 0) {
+      unknown.push(i);
+      continue;
+    }
+    for (const f of beads[i].files) {
+      const list = fileToIdx.get(f) ?? [];
+      list.push(i);
+      fileToIdx.set(f, list);
+    }
+  }
+  for (const list of fileToIdx.values()) {
+    for (let k = 1; k < list.length; k++) union(list[0], list[k]);
+  }
+  for (let k = 1; k < unknown.length; k++) union(unknown[0], unknown[k]);
+  const groups = new Map<number, typeof beads>();
+  for (let i = 0; i < beads.length; i++) {
+    const r = find(i);
+    const arr = groups.get(r) ?? [];
+    arr.push(beads[i]);
+    groups.set(r, arr);
+  }
+  return Array.from(groups.values());
+});
+
 jest.mock("@/lib/agent-launcher", () => ({
   launchAgent: (...args: unknown[]) => mockLaunchAgent(...args),
   stopAgent: () => mockStopAgent(),
   getWaveStatus: (...args: unknown[]) => mockGetWaveStatus(...args),
+  listOpenWaveBeads: (...args: unknown[]) => mockListOpenWaveBeads(...args),
+  groupBeadsByFileConflict: (...args: unknown[]) => mockGroupBeadsByFileConflict(...(args as [Array<{ id: string; files: string[] }>])),
 }));
 
 // Mock repo-config module
@@ -2060,6 +2108,158 @@ describe("POST /api/fleet/action", () => {
       expect(call.prompt).toContain("Wave 2");
       expect(call.prompt).toContain("wave:2");
       expect(call.prompt).toContain("Do not advance to the next wave");
+    });
+
+    // -----------------------------------------------------------------------
+    // factory-core-z9h.3 — per-bead parallel builders within a wave
+    // -----------------------------------------------------------------------
+
+    it("z9h.3: launches N agents (one per bead) when every bead has disjoint files", async () => {
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.A", title: "Alpha", files: ["src/alpha.ts"] },
+        { id: "z9h.B", title: "Beta", files: ["src/beta.ts"] },
+        { id: "z9h.C", title: "Gamma", files: ["src/gamma.ts"] },
+        { id: "z9h.D", title: "Delta", files: ["src/delta.ts"] },
+      ]);
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("per-bead");
+      expect(data.totalBeads).toBe(4);
+      expect(data.totalGroups).toBe(4); // four disjoint groups
+      expect(data.launched).toHaveLength(4);
+      expect(data.deferred).toHaveLength(0);
+
+      // launchAgent called once per bead, each with a distinct beadId
+      expect(mockLaunchAgent).toHaveBeenCalledTimes(4);
+      const beadIds = mockLaunchAgent.mock.calls.map(c => c[0].beadId).sort();
+      expect(beadIds).toEqual(["z9h.A", "z9h.B", "z9h.C", "z9h.D"]);
+      // Every call carries the same wave number
+      for (const c of mockLaunchAgent.mock.calls) {
+        expect(c[0].waveNumber).toBe(2);
+        expect(c[0].epicId).toBe("factory-core-z9h");
+      }
+    });
+
+    it("z9h.3: puts beads sharing a file into the same group and defers tail beads", async () => {
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.A", title: "Alpha", files: ["src/shared.ts", "src/a.ts"] },
+        { id: "z9h.B", title: "Beta", files: ["src/shared.ts", "src/b.ts"] },
+        { id: "z9h.C", title: "Gamma", files: ["src/c.ts"] },
+      ]);
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 3,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("per-bead");
+      expect(data.totalBeads).toBe(3);
+      expect(data.totalGroups).toBe(2);
+      // Group A+B must run sequentially → head launches now, tail deferred.
+      // Group C runs in parallel → head launches now, no deferred members.
+      expect(data.launched).toHaveLength(2);
+      expect(data.deferred).toHaveLength(1);
+
+      // The two launched agents are the heads of their groups. The deferred
+      // one is whichever of {A, B} was second in the shared-file group.
+      const launchedIds = data.launched.map((l: { beadId: string }) => l.beadId).sort();
+      const deferredIds = data.deferred.map((d: { beadId: string }) => d.beadId);
+      expect(launchedIds).toContain("z9h.C");
+      expect(deferredIds).toHaveLength(1);
+      // Conservative: exactly one of A/B launched, the other deferred.
+      const abLaunched = launchedIds.filter((id: string) => id === "z9h.A" || id === "z9h.B");
+      const abDeferred = deferredIds.filter((id: string) => id === "z9h.A" || id === "z9h.B");
+      expect(abLaunched.length + abDeferred.length).toBe(2);
+      expect(abLaunched.length).toBe(1);
+      expect(abDeferred.length).toBe(1);
+    });
+
+    it("z9h.3: falls back to single wave-session launch when no open beads are enumerable", async () => {
+      // Default mockListOpenWaveBeads returns [] — simulates pre-z9h.7
+      // epics (no Files: manifests) and empty waves.
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 1,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("wave-session");
+
+      expect(mockLaunchAgent).toHaveBeenCalledTimes(1);
+      const call = mockLaunchAgent.mock.calls[0][0];
+      expect(call.waveNumber).toBe(1);
+      expect(call.beadId).toBeUndefined();
+      expect(call.prompt).toContain("Wave 1");
+    });
+
+    it("z9h.3: per-bead prompt names the specific bead and forbids starting others", async () => {
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.X", title: "Refactor foo", files: ["src/foo.ts"] },
+      ]);
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      await POST(req);
+
+      const call = mockLaunchAgent.mock.calls.at(-1)![0];
+      expect(call.beadId).toBe("z9h.X");
+      expect(call.prompt).toContain("bead z9h.X");
+      expect(call.prompt).toContain("ONLY work bead z9h.X");
+      expect(call.prompt).toContain("Refactor foo");
+      expect(call.prompt).not.toContain("all beads in the wave");
+    });
+
+    it("z9h.3: all unknown-manifest beads collapse into a single sequential group (safe default)", async () => {
+      // Pre-z9h.7 scenario: none of the beads have a Files: manifest yet.
+      // Conservative: treat them as potentially-conflicting → one big group.
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.P", title: "Plumb 1", files: [] },
+        { id: "z9h.Q", title: "Plumb 2", files: [] },
+        { id: "z9h.R", title: "Plumb 3", files: [] },
+      ]);
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 1,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("per-bead");
+      expect(data.totalBeads).toBe(3);
+      expect(data.totalGroups).toBe(1); // all three collapsed into one sequential chain
+      expect(data.launched).toHaveLength(1);
+      expect(data.deferred).toHaveLength(2);
     });
   });
 });

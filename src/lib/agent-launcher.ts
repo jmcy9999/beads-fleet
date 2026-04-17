@@ -507,7 +507,10 @@ async function attemptRecovery(): Promise<void> {
     if (!session.tmuxSessionName) continue;
     let key: string;
     try {
-      key = realpathSync(session.repoPath);
+      // factory-core-z9h.3: recover composite key so per-bead parallel
+      // builders (same repo, different beadId) don't collapse into one
+      // tracked slot.
+      key = activeAgentKey(session.repoPath, session.beadId);
     } catch {
       continue; // Path doesn't exist
     }
@@ -773,6 +776,192 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
   const allWavesComplete = Array.from(waveMap.values()).every((e) => e.closed >= e.total);
 
   return { hasWaves: true, waves: waveMap, currentWave, totalWaves, currentWaveComplete, allWavesComplete, hasCheckpointRequired, totalChildren: children.length, childrenWithWaveLabels };
+}
+
+// ---------------------------------------------------------------------------
+// factory-core-z9h.3: per-bead parallel builders
+// ---------------------------------------------------------------------------
+
+export interface WaveBead {
+  /** Bead ID (e.g. factory-core-z9h.3) */
+  id: string;
+  /** First-line summary of the bead, for prompt construction */
+  title: string;
+  /**
+   * Files the bead declares it will touch (z9h.7 "Files:" manifest).
+   * Empty when the bead has no manifest — callers must treat that as
+   * "unknown files → conservatively conflicts with everything else"
+   * (see groupBeadsByFileConflict).
+   */
+  files: string[];
+}
+
+/**
+ * Parse the Files: manifest from a `bd show` output.
+ *
+ * Expected format (produced by the planner once z9h.7 lands):
+ *   Files:
+ *   - path/to/file1.ts
+ *   - path/to/file2.ts
+ *
+ * Returns an empty array if no Files: section is found, or if the section
+ * exists but contains no bullet-list entries. Tolerant of both `- path` and
+ * `* path` bullets and of additional whitespace.
+ */
+export function parseFilesManifest(showOutput: string): string[] {
+  const lines = showOutput.split("\n");
+  const files: string[] = [];
+  let inFilesSection = false;
+  // Header variants the planner may emit:
+  //   "Files:"
+  //   "## Files"
+  //   "**Files:**"
+  //   "FILES" (all-caps bd-show style)
+  const filesHeader = /^\s*(?:#+\s*)?\*{0,2}\s*Files\s*:?\s*\*{0,2}\s*$/i;
+  // Any bd-show-style section header: one or more ALL-CAPS words, optionally
+  // followed by a colon and content on the same line. Matches "LABELS:",
+  // "NOTES", "PARENT", "DEPENDS ON", "DESCRIPTION", etc. A bullet line like
+  // "- x.ts" never matches because it doesn't start with a capital letter.
+  const bdSectionHeader = /^[A-Z][A-Z ]*[A-Z](?:\s*:.*)?$/;
+  // A markdown heading that is NOT the Files heading — e.g. "## Approach".
+  const otherMarkdownHeader = /^#+\s+\S/;
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (!inFilesSection) {
+      if (filesHeader.test(line)) inFilesSection = true;
+      continue;
+    }
+    // Files: header → stop at the next section boundary (bd-show header or
+    // a new markdown heading, but NOT the Files heading itself).
+    if (bdSectionHeader.test(line) && !filesHeader.test(line)) break;
+    if (otherMarkdownHeader.test(line) && !filesHeader.test(line)) break;
+
+    const bullet = line.match(/^\s*[-*]\s+(\S.*)$/);
+    if (bullet) {
+      // Strip trailing backticks (markdown code spans) and trim whitespace.
+      const cleaned = bullet[1].replace(/`/g, "").trim();
+      if (cleaned) files.push(cleaned);
+      continue;
+    }
+    // Blank line inside the section — tolerate and keep scanning.
+    if (line.trim() === "") continue;
+    // Non-bullet prose inside Files: is ignored but doesn't end the section.
+  }
+  return files;
+}
+
+/**
+ * Group beads into parallel-safe clusters based on shared file touches.
+ *
+ * Any two beads that share even one file form a conflict edge and must run
+ * sequentially (they land in the same group). Beads with no shared files
+ * form independent groups that can launch in parallel.
+ *
+ * Beads with an EMPTY files array are treated as "unknown touch set" and
+ * must run sequentially with every other unknown-touch-set bead — we
+ * conservatively assume conflict rather than silently racing filesystem
+ * writes. Once z9h.7 ships and every bead has a manifest, this fallback
+ * becomes moot.
+ *
+ * Returns: Array of groups. Each group is an ordered list of beads that
+ * must run sequentially. Different groups may run in parallel.
+ */
+export function groupBeadsByFileConflict(beads: WaveBead[]): WaveBead[][] {
+  if (beads.length === 0) return [];
+
+  // Union-find over bead indices.
+  const parent = beads.map((_, i) => i);
+  const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+
+  // Build file -> bead-indices map to find overlaps efficiently.
+  const fileToBeads = new Map<string, number[]>();
+  const unknownBeads: number[] = [];
+  for (let i = 0; i < beads.length; i++) {
+    const files = beads[i].files;
+    if (files.length === 0) {
+      unknownBeads.push(i);
+      continue;
+    }
+    for (const file of files) {
+      const list = fileToBeads.get(file) ?? [];
+      list.push(i);
+      fileToBeads.set(file, list);
+    }
+  }
+
+  // Union beads that share files.
+  for (const indices of fileToBeads.values()) {
+    for (let k = 1; k < indices.length; k++) {
+      union(indices[0], indices[k]);
+    }
+  }
+
+  // Union all unknown-manifest beads together — conservative default.
+  for (let k = 1; k < unknownBeads.length; k++) {
+    union(unknownBeads[0], unknownBeads[k]);
+  }
+
+  // Collect groups, preserving input order within each group so the caller
+  // can rely on a stable sequential launch order.
+  const groupsByRoot = new Map<number, WaveBead[]>();
+  for (let i = 0; i < beads.length; i++) {
+    const root = find(i);
+    const arr = groupsByRoot.get(root) ?? [];
+    arr.push(beads[i]);
+    groupsByRoot.set(root, arr);
+  }
+  return Array.from(groupsByRoot.values());
+}
+
+/**
+ * List open beads labelled wave:N for a given epic, reading their Files:
+ * manifests so the caller can group them for parallel vs sequential launch.
+ */
+export async function listOpenWaveBeads(
+  epicId: string,
+  wave: number,
+  repoPath: string,
+): Promise<WaveBead[]> {
+  if (!Number.isFinite(wave) || wave < 1) return [];
+
+  const epicResult = execBdSync(["show", epicId], repoPath, 10000);
+  const isInternal = epicResult.success && epicResult.stdout.includes("ship-type:internal");
+  const filterArgs = isInternal
+    ? ["list", "--status=all", `--parent=${epicId}`]
+    : ["list", "--status=all", "--label", `epic:${epicId}`];
+  const listResult = execBdSync(filterArgs, repoPath, 10000);
+  if (!listResult.success) return [];
+
+  const children = parseChildrenFromTree(listResult.stdout);
+  const open: WaveBead[] = [];
+  for (const child of children) {
+    if (child.isClosed) continue;
+    const showResult = execBdSync(["show", child.id], repoPath, 5000);
+    if (!showResult.success) continue;
+
+    // Confirm wave label matches the requested wave — filter defensively
+    // since we're not using a composite --label filter on bd list.
+    const waveMatch = showResult.stdout.match(/wave:(\d+)/);
+    if (!waveMatch) continue;
+    if (parseInt(waveMatch[1], 10) !== wave) continue;
+
+    // Title is the first line of the show output that looks like
+    // "... · <Bead ID> · <Title> ...". Fall back to the bead ID.
+    const titleMatch = showResult.stdout.match(
+      new RegExp(`${child.id.replace(/\./g, "\\.")}\\s*·\\s*([^\\n\\[]+?)\\s*\\[`),
+    );
+    const title = titleMatch ? titleMatch[1].trim() : child.id;
+
+    const files = parseFilesManifest(showResult.stdout);
+    open.push({ id: child.id, title, files });
+  }
+  return open;
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,16 +1351,33 @@ async function ensureLogDir(): Promise<void> {
 // Launch
 // ---------------------------------------------------------------------------
 
+/**
+ * Compute the activeAgents map key for a launch.
+ *
+ * factory-core-z9h.3: per-bead parallel builders share a repoPath but must
+ * not share a map key — otherwise starting agent B for the same repo would
+ * see the still-running agent A and refuse to launch. When a beadId is
+ * supplied we suffix with `::<beadId>`; otherwise we fall back to the legacy
+ * single-agent-per-repo key so pre-z9h callers behave exactly as before.
+ */
+function activeAgentKey(repoPath: string, beadId?: string): string {
+  const real = realpathSync(repoPath);
+  return beadId ? `${real}::${beadId}` : real;
+}
+
 export async function launchAgent(options: LaunchOptions): Promise<AgentSession> {
-  const repoKey = realpathSync(options.repoPath);
+  const repoKey = activeAgentKey(options.repoPath, options.beadId);
   const existing = activeAgents.get(repoKey);
   if (existing) {
     const stillRunning = existing.session.tmuxSessionName
       ? await tmuxSessionAlive(existing.session.tmuxSessionName)
       : false;
     if (stillRunning) {
+      const scope = options.beadId
+        ? ` for bead ${options.beadId}`
+        : "";
       throw new Error(
-        `Agent already running in tmux window "${existing.session.tmuxWindow}" in ${existing.session.repoName}. Stop it first.`,
+        `Agent already running in tmux window "${existing.session.tmuxWindow}" in ${existing.session.repoName}${scope}. Stop it first.`,
       );
     }
   }
@@ -1445,22 +1651,41 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
   }
 
   if (repoPath) {
-    const key = realpathSync(repoPath);
-    const agent = activeAgents.get(key);
-    if (!agent) return { stopped: false };
-    const pid = agent.session.pid;
-    await killAgent(agent);
+    const real = realpathSync(repoPath);
+    // factory-core-z9h.3: there may be multiple agents per repo (per-bead
+    // parallel builders). stopAgent(repoPath) stops every agent whose
+    // session.repoPath resolves to the same realpath — preserving the
+    // "stop this repo's work" semantic for single-agent callers while
+    // also cleaning up all per-bead agents at once.
+    const matches: Array<{ key: string; agent: ActiveAgent }> = [];
+    for (const [key, agent] of activeAgents) {
+      try {
+        if (realpathSync(agent.session.repoPath) === real) {
+          matches.push({ key, agent });
+        }
+      } catch {
+        // Path resolution failed — skip
+      }
+    }
+    if (matches.length === 0) return { stopped: false };
 
-    // Call exit handler immediately for manual stops
-    await handleAgentExit(agent.session, null, agent.langfuseSpan);
-
-    activeAgents.delete(key);
-    await clearPersistedSession(
-      repoPath,
-      agent.session.waveNumber,
-      agent.session.beadId,
-    );
-    return { stopped: true, pid };
+    let firstPid: number | undefined;
+    for (const { key, agent } of matches) {
+      if (firstPid === undefined) firstPid = agent.session.pid;
+      await killAgent(agent);
+      await handleAgentExit(agent.session, null, agent.langfuseSpan);
+      activeAgents.delete(key);
+      await clearPersistedSession(
+        agent.session.repoPath,
+        agent.session.waveNumber,
+        agent.session.beadId,
+      );
+    }
+    return {
+      stopped: true,
+      pid: firstPid,
+      stoppedCount: matches.length,
+    };
   }
 
   // No repoPath: stop first running agent (backwards compat)

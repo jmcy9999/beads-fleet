@@ -9,7 +9,13 @@ import {
   getEpicLabels,
   dismissHumanItem,
 } from "@/lib/pipeline-labels";
-import { launchAgent, stopAgent, getWaveStatus } from "@/lib/agent-launcher";
+import {
+  launchAgent,
+  stopAgent,
+  getWaveStatus,
+  listOpenWaveBeads,
+  groupBeadsByFileConflict,
+} from "@/lib/agent-launcher";
 import { getRepos } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import { extractAppName } from "@/lib/extract-app-name";
@@ -1075,7 +1081,22 @@ export async function POST(request: NextRequest) {
       }
 
       // -------------------------------------------------------------------
-      // START WAVE: Launch builder scoped to a specific wave
+      // START WAVE: Launch builders scoped to a specific wave.
+      //
+      // factory-core-z9h.3: one agent per bead in the wave. Beads with
+      // disjoint Files: manifests launch in parallel; beads that share
+      // any file are grouped together and launched sequentially (the
+      // first bead in a conflict group launches now, later ones launch
+      // when their predecessor closes — see handleChainAction, z9h.6).
+      //
+      // When the wave has only one open bead, or no open beads have a
+      // Files: manifest yet (pre-z9h.7 epics), behaviour collapses to a
+      // single launch — preserving the original start-wave contract
+      // with just the per-bead scoping layered on top.
+      //
+      // If we can't enumerate beads (bd error, no children, no wave
+      // labels), fall back to the legacy single-wave-session launch so
+      // existing epics still work.
       // -------------------------------------------------------------------
       case "start-wave": {
         const wave = typeof waveNumber === "number" ? waveNumber : parseInt(String(waveNumber), 10);
@@ -1095,29 +1116,103 @@ export async function POST(request: NextRequest) {
         );
 
         const waveTestScenariosInfo = waveTestScenariosPath ? ` Test scenarios: ${waveTestScenariosPath}.` : "";
-        const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+        const allowedTools = isVenture
+          ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
+          : "Bash,Read,Write,Edit,Glob,Grep,Task";
 
-        const startWaveSession = await launchAgent({
-          repoPath: waveRepoPath,
-          repoName: waveRepoName,
-          prompt: startWavePrompt,
-          model: "opus",
-          maxTurns: 500,
-          allowedTools: isVenture
-            ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
-            : "Bash,Read,Write,Edit,Glob,Grep,Task",
-          epicId: epicId,
-          epicLabels: labels,
-          pipelineStage: "development",
-          agentName: "builder",
-          // factory-core-z9h.2: wave number scopes the tmux session / session
-          // file / launcher script names so successive waves of the same epic
-          // get visibly distinct sessions and no leftover state from the prior
-          // wave can collide on disk.
+        const openBeads = await listOpenWaveBeads(epicId as string, wave, waveRepoPath);
+
+        // Legacy fallback: no enumerable open beads → launch one wave-scoped
+        // session as before. Keeps pre-z9h.7 epics working.
+        if (openBeads.length === 0) {
+          const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+
+          const startWaveSession = await launchAgent({
+            repoPath: waveRepoPath,
+            repoName: waveRepoName,
+            prompt: startWavePrompt,
+            model: "opus",
+            maxTurns: 500,
+            allowedTools,
+            epicId: epicId,
+            epicLabels: labels,
+            pipelineStage: "development",
+            agentName: "builder",
+            waveNumber: wave,
+          });
+
+          return NextResponse.json({
+            success: true,
+            action,
+            epicId,
+            waveNumber: wave,
+            dispatched: "wave-session",
+            session: startWaveSession,
+          });
+        }
+
+        // Group beads into parallel-safe clusters. Each group is launched
+        // from its HEAD bead; when the head closes, handleChainAction (z9h.6)
+        // launches the next bead in the group. Groups themselves launch in
+        // parallel here.
+        const groups = groupBeadsByFileConflict(openBeads);
+
+        const launched: Array<{
+          beadId: string;
+          group: number;
+          groupIndex: number;
+          sessionId?: string;
+          sessionName?: string;
+        }> = [];
+        const deferred: Array<{ beadId: string; group: number; groupIndex: number }> = [];
+
+        for (let g = 0; g < groups.length; g++) {
+          const group = groups[g];
+          // Launch the head of each group now. Tail beads wait.
+          for (let i = 0; i < group.length; i++) {
+            if (i > 0) {
+              deferred.push({ beadId: group[i].id, group: g, groupIndex: i });
+              continue;
+            }
+            const head = group[0];
+            const perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work bead ${head.id}. Do not start any other bead.`;
+
+            const beadSession = await launchAgent({
+              repoPath: waveRepoPath,
+              repoName: waveRepoName,
+              prompt: perBeadPrompt,
+              model: "opus",
+              maxTurns: 500,
+              allowedTools,
+              epicId: epicId,
+              epicLabels: labels,
+              pipelineStage: "development",
+              agentName: "builder",
+              waveNumber: wave,
+              beadId: head.id,
+            });
+            launched.push({
+              beadId: head.id,
+              group: g,
+              groupIndex: 0,
+              sessionId: beadSession.tmuxSessionName,
+              sessionName: beadSession.tmuxSessionName,
+            });
+          }
+        }
+
+        return NextResponse.json({
+          success: true,
+          action,
+          epicId,
           waveNumber: wave,
+          dispatched: "per-bead",
+          groups: groups.map((g) => g.map((b) => b.id)),
+          launched,
+          deferred,
+          totalBeads: openBeads.length,
+          totalGroups: groups.length,
         });
-
-        return NextResponse.json({ success: true, action, epicId, waveNumber: wave, session: startWaveSession });
       }
 
       // -------------------------------------------------------------------
