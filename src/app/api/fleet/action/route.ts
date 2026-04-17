@@ -16,6 +16,11 @@ import {
   listOpenWaveBeads,
   groupBeadsByFileConflict,
 } from "@/lib/agent-launcher";
+import {
+  loadBeadDetail,
+  loadBeadTestScenarios,
+  buildPerBeadPrompt,
+} from "@/lib/bead-prompt";
 import { getRepos } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import { extractAppName } from "@/lib/extract-app-name";
@@ -1107,7 +1112,15 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache();
 
-        const { repoPath: waveRepoPath, repoName: waveRepoName, researchPath: waveResearchPath, planPath: wavePlanPath, testScenariosPath: waveTestScenariosPath } = resolveRepoPath(
+        const {
+          repoPath: waveRepoPath,
+          repoName: waveRepoName,
+          researchPath: waveResearchPath,
+          planPath: wavePlanPath,
+          specPath: waveSpecPath,
+          architecturePath: waveArchitecturePath,
+          testScenariosPath: waveTestScenariosPath,
+        } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -1175,7 +1188,42 @@ export async function POST(request: NextRequest) {
               continue;
             }
             const head = group[0];
-            const perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work bead ${head.id}. Do not start any other bead.`;
+
+            // Build the focused per-bead prompt (factory-core-z9h.5).
+            // Any failure in bd show / fs read degrades gracefully to a
+            // generic prompt so a single broken bead doesn't break the
+            // whole wave launch.
+            let perBeadPrompt: string;
+            try {
+              const detail = loadBeadDetail(head.id, waveRepoPath);
+              const testScenarios = await loadBeadTestScenarios(
+                waveTestScenariosPath,
+                head.id,
+              );
+              perBeadPrompt = buildPerBeadPrompt({
+                beadId: head.id,
+                beadTitle: detail.title || head.title,
+                beadDescription: detail.description,
+                beadAcceptanceCriteria: detail.acceptanceCriteria,
+                beadFiles: detail.files.length > 0 ? detail.files : head.files,
+                epicId: epicId as string,
+                epicTitle: epicTitle as string,
+                shipType,
+                waveNumber: wave,
+                repoPath: waveRepoPath,
+                fleetCorePath,
+                researchPath: waveResearchPath,
+                planPath: wavePlanPath,
+                specPath: waveSpecPath,
+                architecturePath: waveArchitecturePath,
+                testScenariosPath: waveTestScenariosPath,
+                testScenarios,
+              });
+            } catch (err) {
+              // Fallback to a simple prompt; log so we can investigate.
+              console.error(`[start-wave] Failed to build per-bead prompt for ${head.id}:`, err);
+              perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work bead ${head.id}. Do not start any other bead.`;
+            }
 
             const beadSession = await launchAgent({
               repoPath: waveRepoPath,

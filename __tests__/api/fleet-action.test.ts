@@ -125,6 +125,52 @@ jest.mock("@/lib/bv-client", () => ({
   invalidateCache: jest.fn(),
 }));
 
+// factory-core-z9h.5: mock bead-prompt so start-wave tests don't invoke
+// `bd show` (which would try to spawn the real bd binary and hit a Dolt
+// daemon that isn't available in CI). Default loader returns an empty
+// but valid BeadDetail; default test-scenarios loader reports missing-doc.
+// Default prompt builder mirrors the post-z9h.5 prompt shape so the
+// existing z9h.3 assertions ("ONLY work bead X", "bead X" present) keep
+// passing.
+const mockLoadBeadDetail = jest.fn(
+  (beadId: string) => ({
+    id: beadId,
+    // Empty title forces the route's `detail.title || head.title` fallback
+    // to pick up the title from listOpenWaveBeads — so test assertions on
+    // the prompt containing bead titles stay meaningful.
+    title: "",
+    description: "",
+    acceptanceCriteria: "",
+    files: [],
+    rawShow: "",
+  }),
+);
+const mockLoadBeadTestScenarios = jest.fn().mockResolvedValue({
+  status: "missing-doc",
+});
+const mockBuildPerBeadPrompt = jest.fn((inputs: {
+  beadId: string;
+  beadTitle: string;
+  epicId: string;
+  epicTitle: string;
+  waveNumber: number;
+}) => {
+  return [
+    `Build bead ${inputs.beadId} — ${inputs.beadTitle}.`,
+    `You are ONE of multiple parallel builders working epic ${inputs.epicId} (${inputs.epicTitle}), wave ${inputs.waveNumber}.`,
+    `Work ONLY bead ${inputs.beadId}. Do not start, claim, or close any other bead.`,
+  ].join("\n");
+});
+
+jest.mock("@/lib/bead-prompt", () => ({
+  loadBeadDetail: (...args: unknown[]) =>
+    mockLoadBeadDetail(...(args as [string, string])),
+  loadBeadTestScenarios: (...args: unknown[]) =>
+    mockLoadBeadTestScenarios(...args),
+  buildPerBeadPrompt: (...args: unknown[]) =>
+    mockBuildPerBeadPrompt(...(args as [{ beadId: string; beadTitle: string; epicId: string; epicTitle: string; waveNumber: number }])),
+}));
+
 // ---------------------------------------------------------------------------
 // Import the route handler (AFTER mocks are set up)
 // ---------------------------------------------------------------------------
@@ -2230,7 +2276,9 @@ describe("POST /api/fleet/action", () => {
       const call = mockLaunchAgent.mock.calls.at(-1)![0];
       expect(call.beadId).toBe("z9h.X");
       expect(call.prompt).toContain("bead z9h.X");
-      expect(call.prompt).toContain("ONLY work bead z9h.X");
+      // z9h.5: the per-bead prompt says "Work ONLY bead X" rather than
+      // the earlier placeholder "ONLY work bead X".
+      expect(call.prompt).toContain("Work ONLY bead z9h.X");
       expect(call.prompt).toContain("Refactor foo");
       expect(call.prompt).not.toContain("all beads in the wave");
     });
