@@ -272,16 +272,66 @@ async function detectAgentDone(session: AgentSession): Promise<boolean> {
 }
 
 /**
- * Send two Langfuse flush messages to a tmux session, spaced 5s apart.
- * "Thank you" triggers Stop 1 → stores real work as pending.
- * "Goodbye" triggers Stop 2 → emits the pending real work.
- * After this, the caller sends /exit — which only loses the throwaway goodbye turn.
+ * Run the full Langfuse flush + exit sequence for a pipeline agent.
+ *
+ * 1. Send "Thank you" → wait 10s → call hook (ingests real work, stores as pending)
+ * 2. Send "Goodbye" → wait 10s → call hook (emits the pending real work)
+ * 3. Send /exit
+ *
+ * Calls langfuse_hook.py directly rather than relying on the Stop hook,
+ * which doesn't fire reliably for spawned agents.
  */
-async function sendTmuxFlush(sessionName: string): Promise<void> {
+async function runFlushAndExit(
+  sessionName: string,
+  session: AgentSession,
+  logFile: string,
+): Promise<void> {
   const tmux = "/opt/homebrew/bin/tmux";
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const callHook = async () => {
+    if (!session.transcriptFile) return;
+    const payload = JSON.stringify({
+      session_id: session.transcriptFile.split("/").pop()?.replace(".jsonl", "") || "",
+      transcript_path: session.transcriptFile,
+      cwd: session.repoPath,
+      hook_event_name: "Stop",
+    });
+    const hookEnv = {
+      ...process.env,
+      TRACE_TO_LANGFUSE: "true",
+      ...buildOtelEnv({ epicId: session.epicId, agentType: session.pipelineStage, pipelineStage: session.pipelineStage, repoName: session.repoName }),
+    };
+    await execAsync(`echo '${payload.replace(/'/g, "'\\''")}' | python3 ~/.claude/hooks/langfuse_hook.py`, { timeout: 10000, env: hookEnv });
+  };
+
+  // Step 1: "Thank you" → wait → call hook (ingests + stores pending)
   await execAsync(`${tmux} send-keys -t "${sessionName}" "Thank you, that's all." Enter`);
-  await new Promise((resolve) => setTimeout(resolve, 5000));
+  const log1 = createWriteStream(logFile, { flags: "a" });
+  log1.write(`[${new Date().toISOString()}] Sent "Thank you"\n`);
+  log1.end();
+  await wait(10000);
+  try { await callHook(); } catch (err) { console.error("[langfuse] Hook call 1 failed:", err); }
+  const log2 = createWriteStream(logFile, { flags: "a" });
+  log2.write(`[${new Date().toISOString()}] Hook call 1 complete\n`);
+  log2.end();
+
+  // Step 2: "Goodbye" → wait → call hook (emits pending real work)
   await execAsync(`${tmux} send-keys -t "${sessionName}" "Goodbye." Enter`);
+  const log3 = createWriteStream(logFile, { flags: "a" });
+  log3.write(`[${new Date().toISOString()}] Sent "Goodbye"\n`);
+  log3.end();
+  await wait(10000);
+  try { await callHook(); } catch (err) { console.error("[langfuse] Hook call 2 failed:", err); }
+  const log4 = createWriteStream(logFile, { flags: "a" });
+  log4.write(`[${new Date().toISOString()}] Hook call 2 complete\n`);
+  log4.end();
+
+  // Step 3: /exit
+  await execAsync(`${tmux} send-keys -t "${sessionName}" "/exit" Enter`);
+  const log5 = createWriteStream(logFile, { flags: "a" });
+  log5.write(`[${new Date().toISOString()}] Sent /exit\n`);
+  log5.end();
 }
 
 /**
@@ -358,60 +408,20 @@ function startPollLoop(
       return;
     }
 
-    if (agent.flushSentAt) {
-      // Flush was sent — wait 15s for Claude to respond, then call hook directly, then /exit
-      if (Date.now() - agent.flushSentAt > 15000) {
-        // Call langfuse_hook.py directly — don't rely on Stop hook firing
-        if (session.transcriptFile) {
-          try {
-            const payload = JSON.stringify({
-              session_id: session.transcriptFile.split("/").pop()?.replace(".jsonl", "") || "",
-              transcript_path: session.transcriptFile,
-              cwd: session.repoPath,
-              hook_event_name: "Stop",
-            });
-            const hookEnv = {
-              ...process.env,
-              TRACE_TO_LANGFUSE: "true",
-              ...buildOtelEnv({ epicId: session.epicId, agentType: session.pipelineStage, pipelineStage: session.pipelineStage, repoName: session.repoName }),
-            };
-            await execAsync(`echo '${payload.replace(/'/g, "'\\''")}' | python3 ~/.claude/hooks/langfuse_hook.py`, { timeout: 10000, env: hookEnv });
-            const hookLog = createWriteStream(logFile, { flags: "a" });
-            hookLog.write(`[${new Date().toISOString()}] Called langfuse_hook.py directly\n`);
-            hookLog.end();
-          } catch (err) {
-            console.error("[langfuse] Direct hook call failed:", err);
-          }
-        }
-
-        // Now send /exit
-        agent.exitSentAt = Date.now();
-        try {
-          await sendTmuxExit(tmuxSession);
-          const exitLog = createWriteStream(logFile, { flags: "a" });
-          exitLog.write(`[${new Date().toISOString()}] Post-flush — sent /exit\n`);
-          exitLog.end();
-        } catch (err) {
-          console.error("[tmux] Failed to send /exit:", err);
-          agent.exitSentAt = undefined;
-        }
-      }
-      return;
-    }
+    // Already flushing/exiting — wait for session to die
+    if (agent.flushSentAt) return;
 
     // Check transcript for end_turn
     const isDone = await detectAgentDone(session);
     if (!isDone) return;
 
-    // Agent finished its work → send flush messages for Langfuse
+    // Agent finished — run the full flush + exit sequence (blocks ~25s)
     agent.flushSentAt = Date.now();
     try {
-      await sendTmuxFlush(tmuxSession);
-      const flushLog = createWriteStream(logFile, { flags: "a" });
-      flushLog.write(`[${new Date().toISOString()}] Agent done (end_turn) — sent Langfuse flush messages\n`);
-      flushLog.end();
+      await runFlushAndExit(tmuxSession, session, logFile);
+      agent.exitSentAt = Date.now();
     } catch (err) {
-      console.error("[tmux] Failed to send flush messages:", err);
+      console.error("[flush-exit] Sequence failed:", err);
       agent.flushSentAt = undefined;
     }
   }, 5000);
