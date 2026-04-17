@@ -641,8 +641,11 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
     hasCheckpointRequired = epicResult.stdout.includes("wave-checkpoint:required");
   }
 
-  // Step 1: Get all children IDs and closed status from tree output
-  const childrenResult = execBdSync(["list", "--status=all", `--parent=${epicId}`], repoPath, 10000);
+  // Step 1: Get all children IDs and closed status
+  const filterArgs = repoPath === FLEET_CORE_PATH
+    ? ["list", "--status=all", `--parent=${epicId}`]
+    : ["list", "--status=all", "--label", `epic:${epicId}`];
+  const childrenResult = execBdSync(filterArgs, repoPath, 10000);
   if (!childrenResult.success) {
     return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
   }
@@ -794,11 +797,14 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         return false;
       }
 
-      // Check if reviewer found P0/P1 issues — scoped to this epic's children
+      // Check if reviewer found P0/P1 issues — scoped to this epic
       // (factory-core-cur.1.22: was querying ALL repo bugs, not just epic children)
       let hasP0P1 = false;
+      const bugFilterArgs = session.repoPath === FLEET_CORE_PATH
+        ? ["list", "--status=open", `--parent=${session.epicId}`]
+        : ["list", "--status=open", "--label", `epic:${session.epicId}`];
       const bugResult = execBdSync(
-        ["list", "--status=open", `--parent=${session.epicId}`],
+        bugFilterArgs,
         session.repoPath,
         10000,
       );
@@ -892,9 +898,12 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
     // returned empty string, hasBugs=false, pipeline advanced. Fix: use
     // execBdSync (getBdPath + getBdEnv) and treat bd failures as fail-safe.
     try {
-      // Scope bug check to this epic's children (not all repo bugs)
+      // Scope bug check to this epic
+      const qaFilterArgs = session.repoPath === FLEET_CORE_PATH
+        ? ["list", "--status=open", `--parent=${session.epicId}`]
+        : ["list", "--status=open", "--label", `epic:${session.epicId}`];
       const childrenResult = execBdSync(
-        ["list", "--status=open", `--parent=${session.epicId}`],
+        qaFilterArgs,
         session.repoPath,
         15000,
       );
