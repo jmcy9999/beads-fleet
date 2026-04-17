@@ -95,6 +95,11 @@ interface ActiveAgent {
 
 const activeAgents = new Map<string, ActiveAgent>();
 
+// Module-level guard: prevent duplicate flush+exit sequences.
+// Hot-reloads can create multiple poll loops for the same session.
+// Once a flush starts for a tmux session, no other poll loop can start another.
+const flushingTmuxSessions = new Set<string>();
+
 // ---------------------------------------------------------------------------
 // Wave review idempotency guard (factory-core-z9h.6)
 // ---------------------------------------------------------------------------
@@ -576,6 +581,8 @@ function startPollLoop(
 
     // Already flushing/exiting — wait for session to die
     if (agent.flushSentAt) return;
+    // Module-level guard: prevents duplicate flushes from hot-reload-created poll loops
+    if (flushingTmuxSessions.has(tmuxSession)) return;
 
     // Check transcript for end_turn
     const isDone = await detectAgentDone(session);
@@ -584,18 +591,21 @@ function startPollLoop(
     // Agent finished — stop polling, run flush + exit sequence
     clearInterval(agent.pollInterval);
     agent.flushSentAt = Date.now();
+    flushingTmuxSessions.add(tmuxSession);
 
     try {
       await runFlushAndExit(tmuxSession, session, logFile);
       agent.exitSentAt = Date.now();
 
       // Clean up — session is dead after /exit
+      flushingTmuxSessions.delete(tmuxSession);
       activeAgents.delete(repoKey);
       // factory-core-z9h.12: see note above — repoPath, not repoKey.
       await clearPersistedSession(session.repoPath, session.waveNumber, session.beadId);
       await handleAgentExit(session, 0, agent.langfuseSpan);
     } catch (err) {
       console.error("[flush-exit] Sequence failed:", err);
+      flushingTmuxSessions.delete(tmuxSession);
     }
   }, 5000);
 }
