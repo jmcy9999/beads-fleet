@@ -642,7 +642,10 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
   }
 
   // Step 1: Get all children IDs and closed status
-  const filterArgs = repoPath === FLEET_CORE_PATH
+  // For internal epics, beads are in the same repo — use --parent
+  // For product epics, beads are in a separate repo — use --label
+  const isInternal = epicResult.stdout.includes("ship-type:internal");
+  const filterArgs = isInternal
     ? ["list", "--status=all", `--parent=${epicId}`]
     : ["list", "--status=all", "--label", `epic:${epicId}`];
   const childrenResult = execBdSync(filterArgs, repoPath, 10000);
@@ -800,7 +803,8 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
       // Check if reviewer found P0/P1 issues — scoped to this epic
       // (factory-core-cur.1.22: was querying ALL repo bugs, not just epic children)
       let hasP0P1 = false;
-      const bugFilterArgs = session.repoPath === FLEET_CORE_PATH
+      const isInternalBuild = session.epicLabels?.some((l) => l === "ship-type:internal") ?? false;
+      const bugFilterArgs = isInternalBuild
         ? ["list", "--status=open", `--parent=${session.epicId}`]
         : ["list", "--status=open", "--label", `epic:${session.epicId}`];
       const bugResult = execBdSync(
@@ -899,7 +903,8 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
     // execBdSync (getBdPath + getBdEnv) and treat bd failures as fail-safe.
     try {
       // Scope bug check to this epic
-      const qaFilterArgs = session.repoPath === FLEET_CORE_PATH
+      const isInternalQA = session.epicLabels?.some((l) => l === "ship-type:internal") ?? false;
+      const qaFilterArgs = isInternalQA
         ? ["list", "--status=open", `--parent=${session.epicId}`]
         : ["list", "--status=open", "--label", `epic:${session.epicId}`];
       const childrenResult = execBdSync(
