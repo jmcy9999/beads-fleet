@@ -1189,7 +1189,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
 
   // Generate a session ID so we know exactly which transcript file to read
   const claudeSessionId = randomUUID();
-  const safeCwd = options.repoPath.replace(/\//g, "-").replace(/^-/, "-");
+  const safeCwd = options.repoPath.replace(/[/_]/g, "-").replace(/^-/, "-");
   const projectDir = path.join(os.homedir(), ".claude", "projects", safeCwd);
   session.transcriptFile = path.join(projectDir, `${claudeSessionId}.jsonl`);
 
