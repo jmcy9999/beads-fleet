@@ -756,12 +756,12 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               return (
                 <>
                   <button
-                    onClick={(e) => handleAction(e, "send-for-development")}
+                    onClick={(e) => handleAction(e, "run-test-spec")}
                     disabled={epicAgentRunning || isPendingThis}
                     className={BTN_GREEN}
                   >
                     {isPendingThis && <Spinner />}
-                    {actionLabel("Begin Construction")}
+                    {actionLabel("Generate Tests")}
                   </button>
                   <button
                     onClick={(e) => handleFeedbackAction(e, "revise-plan")}
@@ -828,6 +828,39 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               </>
             );
           })()}
+
+          {/* Test Spec: generate test scenarios, or begin construction (factory-core-a7qf.9) */}
+          {app.stage === "test-spec" && (
+            epicAgentRunning ? (
+              <button
+                onClick={(e) => handleAction(e, "stop-agent")}
+                disabled={isPendingThis}
+                className={BTN_RED}
+              >
+                {isPendingThis && <Spinner />}
+                Stop Agent
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={(e) => handleAction(e, "run-test-spec")}
+                  disabled={isPendingThis}
+                  className={BTN_BLUE}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Generate Tests")}
+                </button>
+                <button
+                  onClick={(e) => handleAction(e, "send-for-development")}
+                  disabled={isPendingThis}
+                  className={BTN_GREEN}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Begin Construction")}
+                </button>
+              </>
+            )
+          )}
 
           {/* QA: Run QA, Skip to Submission, Send Back to Dev */}
           {app.stage === "qa" && (() => {

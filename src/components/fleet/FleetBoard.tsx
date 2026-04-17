@@ -46,6 +46,8 @@ export type PipelineAction =
   | "run-architect"
   | "revise-spec"
   | "revise-architecture"
+  // Test-spec stage: generate test scenarios from spec before build (factory-core-a7qf.9).
+  | "run-test-spec"
   // Human review gate actions, dispatched from AttentionBanner (factory-core-509.7).
   | "human-approve"
   | "human-dismiss";

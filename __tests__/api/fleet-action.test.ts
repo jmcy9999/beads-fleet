@@ -199,7 +199,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:research-complete", "plan:pending", "plan:approved"],
+        ["pipeline:research-complete", "pipeline:test-spec", "plan:pending", "plan:approved"],
         expect.any(String),
       );
       expect(mockAddLabels).toHaveBeenCalledWith(

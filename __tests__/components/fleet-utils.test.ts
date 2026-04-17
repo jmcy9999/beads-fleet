@@ -70,8 +70,8 @@ function makeFleetApp(epic: PlanIssue, children: PlanIssue[]): FleetApp {
 // =============================================================================
 
 describe("FLEET_STAGES", () => {
-  it("should have 15 stages", () => {
-    expect(FLEET_STAGES).toHaveLength(15);
+  it("should have 16 stages", () => {
+    expect(FLEET_STAGES).toHaveLength(16);
   });
 
   it("should include all expected stages in order", () => {
@@ -82,6 +82,7 @@ describe("FLEET_STAGES", () => {
       "product-spec",
       "architecture",
       "plan-review",
+      "test-spec",
       "development",
       "qa",
       "submission-prep",
@@ -155,6 +156,11 @@ describe("detectStage -- pipeline labels", () => {
   it("returns 'development' for pipeline:development", () => {
     const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:development", "agent:running"] });
     expect(detectStage(epic, [])).toBe("development");
+  });
+
+  it("returns 'test-spec' for pipeline:test-spec", () => {
+    const epic = makePlanIssue({ issue_type: "epic", labels: ["pipeline:test-spec"] });
+    expect(detectStage(epic, [])).toBe("test-spec");
   });
 
   it("returns 'submission-prep' for pipeline:submission-prep", () => {

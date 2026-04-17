@@ -8,6 +8,7 @@ export type FleetStage =
   | "product-spec"
   | "architecture"
   | "plan-review"
+  | "test-spec"
   | "development"
   | "qa"
   | "submission-prep"
@@ -25,6 +26,7 @@ export const FLEET_STAGES: FleetStage[] = [
   "product-spec",
   "architecture",
   "plan-review",
+  "test-spec",
   "development",
   "qa",
   "submission-prep",
@@ -99,6 +101,11 @@ export const FLEET_STAGE_CONFIG: Record<
     color: "text-violet-400",
     dotColor: "bg-violet-400",
   },
+  "test-spec": {
+    label: "Test Spec",
+    color: "text-fuchsia-400",
+    dotColor: "bg-fuchsia-400",
+  },
   development: {
     label: "Building",
     color: "text-amber-400",
@@ -171,6 +178,7 @@ export const IOS_PIPELINE_ORDER: FleetStage[] = [
   "product-spec",
   "architecture",
   "plan-review",
+  "test-spec",
   "development",
   "qa",
   "submission-prep",
@@ -293,6 +301,9 @@ export function detectStage(
     // so map it to the development column
     if (labels.includes("pipeline:build-review")) return "development";
     if (labels.includes("pipeline:development")) return "development";
+    // Test-spec stage: QA writes test scenarios from spec before build.
+    // (factory-core-a7qf.9)
+    if (labels.includes("pipeline:test-spec")) return "test-spec";
     // pipeline:plan-review is the explicit label; pipeline:research-complete
     // with plan:* labels is the legacy detection. (factory-core-cur.1.19)
     if (labels.includes("pipeline:plan-review")) return "plan-review";
