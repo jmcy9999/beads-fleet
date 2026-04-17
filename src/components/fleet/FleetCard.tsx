@@ -574,9 +574,9 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           {app.stage === "development" && !epicAgentRunning && !isPendingThis && (() => {
             const hasPipelineDev = (epic.labels ?? []).includes("pipeline:development");
             if (!hasPipelineDev) return null; // Don't show during build-review
-            const allDone = waveProgress
-              ? waveProgress.every((w) => w.closed === w.total)
-              : effectiveProgress.total > 0 && effectiveProgress.closed === effectiveProgress.total;
+            const wavesComplete = waveProgress ? waveProgress.every((w) => w.closed === w.total) : true;
+            const allBeadsClosed = effectiveProgress.total > 0 && effectiveProgress.closed === effectiveProgress.total;
+            const allDone = wavesComplete && allBeadsClosed;
             if (!allDone) return null;
             return (
               <button
@@ -593,11 +593,14 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
           {/* Resume Build CTA: development stage, no agent running, open bugs/tasks exist
               (factory-core-cur.1.17) */}
           {app.stage === "development" && !epicAgentRunning && (() => {
-            const openBugs = children.filter((c) => c.status !== "closed" && c.issue_type === "bug");
-            const openTasks = children.filter((c) => c.status !== "closed" && (c.issue_type === "task" || c.issue_type === "feature"));
-            const hasOpenWork = openBugs.length > 0 || openTasks.length > 0;
-            // Only show Resume Build if there's no wave CTA already shown (avoids duplicate CTAs)
-            if (!hasOpenWork || (waveInfo && waveProgress)) return null;
+            // Check for open work — use cross-repo data for non-internal, local children for internal
+            const openCount = crossRepoWaveData
+              ? crossRepoWaveData.children.total - crossRepoWaveData.children.closed
+              : children.filter((c) => c.status !== "closed").length;
+            const hasOpenWork = openCount > 0;
+            // Only show Resume Build if wave CTAs aren't already showing incomplete waves
+            const allWavesComplete = waveProgress ? waveProgress.every((w) => w.closed === w.total) : true;
+            if (!hasOpenWork || (waveInfo && waveProgress && !allWavesComplete)) return null;
             return (
               <button
                 onClick={(e) => handleAction(e, "resume-build")}
@@ -605,7 +608,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                 className={BTN_GREEN}
               >
                 {isPendingThis && <Spinner />}
-                {actionLabel(`Resume Build (${openBugs.length} bug${openBugs.length !== 1 ? "s" : ""})`)}
+                {actionLabel(`Resume Build (${openCount} open)`)}
               </button>
             );
           })()}
