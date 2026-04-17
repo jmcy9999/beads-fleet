@@ -359,13 +359,37 @@ function startPollLoop(
     }
 
     if (agent.flushSentAt) {
-      // Flush was sent — wait 15s for Claude to respond and Stop hooks to fire, then /exit
+      // Flush was sent — wait 15s for Claude to respond, then call hook directly, then /exit
       if (Date.now() - agent.flushSentAt > 15000) {
+        // Call langfuse_hook.py directly — don't rely on Stop hook firing
+        if (session.transcriptFile) {
+          try {
+            const payload = JSON.stringify({
+              session_id: session.transcriptFile.split("/").pop()?.replace(".jsonl", "") || "",
+              transcript_path: session.transcriptFile,
+              cwd: session.repoPath,
+              hook_event_name: "Stop",
+            });
+            const hookEnv = {
+              ...process.env,
+              TRACE_TO_LANGFUSE: "true",
+              ...buildOtelEnv({ epicId: session.epicId, agentType: session.pipelineStage, pipelineStage: session.pipelineStage, repoName: session.repoName }),
+            };
+            await execAsync(`echo '${payload.replace(/'/g, "'\\''")}' | python3 ~/.claude/hooks/langfuse_hook.py`, { timeout: 10000, env: hookEnv });
+            const hookLog = createWriteStream(logFile, { flags: "a" });
+            hookLog.write(`[${new Date().toISOString()}] Called langfuse_hook.py directly\n`);
+            hookLog.end();
+          } catch (err) {
+            console.error("[langfuse] Direct hook call failed:", err);
+          }
+        }
+
+        // Now send /exit
         agent.exitSentAt = Date.now();
         try {
           await sendTmuxExit(tmuxSession);
           const exitLog = createWriteStream(logFile, { flags: "a" });
-          exitLog.write(`[${new Date().toISOString()}] Post-flush timeout — sent /exit\n`);
+          exitLog.write(`[${new Date().toISOString()}] Post-flush — sent /exit\n`);
           exitLog.end();
         } catch (err) {
           console.error("[tmux] Failed to send /exit:", err);
