@@ -223,7 +223,14 @@ export function sessionScopeSuffix(waveNumber?: number, beadId?: string): string
   return parts.length > 0 ? `-${parts.join("-")}` : "";
 }
 
-function sessionFileFor(
+/**
+ * Compute the absolute path of the persisted session file for a (repo, wave,
+ * bead) triple. Exported so the z9h.12 regression test can verify that the
+ * write path (persistSession) and the delete path (clearPersistedSession)
+ * derive the same filename from the same inputs — preventing regression of
+ * the composite-key leak.
+ */
+export function sessionFileFor(
   repoPath: string,
   waveNumber?: number,
   beadId?: string,
@@ -282,6 +289,15 @@ async function recoverSessions(): Promise<AgentSession[]> {
     const files = await fs.readdir(SESSIONS_DIR);
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
+      // factory-core-z9h.12: one-shot cleanup of orphans from the bug period,
+      // when clearPersistedSession was called with the composite "::" key and
+      // left the original file behind. Any filename containing "::" cannot
+      // have been written by persistSession (which only produces "_"-escaped
+      // paths) — so they're always stale and safe to delete.
+      if (file.includes("::")) {
+        await fs.unlink(path.join(SESSIONS_DIR, file)).catch(() => {});
+        continue;
+      }
       try {
         const data = await fs.readFile(path.join(SESSIONS_DIR, file), "utf-8");
         const session = JSON.parse(data) as AgentSession;
@@ -525,7 +541,12 @@ function startPollLoop(
       // Session is gone — agent exited (crash, max-turns, or post-/exit)
       clearInterval(agent.pollInterval);
       activeAgents.delete(repoKey);
-      await clearPersistedSession(repoKey, session.waveNumber, session.beadId);
+      // factory-core-z9h.12: pass session.repoPath (plain realpath) — not
+      // repoKey (composite `${realpath}::${beadId}`) — so the unlink target
+      // matches what persistSession wrote. Passing repoKey produced filenames
+      // with literal "::" that never matched the original and leaked into
+      // /tmp/beads-web-agent-sessions/ over every wave run.
+      await clearPersistedSession(session.repoPath, session.waveNumber, session.beadId);
 
       const exitCode = agent.exitSentAt ? 0 : null;
       await handleAgentExit(session, exitCode, agent.langfuseSpan);
@@ -542,7 +563,8 @@ function startPollLoop(
         clearInterval(agent.pollInterval);
         await killAgent(agent);
         activeAgents.delete(repoKey);
-        await clearPersistedSession(repoKey, session.waveNumber, session.beadId);
+        // factory-core-z9h.12: see note above — repoPath, not repoKey.
+        await clearPersistedSession(session.repoPath, session.waveNumber, session.beadId);
         await handleAgentExit(session, null, agent.langfuseSpan);
 
         const finalLog = createWriteStream(logFile, { flags: "a" });
@@ -569,7 +591,8 @@ function startPollLoop(
 
       // Clean up — session is dead after /exit
       activeAgents.delete(repoKey);
-      await clearPersistedSession(repoKey, session.waveNumber, session.beadId);
+      // factory-core-z9h.12: see note above — repoPath, not repoKey.
+      await clearPersistedSession(session.repoPath, session.waveNumber, session.beadId);
       await handleAgentExit(session, 0, agent.langfuseSpan);
     } catch (err) {
       console.error("[flush-exit] Sequence failed:", err);

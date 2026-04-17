@@ -9,6 +9,7 @@
 
 import {
   sessionScopeSuffix,
+  sessionFileFor,
   parseFilesManifest,
   groupBeadsByFileConflict,
   shouldFireWaveReview,
@@ -325,6 +326,63 @@ describe("shouldFireWaveReview / markWaveReviewFired / clearWaveReviewGuard", ()
     }
 
     expect(fireCount).toBe(1);
+  });
+});
+
+// ===========================================================================
+// factory-core-z9h.12 — persist/clear filename parity
+// ===========================================================================
+//
+// Regression test for the composite-key leak: startPollLoop was calling
+// clearPersistedSession(repoKey, ...) where repoKey is activeAgentKey's
+// `${realpath}::${beadId}` composite — but persistSession had written the
+// file using just realpath. The mismatch meant the file was never deleted,
+// silently leaking into /tmp/beads-web-agent-sessions across wave runs.
+//
+// Regression pattern #1 — Write/Read Disconnect. These tests lock in the
+// identity that the write path and the delete path MUST derive their
+// filename from the same inputs.
+
+describe("sessionFileFor — write/clear filename parity (regression #1)", () => {
+  const repoPath = "/Users/janemckay/dev/claude_projects/beads_web";
+  const compositeKey = `${repoPath}::factory-core-z9h.12`;
+
+  it("is deterministic: same inputs produce the same filename", () => {
+    expect(sessionFileFor(repoPath, 1, "factory-core-z9h.3")).toBe(
+      sessionFileFor(repoPath, 1, "factory-core-z9h.3"),
+    );
+  });
+
+  it("the composite key produces a DIFFERENT filename than the plain repoPath (the bug)", () => {
+    // This asserts the bug's root cause: if startPollLoop passes the
+    // composite key to clearPersistedSession, it targets a different file
+    // than persistSession wrote — the original leaks.
+    const plain = sessionFileFor(repoPath, 1, "factory-core-z9h.3");
+    const composite = sessionFileFor(compositeKey, 1, "factory-core-z9h.3");
+    expect(plain).not.toBe(composite);
+  });
+
+  it("the composite-key filename contains '::' — marker of the bug-period orphans cleaned up on recovery", () => {
+    const composite = sessionFileFor(compositeKey, 1, "factory-core-z9h.3");
+    expect(composite).toContain("::");
+    // Conversely, the correct (repoPath-derived) filename never contains "::".
+    const correct = sessionFileFor(repoPath, 1, "factory-core-z9h.3");
+    expect(correct).not.toContain("::");
+  });
+
+  it("filename reflects repoPath + waveNumber + beadId — the three persist inputs", () => {
+    // Changing any of the three inputs changes the filename. This is what
+    // guarantees parallel-builder and multi-wave runs don't collide.
+    const a = sessionFileFor(repoPath, 1, "bead-A");
+    const b = sessionFileFor(repoPath, 1, "bead-B"); // different bead
+    const c = sessionFileFor(repoPath, 2, "bead-A"); // different wave
+    const d = sessionFileFor("/other/repo", 1, "bead-A"); // different repo
+    expect(new Set([a, b, c, d]).size).toBe(4);
+  });
+
+  it("wave-only scope (no beadId) is stable across calls — legacy single-agent-per-wave case", () => {
+    expect(sessionFileFor(repoPath, 1)).toBe(sessionFileFor(repoPath, 1));
+    expect(sessionFileFor(repoPath, 1)).not.toBe(sessionFileFor(repoPath, 2));
   });
 });
 
