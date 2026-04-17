@@ -532,7 +532,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
+          repoPath: "/Users/janemckay/dev/fleet/fleet-core",
           model: "opus",
           maxTurns: 200,
           pipelineStage: "planning",
@@ -679,7 +679,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
+          repoPath: "/Users/janemckay/dev/fleet/fleet-core",
           pipelineStage: "planning",
           agentName: "planner",
           prompt: expect.stringContaining("Entry point: revise-plan"),
@@ -808,7 +808,7 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          repoPath: "/Users/janemckay/dev/claude_projects/LensCycle",
+          repoPath: "/Users/janemckay/dev/fleet/fleet-core",
           pipelineStage: "planning",
           agentName: "planner",
           prompt: expect.stringContaining("Entry point: revise-plan"),

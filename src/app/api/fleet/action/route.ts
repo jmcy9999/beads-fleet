@@ -813,9 +813,9 @@ export async function POST(request: NextRequest) {
           : "";
 
         const session = await launchAgent({
-          repoPath: repoPath,
-          repoName: repoName,
-          prompt: `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}.${feedbackStr4}`,
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
+          prompt: `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr4}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",

@@ -45,6 +45,10 @@ jest.mock("@/hooks/useResearchReport", () => ({
   useResearchReport: () => ({ data: null }),
 }));
 
+jest.mock("@/hooks/useWaveStatus", () => ({
+  useWaveStatus: () => ({ data: null }),
+}));
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
