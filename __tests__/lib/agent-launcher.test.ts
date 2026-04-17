@@ -57,9 +57,9 @@ describe("sessionScopeSuffix", () => {
   });
 
   describe("factory-core-z9h.3 — bead scoping (foundation)", () => {
-    it("appends the bead ID when set", () => {
+    it("appends the bead ID when set (dots replaced with hyphens for tmux safety)", () => {
       expect(sessionScopeSuffix(2, "factory-core-z9h.3")).toBe(
-        "-wave2-factory-core-z9h.3",
+        "-wave2-factory-core-z9h-3",
       );
     });
 
@@ -68,8 +68,7 @@ describe("sessionScopeSuffix", () => {
     });
 
     it("sanitises tmux-unsafe characters in the bead ID", () => {
-      // tmux session names disallow most punctuation beyond -, _, .
-      // We preserve dots (bead IDs use them) but strip other unsafe chars.
+      // tmux interprets dots as window/pane separators — replace with hyphens
       expect(sessionScopeSuffix(1, "bead/with/slashes")).toBe(
         "-wave1-bead-with-slashes",
       );
