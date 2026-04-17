@@ -1693,15 +1693,54 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
   await fs.writeFile(promptFile, options.prompt);
 
   setTimeout(async () => {
-    try {
-      const tmux = "/opt/homebrew/bin/tmux";
-      await execAsync(`${tmux} load-buffer "${promptFile}"`);
-      await execAsync(`${tmux} paste-buffer -t "${tmuxSession}"`);
-      await execAsync(`${tmux} send-keys -t "${tmuxSession}" Enter`);
-      await fs.unlink(promptFile).catch(() => {});
-    } catch (err) {
-      console.error("[tmux] Failed to send prompt:", err);
+    const tmux = "/opt/homebrew/bin/tmux";
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const injectPrompt = async (): Promise<boolean> => {
+      try {
+        await execAsync(`${tmux} load-buffer "${promptFile}"`);
+        await execAsync(`${tmux} paste-buffer -t "${tmuxSession}"`);
+        await wait(500);
+        await execAsync(`${tmux} send-keys -t "${tmuxSession}" Enter`);
+        return true;
+      } catch (err) {
+        console.error("[tmux] Prompt injection failed:", err);
+        return false;
+      }
+    };
+
+    const transcriptActive = async (): Promise<boolean> => {
+      if (!session.transcriptFile) return false;
+      try {
+        const stat = await fs.stat(session.transcriptFile);
+        return stat.size > 100;
+      } catch {
+        return false;
+      }
+    };
+
+    // Attempt 1: paste + enter
+    if (await injectPrompt()) {
+      await wait(5000);
+      if (await transcriptActive()) {
+        await fs.unlink(promptFile).catch(() => {});
+        return;
+      }
+      // Retry just Enter (prompt may be pasted but Enter didn't fire)
+      console.log("[tmux] Transcript not active, retrying Enter");
+      try { await execAsync(`${tmux} send-keys -t "${tmuxSession}" Enter`); } catch { /* ignore */ }
+      await wait(5000);
+      if (await transcriptActive()) {
+        await fs.unlink(promptFile).catch(() => {});
+        return;
+      }
     }
+
+    // Attempt 2: full re-inject
+    console.log("[tmux] Re-injecting prompt (attempt 2)");
+    await injectPrompt();
+    await wait(5000);
+    await fs.unlink(promptFile).catch(() => {});
   }, 6000);
 
   // Start poll loop for exit detection (extracted for reuse by session recovery)
