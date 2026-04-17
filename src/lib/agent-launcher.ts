@@ -1084,6 +1084,17 @@ export function groupBeadsByFileConflict(beads: WaveBead[]): WaveBead[][] {
 /**
  * List open beads labelled wave:N for a given epic, reading their Files:
  * manifests so the caller can group them for parallel vs sequential launch.
+ *
+ * Throws a typed error if bd cannot be queried reliably. Before
+ * factory-core-z9h.9, a transient `bd list` or `bd show` failure silently
+ * returned an incomplete list, so start-wave skipped launching a builder
+ * for the missing bead and either (a) deadlocked the wave or (b) silently
+ * advanced the epic to QA with work undone. Mirrors the getWaveStatus
+ * error contract (z9h.8 / z9h.10): all-beads-enumerated / none / UNKNOWN
+ * are three distinct states — the third one must not silently collapse
+ * into "none" (regression patterns #13 Silent Exception Swallowing and
+ * #7 Type Confusion on Enum Branching). Callers MUST catch this and
+ * refuse to advance the pipeline.
  */
 export async function listOpenWaveBeads(
   epicId: string,
@@ -1098,14 +1109,46 @@ export async function listOpenWaveBeads(
     ? ["list", "--status=all", `--parent=${epicId}`]
     : ["list", "--status=all", "--label", `epic:${epicId}`];
   const listResult = execBdSync(filterArgs, repoPath, 10000);
-  if (!listResult.success) return [];
+  if (!listResult.success) {
+    // factory-core-z9h.9: do NOT silently collapse a bd failure into an
+    // empty list. Throw so start-wave returns 500 and the auto-chain
+    // registers the failure instead of falling through to the legacy
+    // wave-session branch (route.ts:1155) with an empty bead set — that
+    // would silently mask unclosed work.
+    throw new Error(
+      `listOpenWaveBeads: bd list failed for epic ${epicId} (filter=${filterArgs.slice(1).join(" ")}) — cannot enumerate wave beads`,
+    );
+  }
 
   const children = parseChildrenFromTree(listResult.stdout);
   const open: WaveBead[] = [];
   for (const child of children) {
     if (child.isClosed) continue;
     const showResult = execBdSync(["show", child.id], repoPath, 5000);
-    if (!showResult.success) continue;
+    if (!showResult.success) {
+      // factory-core-z9h.9: do NOT silently skip a failed `bd show`.
+      // A transient bd failure for any child would drop that bead from the
+      // returned list; start-wave would not launch a builder for it and
+      // handleChainAction would re-fire start-wave after other beads close
+      // (agent-launcher.ts handleChainAction dev-branch), hitting the same
+      // silent skip again → infinite re-fire loop OR silent advance to QA
+      // with the bead still open.
+      //
+      // Mirror the getWaveStatus per-child contract (z9h.8): return
+      // immediately with a typed error so the pipeline stays at
+      // `pipeline:development` until bd is reachable again.
+      //
+      // Regression patterns:
+      //   #13 Silent Exception Swallowing — a bd failure must not
+      //       masquerade as a successful "this bead isn't in the wave"
+      //       result.
+      //   #7  Type Confusion on Enum Branching — in-wave / not-in-wave /
+      //       UNKNOWN are three distinct states; a transient bd failure
+      //       is UNKNOWN, not not-in-wave.
+      throw new Error(
+        `listOpenWaveBeads: bd show failed for child ${child.id} of epic ${epicId} — cannot determine bead's wave state`,
+      );
+    }
 
     // Confirm wave label matches the requested wave — filter defensively
     // since we're not using a composite --label filter on bd list.

@@ -1148,7 +1148,26 @@ export async function POST(request: NextRequest) {
           ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
           : "Bash,Read,Write,Edit,Glob,Grep,Task";
 
-        const openBeads = await listOpenWaveBeads(epicId as string, wave, waveRepoPath);
+        // factory-core-z9h.9: listOpenWaveBeads now throws on bd failure
+        // rather than silently returning an empty list. A bd outage must
+        // surface as a 500 so the auto-chain registers the failure — we
+        // must not fall through to the legacy wave-session branch with an
+        // incomplete bead set (that masks unclosed work).
+        let openBeads;
+        try {
+          openBeads = await listOpenWaveBeads(epicId as string, wave, waveRepoPath);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[start-wave] listOpenWaveBeads failed for ${epicId} wave ${wave}: ${message}`);
+          return NextResponse.json(
+            {
+              error: `Failed to enumerate open wave beads: ${message}`,
+              epicId,
+              waveNumber: wave,
+            },
+            { status: 500 },
+          );
+        }
 
         // Legacy fallback: no enumerable open beads → launch one wave-scoped
         // session as before. Keeps pre-z9h.7 epics working.

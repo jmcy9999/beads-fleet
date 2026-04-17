@@ -2428,5 +2428,70 @@ describe("POST /api/fleet/action", () => {
 
       mockIsAgentActive.mockImplementation(() => false);
     });
+
+    // ---------------------------------------------------------------------
+    // factory-core-z9h.9 — start-wave returns 500 when listOpenWaveBeads
+    // throws (bd outage) instead of silently falling through to the
+    // legacy wave-session branch with an incomplete bead set.
+    // ---------------------------------------------------------------------
+
+    it("z9h.9: returns 500 when listOpenWaveBeads throws (bd outage)", async () => {
+      // Reproduce the silent-skip regression: listOpenWaveBeads used to
+      // return [] on bd failure, which tripped the legacy wave-session
+      // fallback and silently launched a wave-scoped agent while work
+      // was unknown. The fix throws; start-wave must now surface a 500.
+      mockListOpenWaveBeads.mockRejectedValueOnce(
+        new Error(
+          "listOpenWaveBeads: bd show failed for child factory-core-z9h.9 of epic factory-core-z9h",
+        ),
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 4,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("Failed to enumerate open wave beads");
+      expect(data.error).toContain("bd show failed");
+      expect(data.epicId).toBe("factory-core-z9h");
+      expect(data.waveNumber).toBe(4);
+
+      // CRITICAL: on a bd outage we must NOT fall through to the legacy
+      // wave-session launch. Otherwise a wave-scoped builder spins up
+      // against an unknown bead set, potentially deadlocking the wave
+      // or advancing the epic with work undone.
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("z9h.9: returns 500 when the outer bd list fails (cannot enumerate wave beads)", async () => {
+      // The outer `bd list` failure has a distinct error message so ops
+      // can tell which bd call broke. start-wave treats both the same way:
+      // surface the error, don't launch any agents.
+      mockListOpenWaveBeads.mockRejectedValueOnce(
+        new Error(
+          "listOpenWaveBeads: bd list failed for epic factory-core-z9h (filter=--status=all --parent=factory-core-z9h) — cannot enumerate wave beads",
+        ),
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("bd list failed");
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
   });
 });
