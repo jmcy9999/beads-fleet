@@ -172,3 +172,116 @@ describe("getWaveStatus — error propagation (factory-core-z9h.10)", () => {
     expect(status.error).toMatch(/--parent=some-epic/);
   });
 });
+
+describe("getWaveStatus — per-child bd show failure (factory-core-z9h.8)", () => {
+  // Reproducer for the z9h.8 bug: when `bd list` succeeds but one of the
+  // per-child `bd show` calls fails, the pre-fix code silently skipped the
+  // failing child. If the skipped child was the only unclosed bead in its
+  // wave, the wave map recorded {total: N-1, closed: N-1} and
+  // currentWaveComplete flipped to true — auto-advancing the pipeline while
+  // the bead was still open. The fix returns an explicit error so callers
+  // refuse to advance on unknown wave state.
+
+  const THREE_CHILDREN_TREE = `
+◐ factory-core-z9h ● P1 [epic] Epic
+├── ○ factory-core-z9h.aaa ● P1 task Open child (will flake)
+├── ✓ factory-core-z9h.bbb ● P1 task Closed child
+└── ✓ factory-core-z9h.ccc ● P1 task Closed child
+`;
+
+  const CLOSED_BBB_SHOW = `
+✓ factory-core-z9h.bbb · [CLOSED]
+LABELS: wave:1, ship-type:internal
+`;
+
+  const CLOSED_CCC_SHOW = `
+✓ factory-core-z9h.ccc · [CLOSED]
+LABELS: wave:1, ship-type:internal
+`;
+
+  it("sets `error` when a single child's `bd show` fails (silent-skip regression)", async () => {
+    // Scenario: 3 wave:1 children. Two are closed, one is open (.aaa).
+    // The open child's `bd show` flakes. Before the fix, this child was
+    // silently skipped — the wave map recorded {total: 2, closed: 2} and
+    // currentWaveComplete flipped to true. After the fix, getWaveStatus
+    // returns an error so callers refuse to advance the pipeline.
+    execBehaviour = (args) => {
+      if (args[0] === "show") {
+        if (args[1] === "factory-core-z9h") return { stdout: INTERNAL_EPIC_SHOW };
+        if (args[1] === "factory-core-z9h.aaa") {
+          return { error: new Error("bd: transient connection failure") };
+        }
+        if (args[1] === "factory-core-z9h.bbb") return { stdout: CLOSED_BBB_SHOW };
+        if (args[1] === "factory-core-z9h.ccc") return { stdout: CLOSED_CCC_SHOW };
+      }
+      if (args[0] === "list") return { stdout: THREE_CHILDREN_TREE };
+      return { stdout: "" };
+    };
+
+    const status = await getWaveStatus("factory-core-z9h", "/Users/janemckay/dev/fleet/fleet-core");
+
+    expect(status.error).toBeDefined();
+    expect(status.error).toContain("bd show failed");
+    expect(status.error).toContain("factory-core-z9h.aaa");
+    // Guard the specific silent-advance we are preventing:
+    expect(status.currentWaveComplete).toBe(false);
+    expect(status.allWavesComplete).toBe(false);
+    // Shape contract: hasWaves=false + error set is the "UNKNOWN" state,
+    // not "none-labelled". Callers check `error` first.
+    expect(status.hasWaves).toBe(false);
+  });
+
+  it("names the failing child in the error message so ops can diagnose which bead flaked", async () => {
+    // Distinct from z9h.10 (which names the failed filter). Here the
+    // failing unit is a specific child ID, so it must appear in the log
+    // to be actionable (e.g. retry that one bead).
+    execBehaviour = (args) => {
+      if (args[0] === "show") {
+        if (args[1] === "factory-core-z9h") return { stdout: INTERNAL_EPIC_SHOW };
+        if (args[1] === "factory-core-z9h.bbb") {
+          return { error: new Error("bd: unreachable") };
+        }
+        if (args[1] === "factory-core-z9h.aaa") return { stdout: CLOSED_BBB_SHOW };
+        if (args[1] === "factory-core-z9h.ccc") return { stdout: CLOSED_CCC_SHOW };
+      }
+      if (args[0] === "list") return { stdout: THREE_CHILDREN_TREE };
+      return { stdout: "" };
+    };
+
+    const status = await getWaveStatus("factory-core-z9h", "/Users/janemckay/dev/fleet/fleet-core");
+
+    expect(status.error).toMatch(/factory-core-z9h\.(aaa|bbb|ccc)/);
+    expect(status.error).toMatch(/factory-core-z9h/);
+  });
+
+  it("returns immediately on the first failing child — no partial wave map leaked through", async () => {
+    // Even if later children would succeed, we abort on the first failure.
+    // This avoids a half-populated wave map that a downstream caller could
+    // confuse with a real "all closed" state. We assert by checking the
+    // shape returned is the canonical empty-error shape, not a partially
+    // filled one.
+    execBehaviour = (args) => {
+      if (args[0] === "show") {
+        if (args[1] === "factory-core-z9h") return { stdout: INTERNAL_EPIC_SHOW };
+        if (args[1] === "factory-core-z9h.aaa") {
+          return { error: new Error("bd: flake") };
+        }
+        // These would count a closed bead if reached:
+        if (args[1] === "factory-core-z9h.bbb") return { stdout: CLOSED_BBB_SHOW };
+        if (args[1] === "factory-core-z9h.ccc") return { stdout: CLOSED_CCC_SHOW };
+      }
+      if (args[0] === "list") return { stdout: THREE_CHILDREN_TREE };
+      return { stdout: "" };
+    };
+
+    const status = await getWaveStatus("factory-core-z9h", "/Users/janemckay/dev/fleet/fleet-core");
+
+    // A partial walk would leave waves populated with {1: {total: 2, closed: 2}}
+    // (because .bbb + .ccc are closed) and flip currentWaveComplete. The fix
+    // returns an empty waves map with childrenWithWaveLabels=0 to signal
+    // "unknown" unambiguously.
+    expect(status.waves.size).toBe(0);
+    expect(status.childrenWithWaveLabels).toBe(0);
+    expect(status.currentWaveComplete).toBe(false);
+  });
+});

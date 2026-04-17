@@ -866,7 +866,42 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
   let childrenWithWaveLabels = 0;
   for (const child of children) {
     const showResult = execBdSync(["show", child.id], repoPath, 5000);
-    if (!showResult.success) continue;
+    if (!showResult.success) {
+      // factory-core-z9h.8: do NOT silently skip a failed `bd show`.
+      // Before this guard, a transient bd failure on one child was
+      // reinterpreted as "this child has no wave label" — the child was
+      // dropped from both totalChildren (via waveMap entries) and
+      // childrenWithWaveLabels counters. If that dropped child was the
+      // last unclosed bead in its wave, currentWaveComplete flipped to
+      // true and handleChainAction dispatched review-wave / send-for-qa
+      // while the bead was still open.
+      //
+      // z9h.10 already surfaces outer `bd list` failures via WaveStatus.error
+      // and callers (handleChainAction dev-branch, send-for-development)
+      // already refuse to advance when `error` is set. Mirror that contract
+      // here for per-child show failures: return immediately with a populated
+      // `error` so the pipeline stays at pipeline:development until bd is
+      // reachable again.
+      //
+      // Regression patterns:
+      //   #13 Silent Exception Swallowing — a bd failure must not
+      //       masquerade as a successful "no wave label" result.
+      //   #7  Type Confusion on Enum Branching — all-labelled /
+      //       none-labelled / UNKNOWN are three distinct states; a
+      //       transient bd failure is UNKNOWN, not none-labelled.
+      return {
+        hasWaves: false,
+        waves: new Map(),
+        currentWave: 0,
+        totalWaves: 0,
+        currentWaveComplete: false,
+        allWavesComplete: false,
+        hasCheckpointRequired,
+        totalChildren: children.length,
+        childrenWithWaveLabels: 0,
+        error: `bd show failed for child ${child.id} of epic ${epicId} — cannot determine wave state`,
+      };
+    }
 
     const waveMatch = showResult.stdout.match(/wave:(\d+)/);
     if (!waveMatch) continue;
