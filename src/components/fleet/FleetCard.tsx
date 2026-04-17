@@ -5,6 +5,7 @@ import Link from "next/link";
 import { PriorityIndicator } from "@/components/ui/PriorityIndicator";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useResearchReport } from "@/hooks/useResearchReport";
+import { useWaveStatus } from "@/hooks/useWaveStatus";
 import { extractAppName } from "@/lib/extract-app-name";
 import {
   isAgentRunning,
@@ -110,10 +111,6 @@ const BTN_GREEN = `${BTN_PRIMARY} text-green-400 hover:text-green-300 bg-green-5
 
 export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrl, attentionItems }: FleetCardProps) {
   const { epic, children, progress } = app;
-  const pct =
-    progress.total > 0
-      ? Math.round((progress.closed / progress.total) * 100)
-      : 0;
 
   const inProgress = children.filter(
     (c) => c.status === "in_progress",
@@ -134,8 +131,15 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
     [researchReport?.content],
   );
 
-  // Wave info: extract wave:N labels from children, compute per-wave progress
-  const waveProgress = useMemo(() => getWaveInfo(children), [children]);
+  // Wave info: for non-internal epics, fetch from cross-repo endpoint; for internal, compute locally
+  const isNonInternal = app.shipType !== "internal" && app.shipType !== "venture";
+  const { data: crossRepoWaveData } = useWaveStatus(isNonInternal ? epic.id : null);
+
+  const waveProgress = useMemo(() => {
+    if (crossRepoWaveData?.waveProgress) return crossRepoWaveData.waveProgress;
+    return getWaveInfo(children);
+  }, [crossRepoWaveData, children]);
+
   const waveInfo = useMemo(() => {
     if (!waveProgress) return null;
     const totalWaves = waveProgress.length;
@@ -143,6 +147,14 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
     const current = waveProgress.find((w) => w.closed < w.total) ?? waveProgress[waveProgress.length - 1];
     return { currentWave: current.wave, totalWaves, currentClosed: current.closed, currentTotal: current.total };
   }, [waveProgress]);
+
+  // For non-internal epics, use cross-repo child counts for progress
+  const effectiveProgress = crossRepoWaveData
+    ? { closed: crossRepoWaveData.children.closed, total: crossRepoWaveData.children.total }
+    : progress;
+  const pct = effectiveProgress.total > 0
+    ? Math.round((effectiveProgress.closed / effectiveProgress.total) * 100)
+    : 0;
 
   // Check if this epic has an agent currently running
   const epicAgentRunning = isAgentRunning(epic);
@@ -273,7 +285,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
       <h3 className="text-xs font-medium mb-1.5 line-clamp-2">{appName}</h3>
 
       {/* Progress bar */}
-      {progress.total > 0 && (
+      {effectiveProgress.total > 0 && (
         <div className="mb-2 flex items-center gap-1.5">
           <div className="flex-1 h-1.5 bg-surface-2 rounded-full overflow-hidden">
             <div
@@ -282,7 +294,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             />
           </div>
           <span className="text-[10px] text-gray-500">
-            {progress.closed}/{progress.total}
+            {effectiveProgress.closed}/{effectiveProgress.total}
           </span>
         </div>
       )}
@@ -564,7 +576,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             if (!hasPipelineDev) return null; // Don't show during build-review
             const allDone = waveProgress
               ? waveProgress.every((w) => w.closed === w.total)
-              : progress.total > 0 && progress.closed === progress.total;
+              : effectiveProgress.total > 0 && effectiveProgress.closed === effectiveProgress.total;
             if (!allDone) return null;
             return (
               <button
