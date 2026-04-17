@@ -672,7 +672,7 @@ function parseChildrenFromTree(treeOutput: string): Array<{ id: string; isClosed
 // Wave status detection
 // ---------------------------------------------------------------------------
 
-interface WaveStatus {
+export interface WaveStatus {
   hasWaves: boolean;
   waves: Map<number, { total: number; closed: number }>;
   currentWave: number;
@@ -680,6 +680,19 @@ interface WaveStatus {
   currentWaveComplete: boolean;
   allWavesComplete: boolean;
   hasCheckpointRequired: boolean;
+  /**
+   * Total number of direct children of the epic (factory-core-z9h.4).
+   * Used by send-for-development to distinguish "no children at all" from
+   * "no children have wave labels" from "all children closed".
+   */
+  totalChildren: number;
+  /**
+   * Count of children that have a wave:N label (factory-core-z9h.4).
+   * If 0 < childrenWithWaveLabels < totalChildren the labelling is
+   * inconsistent and the caller should reject — we never silently mix
+   * waved and un-waved beads in the same epic.
+   */
+  childrenWithWaveLabels: number;
 }
 
 /**
@@ -708,18 +721,19 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
     : ["list", "--status=all", "--label", `epic:${epicId}`];
   const childrenResult = execBdSync(filterArgs, repoPath, 10000);
   if (!childrenResult.success) {
-    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
+    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: 0, childrenWithWaveLabels: 0 };
   }
 
   const children = parseChildrenFromTree(childrenResult.stdout);
   if (children.length === 0) {
-    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
+    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: 0, childrenWithWaveLabels: 0 };
   }
 
   // Step 2: Get wave labels from bd show for each child
   // (factory-core-cur.1.26: bd list --parent= tree output omits labels,
   // so we must query each child individually to get wave:N labels)
   const waveMap = new Map<number, { total: number; closed: number }>();
+  let childrenWithWaveLabels = 0;
   for (const child of children) {
     const showResult = execBdSync(["show", child.id], repoPath, 5000);
     if (!showResult.success) continue;
@@ -729,6 +743,7 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
     const waveNum = parseInt(waveMatch[1], 10);
     if (isNaN(waveNum)) continue;
 
+    childrenWithWaveLabels += 1;
     const entry = waveMap.get(waveNum) ?? { total: 0, closed: 0 };
     entry.total += 1;
     if (child.isClosed) {
@@ -738,7 +753,7 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
   }
 
   if (waveMap.size === 0) {
-    return { hasWaves: false, waves: waveMap, currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired };
+    return { hasWaves: false, waves: waveMap, currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: children.length, childrenWithWaveLabels: 0 };
   }
 
   // Use waveMap.size (count of distinct waves) for consistency with
@@ -757,7 +772,7 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
   const currentWaveComplete = currentEntry.closed >= currentEntry.total;
   const allWavesComplete = Array.from(waveMap.values()).every((e) => e.closed >= e.total);
 
-  return { hasWaves: true, waves: waveMap, currentWave, totalWaves, currentWaveComplete, allWavesComplete, hasCheckpointRequired };
+  return { hasWaves: true, waves: waveMap, currentWave, totalWaves, currentWaveComplete, allWavesComplete, hasCheckpointRequired, totalChildren: children.length, childrenWithWaveLabels };
 }
 
 // ---------------------------------------------------------------------------

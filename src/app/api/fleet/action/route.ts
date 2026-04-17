@@ -208,21 +208,119 @@ export async function POST(request: NextRequest) {
 
       // -------------------------------------------------------------------
       // SEND FOR DEVELOPMENT: Research Complete -> In Development
+      //
+      // factory-core-z9h.4: when every child bead carries a wave:N label,
+      // route to start-wave with the lowest open wave so each wave gets a
+      // fresh builder session (see z9h.2). When no children have wave
+      // labels we fall back to the legacy single-session-for-all-waves
+      // behaviour. Mixed labelling is an explicit error.
       // -------------------------------------------------------------------
       case "send-for-development": {
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "pipeline:test-spec", "plan:pending", "plan:approved"], fleetCorePath);
-        await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
-        invalidateCache();
-
-        const { repoPath, repoName, researchPath, planPath, testScenariosPath } = resolveRepoPath(
+        const {
+          repoPath,
+          repoName,
+          researchPath,
+          planPath,
+          testScenariosPath,
+        } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
           epicId as string,
-          fleetCorePath
+          fleetCorePath,
         );
 
-        const testScenariosInfo = testScenariosPath ? ` Test scenarios: ${testScenariosPath}.` : "";
+        // Inspect wave labels on the epic's children BEFORE transitioning
+        // labels — if we detect an inconsistency we reject without mutating
+        // epic state. (Regression #7 Type Confusion: all-labelled vs
+        // none-labelled vs mixed must be three explicit branches.)
+        // getWaveStatus tolerates `bd` errors by returning hasWaves=false
+        // + totalChildren=0, which falls through to legacy below.
+        const waveStatus = await getWaveStatus(epicId as string, repoPath);
+
+        const allHaveWaves =
+          waveStatus.totalChildren > 0 &&
+          waveStatus.childrenWithWaveLabels === waveStatus.totalChildren;
+        const mixedLabelling =
+          waveStatus.childrenWithWaveLabels > 0 &&
+          waveStatus.childrenWithWaveLabels < waveStatus.totalChildren;
+
+        if (mixedLabelling) {
+          return NextResponse.json(
+            {
+              error: `Inconsistent wave labelling on epic ${epicId}: ${waveStatus.childrenWithWaveLabels} of ${waveStatus.totalChildren} children have wave:N labels. All children must either have wave labels or none must.`,
+            },
+            { status: 400 },
+          );
+        }
+
+        if (allHaveWaves && waveStatus.allWavesComplete) {
+          return NextResponse.json(
+            {
+              error: `Epic ${epicId} has no open beads to build — all ${waveStatus.totalChildren} children are closed.`,
+            },
+            { status: 400 },
+          );
+        }
+
+        await removeLabelsFromEpic(
+          epicId,
+          [
+            "pipeline:research-complete",
+            "pipeline:test-spec",
+            "plan:pending",
+            "plan:approved",
+          ],
+          fleetCorePath,
+        );
+        await addLabelsToEpic(
+          epicId,
+          ["pipeline:development", "agent:running"],
+          fleetCorePath,
+        );
+        invalidateCache();
+
+        // Wave routing: dispatch to the same per-wave launch logic as
+        // start-wave — same prompt shape, same pipelineStage, same wave
+        // scoping through launchAgent (z9h.2).
+        if (allHaveWaves) {
+          const wave = waveStatus.currentWave;
+          const waveTestScenariosInfo = testScenariosPath
+            ? ` Test scenarios: ${testScenariosPath}.`
+            : "";
+          const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+
+          const session = await launchAgent({
+            repoPath: repoPath,
+            repoName: repoName,
+            prompt: startWavePrompt,
+            model: "opus",
+            maxTurns: 500,
+            allowedTools: isVenture
+              ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
+              : "Bash,Read,Write,Edit,Glob,Grep,Task",
+            epicId: epicId,
+            epicLabels: labels,
+            pipelineStage: "development",
+            agentName: "builder",
+            waveNumber: wave,
+          });
+
+          return NextResponse.json({
+            success: true,
+            action,
+            epicId,
+            dispatched: "start-wave",
+            waveNumber: wave,
+            session,
+          });
+        }
+
+        // Legacy fallback: epic has no wave labels on any child (pre-z9h
+        // epics). Single builder session works all beads in the plan.
+        const testScenariosInfo = testScenariosPath
+          ? ` Test scenarios: ${testScenariosPath}.`
+          : "";
         const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}.${testScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting.`;
 
         const session = await launchAgent({
@@ -240,7 +338,13 @@ export async function POST(request: NextRequest) {
           agentName: "builder",
         });
 
-        return NextResponse.json({ success: true, action, epicId, session });
+        return NextResponse.json({
+          success: true,
+          action,
+          epicId,
+          dispatched: "legacy",
+          session,
+        });
       }
 
       // -------------------------------------------------------------------

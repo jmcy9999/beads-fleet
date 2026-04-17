@@ -38,10 +38,26 @@ const mockLaunchAgent = jest.fn().mockResolvedValue({
   logFile: "/tmp/test.log",
 });
 const mockStopAgent = jest.fn().mockResolvedValue({ stopped: true, pid: 12345 });
+// factory-core-z9h.4: send-for-development queries wave labels to decide
+// between wave-routing and legacy single-session. Default mock reports
+// "no children / no wave labels" — exercises the legacy branch unless a
+// test overrides via mockResolvedValueOnce.
+const mockGetWaveStatus = jest.fn().mockResolvedValue({
+  hasWaves: false,
+  waves: new Map(),
+  currentWave: 0,
+  totalWaves: 0,
+  currentWaveComplete: false,
+  allWavesComplete: false,
+  hasCheckpointRequired: false,
+  totalChildren: 0,
+  childrenWithWaveLabels: 0,
+});
 
 jest.mock("@/lib/agent-launcher", () => ({
   launchAgent: (...args: unknown[]) => mockLaunchAgent(...args),
   stopAgent: () => mockStopAgent(),
+  getWaveStatus: (...args: unknown[]) => mockGetWaveStatus(...args),
 }));
 
 // Mock repo-config module
@@ -225,6 +241,180 @@ describe("POST /api/fleet/action", () => {
           pipelineStage: "development",
         }),
       );
+    });
+
+    // -----------------------------------------------------------------------
+    // factory-core-z9h.4 — wave-routing from send-for-development
+    // -----------------------------------------------------------------------
+
+    it("z9h.4: routes to start-wave with lowest open wave when all children have wave labels", async () => {
+      mockGetWaveStatus.mockResolvedValueOnce({
+        hasWaves: true,
+        waves: new Map([[1, { total: 2, closed: 0 }], [2, { total: 3, closed: 0 }]]),
+        currentWave: 1,
+        totalWaves: 2,
+        currentWaveComplete: false,
+        allWavesComplete: false,
+        hasCheckpointRequired: false,
+        totalChildren: 5,
+        childrenWithWaveLabels: 5,
+      });
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "send-for-development",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("start-wave");
+      expect(data.waveNumber).toBe(1);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pipelineStage: "development",
+          agentName: "builder",
+          waveNumber: 1,
+        }),
+      );
+      const call = mockLaunchAgent.mock.calls.at(-1)![0];
+      expect(call.prompt).toContain("Wave 1");
+      expect(call.prompt).toContain("wave:1");
+      expect(call.prompt).toContain("Do not advance");
+    });
+
+    it("z9h.4: dispatches to wave=2 when wave 1 is already fully closed (retry scenario)", async () => {
+      mockGetWaveStatus.mockResolvedValueOnce({
+        hasWaves: true,
+        waves: new Map([[1, { total: 2, closed: 2 }], [2, { total: 3, closed: 0 }]]),
+        currentWave: 2,
+        totalWaves: 2,
+        currentWaveComplete: false,
+        allWavesComplete: false,
+        hasCheckpointRequired: false,
+        totalChildren: 5,
+        childrenWithWaveLabels: 5,
+      });
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-development",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("start-wave");
+      expect(data.waveNumber).toBe(2);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ waveNumber: 2 }),
+      );
+    });
+
+    it("z9h.4: falls back to legacy single-session when no children have wave labels", async () => {
+      // Default mock already returns hasWaves=false / totalChildren=0 — that
+      // path preserves pre-z9h behaviour for epics planned before wave
+      // assignment existed.
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-development",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("legacy");
+
+      const call = mockLaunchAgent.mock.calls.at(-1)![0];
+      expect(call.pipelineStage).toBe("development");
+      expect(call.waveNumber).toBeUndefined();
+      // Legacy prompt says "Build epic X" (all beads), not "Build Wave N"
+      expect(call.prompt).toContain("Build epic");
+      expect(call.prompt).not.toContain("Build Wave");
+    });
+
+    it("z9h.4: also falls back to legacy when there are children but none carry wave labels", async () => {
+      mockGetWaveStatus.mockResolvedValueOnce({
+        hasWaves: false,
+        waves: new Map(),
+        currentWave: 0,
+        totalWaves: 0,
+        currentWaveComplete: false,
+        allWavesComplete: false,
+        hasCheckpointRequired: false,
+        totalChildren: 4,
+        childrenWithWaveLabels: 0,
+      });
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-development",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.dispatched).toBe("legacy");
+    });
+
+    it("z9h.4: returns 400 when wave labelling is inconsistent (some children have labels, some don't)", async () => {
+      mockGetWaveStatus.mockResolvedValueOnce({
+        hasWaves: true,
+        waves: new Map([[1, { total: 2, closed: 0 }]]),
+        currentWave: 1,
+        totalWaves: 1,
+        currentWaveComplete: false,
+        allWavesComplete: false,
+        hasCheckpointRequired: false,
+        totalChildren: 5,
+        childrenWithWaveLabels: 2,
+      });
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-development",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("Inconsistent wave labelling");
+      // Epic state must NOT have been mutated — no labels changed, no agent launched.
+      expect(mockAddLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("z9h.4: returns 400 when every child is already closed (epic has no open beads)", async () => {
+      mockGetWaveStatus.mockResolvedValueOnce({
+        hasWaves: true,
+        waves: new Map([[1, { total: 2, closed: 2 }], [2, { total: 3, closed: 3 }]]),
+        currentWave: 2,
+        totalWaves: 2,
+        currentWaveComplete: true,
+        allWavesComplete: true,
+        hasCheckpointRequired: false,
+        totalChildren: 5,
+        childrenWithWaveLabels: 5,
+      });
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-development",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain("no open beads");
+      // No state mutation on the reject path.
+      expect(mockAddLabels).not.toHaveBeenCalled();
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
     });
   });
 
