@@ -415,14 +415,16 @@ function startPollLoop(
     const isDone = await detectAgentDone(session);
     if (!isDone) return;
 
-    // Agent finished — run the full flush + exit sequence (blocks ~25s)
+    // Guard against concurrent polls both detecting end_turn
+    if (agent.flushSentAt) return;
     agent.flushSentAt = Date.now();
+
+    // Run the full flush + exit sequence (blocks ~25s)
     try {
       await runFlushAndExit(tmuxSession, session, logFile);
       agent.exitSentAt = Date.now();
     } catch (err) {
       console.error("[flush-exit] Sequence failed:", err);
-      agent.flushSentAt = undefined;
     }
   }, 5000);
 }
