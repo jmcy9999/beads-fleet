@@ -15,6 +15,7 @@ import {
   markWaveReviewFired,
   clearWaveReviewGuard,
   isAgentActive,
+  hasActiveAgentForEpic,
   type WaveBead,
 } from "@/lib/agent-launcher";
 
@@ -337,5 +338,35 @@ describe("isAgentActive", () => {
 
   it("returns false for a (repo, beadId) pair with no tracked agent", () => {
     expect(isAgentActive("/tmp", "factory-core-z9h.99")).toBe(false);
+  });
+});
+
+// ===========================================================================
+// factory-core-z9h.11 — agent:running label survives parallel-builder exits
+// ===========================================================================
+
+describe("hasActiveAgentForEpic", () => {
+  // activeAgents is a module-level Map. No agents are launched in unit tests,
+  // so the map is always empty here — which is exactly the predicate's
+  // baseline: no tracked agents ⇒ the epic has nothing running ⇒ safe to
+  // clear `agent:running`.
+  it("returns false when no agents are tracked (empty map ⇒ safe to clear agent:running)", () => {
+    expect(hasActiveAgentForEpic("factory-core-z9h")).toBe(false);
+  });
+
+  it("returns false for any epic id when the tracking map is empty", () => {
+    expect(hasActiveAgentForEpic("unknown-epic")).toBe(false);
+    expect(hasActiveAgentForEpic("factory-core-z9h")).toBe(false);
+    expect(hasActiveAgentForEpic("")).toBe(false);
+  });
+
+  it("is the predicate that gates agent:running removal on exit — empty map ⇒ no other builders alive ⇒ clear label (regression #3 inverse)", () => {
+    // This test documents the intent: handleAgentExit removes the current
+    // session from activeAgents BEFORE calling this predicate. When this
+    // returns false, the exiting agent was the LAST one for the epic, so
+    // clearing `agent:running` is correct. When it returns true (not
+    // exercised in unit tests because launchAgent is not callable without
+    // tmux), N-1 siblings are still alive and the label must be preserved.
+    expect(hasActiveAgentForEpic("factory-core-z9h")).toBe(false);
   });
 });

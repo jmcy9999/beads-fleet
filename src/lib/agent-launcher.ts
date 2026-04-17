@@ -164,6 +164,28 @@ export function isAgentActive(repoPath: string, beadId?: string): boolean {
   return activeAgents.has(key);
 }
 
+/**
+ * Returns true if at least one tracked agent still belongs to `epicId`.
+ *
+ * Under parallel per-bead builders (factory-core-z9h.3) multiple active
+ * agents share a single epicId. This helper is the guard used by
+ * {@link handleAgentExit} before clearing the `agent:running` label so the
+ * label survives until the LAST builder for the epic exits
+ * (factory-core-z9h.11).
+ *
+ * Note: startPollLoop removes the exiting agent from `activeAgents` BEFORE
+ * handleAgentExit runs, so this check does not need to exclude the current
+ * session.
+ *
+ * Exported for tests.
+ */
+export function hasActiveAgentForEpic(epicId: string): boolean {
+  for (const agent of activeAgents.values()) {
+    if (agent.session.epicId === epicId) return true;
+  }
+  return false;
+}
+
 const LOG_DIR = path.join(os.tmpdir(), "beads-web-agent-logs");
 const SESSIONS_DIR = path.join(os.tmpdir(), "beads-web-agent-sessions");
 const STATUS_DIR = path.join(os.tmpdir(), "beads-web-agent-status");
@@ -1454,8 +1476,19 @@ async function handleAgentExit(
     try {
       const { addLabelsToEpic, removeLabelsFromEpic } = await import("./pipeline-labels");
 
-      // Always remove agent:running
-      await removeLabelsFromEpic(session.epicId, ["agent:running"]);
+      // factory-core-z9h.11: Under parallel per-bead builders (z9h.3) an epic
+      // can have N>1 active agents sharing one epicId. Removing `agent:running`
+      // unconditionally on every exit stripped the label as soon as the FIRST
+      // builder exited — even though N-1 others were still live — and the
+      // dashboard's isAgentRunning(epic) then reported the epic as idle.
+      //
+      // Only clear `agent:running` once the exiting agent is the last one for
+      // the epic. startPollLoop removes the current session from activeAgents
+      // BEFORE handleAgentExit runs (see lines 505/522/549), so the lookup
+      // does not need to exclude self.
+      if (!hasActiveAgentForEpic(session.epicId)) {
+        await removeLabelsFromEpic(session.epicId, ["agent:running"]);
+      }
 
       if (exitCode === 0) {
         // Check for special exit labels (e.g., research -> pipeline:research-complete,
