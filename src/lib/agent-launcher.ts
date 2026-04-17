@@ -422,6 +422,11 @@ function startPollLoop(
     try {
       await runFlushAndExit(tmuxSession, session, logFile);
       agent.exitSentAt = Date.now();
+
+      // Clean up — session is dead after /exit
+      activeAgents.delete(repoKey);
+      await clearPersistedSession(repoKey);
+      await handleAgentExit(session, 0, agent.langfuseSpan);
     } catch (err) {
       console.error("[flush-exit] Sequence failed:", err);
     }
