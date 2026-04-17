@@ -1703,8 +1703,14 @@ async function ensureLogDir(): Promise<void> {
  * see the still-running agent A and refuse to launch. When a beadId is
  * supplied we suffix with `::<beadId>`; otherwise we fall back to the legacy
  * single-agent-per-repo key so pre-z9h callers behave exactly as before.
+ *
+ * Exported for factory-core-ppx.10 regression coverage — the key format is
+ * the invariant that guarantees two concurrent epics on the same repo can
+ * coexist under distinct keys. Exporting a pure function for test access
+ * follows the z9h.12 `sessionFileFor` precedent (same motivation: prevent
+ * future regression of the composite-key invariant).
  */
-function activeAgentKey(repoPath: string, beadId?: string): string {
+export function activeAgentKey(repoPath: string, beadId?: string): string {
   const real = realpathSync(repoPath);
   return beadId ? `${real}::${beadId}` : real;
 }
