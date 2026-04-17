@@ -1261,18 +1261,40 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
           if (!shouldFireWaveReview(session.epicId!, waveStatus.currentWave)) {
             return true; // Already handled by an earlier exit.
           }
+          // factory-core-z9h.13: mark BEFORE the side effect to preserve
+          // concurrency idempotency (z9h.6 race), then roll the guard back
+          // if the dispatch itself fails. Without the rollback, a transient
+          // fetch failure (dashboard down, network blip, 500 from the
+          // route) permanently blocks review-wave for this (epic, wave)
+          // pair for the lifetime of the process — the guard stays set
+          // but nothing was actually dispatched. Regression patterns #13
+          // (Silent Exception Swallowing) and adjacent #11 (guard state
+          // mutated before the operation it guards succeeds).
           markWaveReviewFired(session.epicId!, waveStatus.currentWave);
-          await fetch("http://localhost:3000/api/fleet/action", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "review-wave",
-              epicId: session.epicId,
-              epicTitle: session.repoName,
-              currentLabels: session.epicLabels,
-              waveNumber: waveStatus.currentWave,
-            }),
-          });
+          try {
+            const res = await fetch("http://localhost:3000/api/fleet/action", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "review-wave",
+                epicId: session.epicId,
+                epicTitle: session.repoName,
+                currentLabels: session.epicLabels,
+                waveNumber: waveStatus.currentWave,
+              }),
+            });
+            // fetch only throws on network errors, not on HTTP error
+            // statuses. Treat !res.ok as a dispatch failure so the guard
+            // also rolls back on 4xx/5xx responses from the route.
+            if (!res.ok) {
+              throw new Error(
+                `review-wave dispatch failed: HTTP ${res.status}`,
+              );
+            }
+          } catch (err) {
+            clearWaveReviewGuard(session.epicId!, waveStatus.currentWave);
+            throw err; // Surface to outer catch — logs and returns false.
+          }
           return true; // Chain handled (development -> wave review)
         }
 

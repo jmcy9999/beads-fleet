@@ -327,6 +327,67 @@ describe("shouldFireWaveReview / markWaveReviewFired / clearWaveReviewGuard", ()
 
     expect(fireCount).toBe(1);
   });
+
+  // =========================================================================
+  // factory-core-z9h.13 — rollback on dispatch failure
+  // =========================================================================
+  //
+  // The review-wave guard used to mark BEFORE the fetch that dispatches
+  // review-wave. If the fetch failed (dashboard down, network blip, 500),
+  // the guard stayed set — no future exit on the same (epic, wave) could
+  // re-dispatch within this process, because clearWaveReviewGuard only
+  // runs when review-wave itself closes successfully.
+  //
+  // Fix: wrap the dispatch so a failed fetch (network error OR !res.ok)
+  // clears the guard before surfacing the error. The caller's outer catch
+  // still logs and returns false; the guard is free for the next exit to
+  // retry. Regression patterns #13 Silent Exception Swallowing and #11
+  // adjacent (guard state mutated before guarded operation succeeds).
+
+  it("z9h.13 rollback: guard cleared after dispatch failure permits retry", () => {
+    const epic = nextEpic();
+
+    // First exit: check + mark, then "fetch" fails → rollback clears guard.
+    expect(shouldFireWaveReview(epic, 1)).toBe(true);
+    markWaveReviewFired(epic, 1);
+    try {
+      throw new Error("simulated fetch failure: HTTP 500");
+    } catch {
+      clearWaveReviewGuard(epic, 1);
+    }
+
+    // Second exit on the same (epic, wave): retry must be allowed.
+    expect(shouldFireWaveReview(epic, 1)).toBe(true);
+  });
+
+  it("z9h.13 rollback: clears only the failed wave, not other waves for the epic", () => {
+    const epic = nextEpic();
+
+    // Wave 1 dispatched successfully earlier — guard remains set.
+    markWaveReviewFired(epic, 1);
+
+    // Wave 2 dispatch fails → rollback clears wave 2 only.
+    markWaveReviewFired(epic, 2);
+    clearWaveReviewGuard(epic, 2);
+
+    expect(shouldFireWaveReview(epic, 1)).toBe(false); // still fired
+    expect(shouldFireWaveReview(epic, 2)).toBe(true); // rolled back
+  });
+
+  it("z9h.13 rollback: clears only the failed epic, not other epics on the same wave", () => {
+    const epicA = nextEpic();
+    const epicB = nextEpic();
+
+    // Epic A dispatched successfully — guard remains set.
+    markWaveReviewFired(epicA, 1);
+
+    // Epic B dispatch fails → rollback clears B only.
+    markWaveReviewFired(epicB, 1);
+    clearWaveReviewGuard(epicB, 1);
+
+    expect(shouldFireWaveReview(epicA, 1)).toBe(false); // still fired
+    expect(shouldFireWaveReview(epicB, 1)).toBe(true); // rolled back
+  });
 });
 
 // ===========================================================================
