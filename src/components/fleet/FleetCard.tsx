@@ -806,7 +806,7 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
                       className={BTN_GREEN}
                     >
                       {isPendingThis && <Spinner />}
-                      {actionLabel("Approve & Build")}
+                      {actionLabel("Approve & Test")}
                     </button>
                     <button
                       onClick={(e) => handleFeedbackAction(e, "revise-plan")}

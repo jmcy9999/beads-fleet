@@ -662,11 +662,13 @@ export async function POST(request: NextRequest) {
       // APPROVE & BUILD: Approve plan + immediately start development
       // -------------------------------------------------------------------
       case "approve-and-build": {
+        // Approve the plan and route to test-spec (not development)
+        // Test-spec writes test scenarios before the builder starts
         await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending"], fleetCorePath);
-        await addLabelsToEpic(epicId, ["plan:approved", "pipeline:development", "agent:running"], fleetCorePath);
+        await addLabelsToEpic(epicId, ["plan:approved", "pipeline:test-spec", "agent:running"], fleetCorePath);
         invalidateCache();
 
-        const { repoPath, repoName, researchPath, planPath } = resolveRepoPath(
+        const { repoPath: aabRepoPath, repoName: aabRepoName, researchPath: aabResearchPath, specPath: aabSpecPath, architecturePath: aabArchPath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -674,47 +676,21 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        // Read feature approval state if it exists, to scope the build
-        let featureScopeNote = "";
-        try {
-          const approvalPath = path.join(repoPath, ".beads", "plans", `${epicId}.approval.json`);
-          const raw = await fs.readFile(approvalPath, "utf-8");
-          const approval = JSON.parse(raw);
-          const approved = (approval.features ?? []).filter((f: { status: string }) => f.status === "approved");
-          const rejected = (approval.features ?? []).filter((f: { status: string }) => f.status === "rejected");
-          const deferred = (approval.features ?? []).filter((f: { status: string }) => f.status === "deferred");
-          if (approved.length > 0 || rejected.length > 0) {
-            const parts: string[] = [];
-            if (approved.length > 0) {
-              parts.push(`APPROVED features (build these): ${approved.map((f: { name: string }) => f.name).join(", ")}`);
-            }
-            if (rejected.length > 0) {
-              parts.push(`REJECTED features (do NOT build): ${rejected.map((f: { name: string }) => f.name).join(", ")}`);
-            }
-            if (deferred.length > 0) {
-              parts.push(`DEFERRED features (skip for now): ${deferred.map((f: { name: string }) => f.name).join(", ")}`);
-            }
-            featureScopeNote = ` Feature scope: ${parts.join(". ")}.`;
-          }
-        } catch {
-          // No approval file — build everything in the plan
-        }
-
-        const approveDevPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}.${featureScopeNote}`;
+        const aabSpecInfo = aabSpecPath ? ` Functional spec: ${aabSpecPath}.` : "";
+        const aabArchInfo = aabArchPath ? ` Architecture: ${aabArchPath}.` : "";
+        const aabPrompt = `Write test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}.${aabSpecInfo}${aabArchInfo} Research report: ${aabResearchPath}. Product repo: ${aabRepoPath}. Fleet-core: ${fleetCorePath}.`;
 
         const session = await launchAgent({
-          repoPath: repoPath,
-          repoName: repoName,
-          prompt: approveDevPrompt,
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
+          prompt: aabPrompt,
           model: "opus",
-          maxTurns: 500,
-          allowedTools: isVenture
-            ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
-            : "Bash,Read,Write,Edit,Glob,Grep,Task",
+          maxTurns: 200,
+          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
           epicId: epicId,
           epicLabels: labels,
-          pipelineStage: "development",
-          agentName: "builder",
+          pipelineStage: "test-spec",
+          agentName: "test-spec",
         });
 
         return NextResponse.json({ success: true, action, epicId, session });
