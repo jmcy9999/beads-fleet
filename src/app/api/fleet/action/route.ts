@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   addLabelsToEpic,
   removeLabelsFromEpic,
+  removeLabelsFromEpicStrict,
   removeAllPipelineLabels,
   closeEpic,
   updateEpicStatus,
@@ -1119,7 +1120,10 @@ export async function POST(request: NextRequest) {
             { status: 400 },
           );
         }
-        await removeLabelsFromEpic(epicId, [targetLabel], fleetCorePath);
+        // Strict: bd CLI failures propagate so the UI shows an error toast
+        // instead of lying "approve completed" while the label remains.
+        // (factory-core-509.9)
+        await removeLabelsFromEpicStrict(epicId, [targetLabel], fleetCorePath);
         invalidateCache();
         return NextResponse.json({ success: true, action, epicId, targetLabel });
       }
@@ -1142,7 +1146,14 @@ export async function POST(request: NextRequest) {
           );
         }
         if (hasLabel) {
-          await removeLabelsFromEpic(epicId, [targetLabel as string], fleetCorePath);
+          // Strict: bd CLI failures propagate so the UI shows an error toast
+          // instead of lying "dismiss completed" while the label remains.
+          // (factory-core-509.9)
+          await removeLabelsFromEpicStrict(
+            epicId,
+            [targetLabel as string],
+            fleetCorePath,
+          );
           invalidateCache();
           return NextResponse.json({ success: true, action, epicId, targetLabel });
         }

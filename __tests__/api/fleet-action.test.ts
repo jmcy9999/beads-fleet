@@ -9,6 +9,7 @@
 // Mock pipeline-labels module
 const mockAddLabels = jest.fn().mockResolvedValue(undefined);
 const mockRemoveLabels = jest.fn().mockResolvedValue(undefined);
+const mockRemoveLabelsStrict = jest.fn().mockResolvedValue(undefined);
 const mockRemoveAllPipeline = jest.fn().mockResolvedValue(undefined);
 const mockCloseEpic = jest.fn().mockResolvedValue(undefined);
 const mockUpdateStatus = jest.fn().mockResolvedValue(undefined);
@@ -18,6 +19,7 @@ const mockDismissHumanItem = jest.fn().mockResolvedValue(undefined);
 jest.mock("@/lib/pipeline-labels", () => ({
   addLabelsToEpic: (...args: unknown[]) => mockAddLabels(...args),
   removeLabelsFromEpic: (...args: unknown[]) => mockRemoveLabels(...args),
+  removeLabelsFromEpicStrict: (...args: unknown[]) => mockRemoveLabelsStrict(...args),
   removeAllPipelineLabels: (...args: unknown[]) => mockRemoveAllPipeline(...args),
   closeEpic: (...args: unknown[]) => mockCloseEpic(...args),
   updateEpicStatus: (...args: unknown[]) => mockUpdateStatus(...args),
@@ -1487,7 +1489,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("human-approve", () => {
-    it("removes the target label from the epic", async () => {
+    it("removes the target label from the epic (strict variant, factory-core-509.9)", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "LensCycle: Contact lens tracker",
@@ -1498,11 +1500,31 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
+      // Uses the strict variant so bd failures surface as 500 + error toast
+      // instead of lying "approve completed" while the label remains.
+      expect(mockRemoveLabelsStrict).toHaveBeenCalledWith(
         "epic-1",
         ["checkpoint:human-verify"],
         expect.any(String),
       );
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+    });
+
+    it("propagates bd CLI errors as 500 with no silent swallow (factory-core-509.9)", async () => {
+      mockRemoveLabelsStrict.mockRejectedValueOnce(
+        new Error('Failed to remove label "checkpoint:human-verify" from epic-1: bd: connection refused'),
+      );
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "App",
+        action: "human-approve",
+        targetLabel: "checkpoint:human-verify",
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data.error).toContain("human-approve");
+      expect(data.error).toContain("connection refused");
     });
 
     it("does NOT launch any agent", async () => {
@@ -1557,6 +1579,7 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
       expect(data.error).toContain("targetLabel");
       expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabelsStrict).not.toHaveBeenCalled();
     });
 
     it("returns 400 when targetLabel is not a string", async () => {
@@ -1569,6 +1592,7 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(400);
       expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabelsStrict).not.toHaveBeenCalled();
     });
   });
 
@@ -1577,7 +1601,7 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("human-dismiss", () => {
-    it("removes the target label when targetLabel is provided", async () => {
+    it("removes the target label when targetLabel is provided (strict variant, factory-core-509.9)", async () => {
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "App",
@@ -1587,11 +1611,13 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
+      // Uses the strict variant so bd failures surface as 500 + error toast.
+      expect(mockRemoveLabelsStrict).toHaveBeenCalledWith(
         "epic-1",
         ["qa:needs-review"],
         expect.any(String),
       );
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
       expect(mockDismissHumanItem).not.toHaveBeenCalled();
     });
 
@@ -1611,6 +1637,7 @@ describe("POST /api/fleet/action", () => {
         expect.any(String),
       );
       expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabelsStrict).not.toHaveBeenCalled();
     });
 
     it("prefers targetLabel over targetBeadId when both are provided", async () => {
@@ -1623,11 +1650,12 @@ describe("POST /api/fleet/action", () => {
       });
       await POST(req);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
+      expect(mockRemoveLabelsStrict).toHaveBeenCalledWith(
         "epic-1",
         ["checkpoint:decision"],
         expect.any(String),
       );
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
       expect(mockDismissHumanItem).not.toHaveBeenCalled();
     });
 
@@ -1689,6 +1717,7 @@ describe("POST /api/fleet/action", () => {
       expect(data.error).toContain("targetLabel");
       expect(data.error).toContain("targetBeadId");
       expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabelsStrict).not.toHaveBeenCalled();
       expect(mockDismissHumanItem).not.toHaveBeenCalled();
     });
 
@@ -1703,11 +1732,14 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(400);
       expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabelsStrict).not.toHaveBeenCalled();
       expect(mockDismissHumanItem).not.toHaveBeenCalled();
     });
 
-    it("propagates errors from bd CLI as 500 with no silent swallow", async () => {
-      mockRemoveLabels.mockRejectedValueOnce(new Error("bd: connection refused"));
+    it("propagates errors from bd CLI as 500 with no silent swallow (label path, factory-core-509.9)", async () => {
+      mockRemoveLabelsStrict.mockRejectedValueOnce(
+        new Error('Failed to remove label "checkpoint:decision" from epic-1: bd: connection refused'),
+      );
       const req = makeRequest({
         epicId: "epic-1",
         epicTitle: "App",
@@ -1719,6 +1751,22 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
       expect(data.error).toContain("human-dismiss");
       expect(data.error).toContain("connection refused");
+    });
+
+    it("propagates errors from bd CLI as 500 when dismissing a child bead (bead path, factory-core-509.9)", async () => {
+      mockDismissHumanItem.mockRejectedValueOnce(new Error("bd: timeout after 15s"));
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle: Contact lens tracker",
+        action: "human-dismiss",
+        targetBeadId: "epic-1.3",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data.error).toContain("human-dismiss");
+      expect(data.error).toContain("timeout");
     });
   });
 });

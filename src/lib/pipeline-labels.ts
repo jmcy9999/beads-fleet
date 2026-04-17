@@ -97,6 +97,12 @@ export async function addLabelsToEpic(
 
 /**
  * Remove labels from an epic via `bd label remove <issueId> <label>`.
+ *
+ * Lenient variant used by pipeline transitions: swallows non-idempotency
+ * errors (connection failures, timeouts, unknown bd errors) and logs them
+ * so a transient bd hiccup doesn't break a long pipeline chain. Callers
+ * that must surface errors to the user should use
+ * {@link removeLabelsFromEpicStrict} instead. (factory-core-509.9)
  */
 export async function removeLabelsFromEpic(
   issueId: string,
@@ -120,6 +126,51 @@ export async function removeLabelsFromEpic(
       if (!msg.includes("not found") && !msg.includes("does not have")) {
         console.error(`Failed to remove label "${label}" from ${issueId}:`, msg);
       }
+    }
+  }
+}
+
+/**
+ * Remove labels from an epic, propagating bd CLI errors.
+ *
+ * Strict variant for user-initiated actions (human-approve, human-dismiss)
+ * where a silent failure would be a lie: the UI toast would report success
+ * while the indicator stays on the board. Benign idempotency errors
+ * ("not found", "does not have") are still swallowed -- the post-condition
+ * "label is absent" is satisfied whether we removed it or it was never there.
+ *
+ * Any other bd CLI failure (connection refused, timeout, permission denied)
+ * is re-thrown so the HTTP handler returns 500 and the client shows an
+ * error toast.
+ *
+ * Regression reference: regression-patterns.md #13 Silent Exception Swallowing.
+ * Spec AC: docs/research/surface-hook-enforcement-and-human-functional-spec.md
+ * line 90. (factory-core-509.9)
+ */
+export async function removeLabelsFromEpicStrict(
+  issueId: string,
+  labels: string[],
+  epicRepoPath?: string,
+): Promise<void> {
+  if (labels.length === 0) return;
+
+  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
+
+  for (const label of labels) {
+    try {
+      await execFile(BD(), ["label", "remove", issueId, label], {
+        cwd: repoPath,
+        timeout: BD_TIMEOUT,
+        env: { ...process.env, NO_COLOR: "1" },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Idempotency: removing a label that was never there is a no-op success.
+      if (msg.includes("not found") || msg.includes("does not have")) continue;
+      // Everything else is a real failure the caller must handle.
+      throw new Error(
+        `Failed to remove label "${label}" from ${issueId}: ${msg}`,
+      );
     }
   }
 }
