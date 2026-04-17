@@ -1159,7 +1159,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
   session.transcriptFile = path.join(projectDir, `${claudeSessionId}.jsonl`);
 
   // Launch in tmux with --session-id so the transcript file is predictable
-  const tmuxCmd = `cd ${session.repoPath} && unset ANTHROPIC_API_KEY && unset CLAUDECODE && /Users/janemckay/.local/bin/claude ${agentFlag} --session-id ${claudeSessionId} --max-turns ${maxTurns} --model ${model} --dangerously-skip-permissions --allowedTools ${allowedTools}`;
+  const tmuxCmd = `export PATH="/opt/homebrew/bin:$PATH" && cd ${session.repoPath} && unset ANTHROPIC_API_KEY && unset CLAUDECODE && /Users/janemckay/.local/bin/claude ${agentFlag} --session-id ${claudeSessionId} --max-turns ${maxTurns} --model ${model} --dangerously-skip-permissions --allowedTools ${allowedTools}`;
   await execAsync(`/opt/homebrew/bin/tmux new-session -d -s "${tmuxSession}" "${tmuxCmd}"`);
 
   // Wait for Claude Code to initialise, then paste the prompt
