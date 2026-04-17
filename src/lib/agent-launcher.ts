@@ -805,9 +805,9 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         return false;
       }
 
-      // Check if reviewer found P0/P1 issues — scoped to this epic
-      // (factory-core-cur.1.22: was querying ALL repo bugs, not just epic children)
-      let hasP0P1 = false;
+      // Check if reviewer found any open bugs — scoped to this epic
+      // All bugs must be fixed regardless of priority before advancing
+      let hasBugs = false;
       const isInternalBuild = session.epicLabels?.some((l) => l === "ship-type:internal") ?? false;
       const bugFilterArgs = isInternalBuild
         ? ["list", "--status=open", `--parent=${session.epicId}`]
@@ -818,19 +818,18 @@ async function handleChainAction(session: AgentSession, exitCode: number | null)
         10000,
       );
       if (bugResult.success) {
-        // Count lines that are bugs with P0 or P1 priority
-        // (factory-core-cur.1.25: use lineIsBugType() for format-resilient detection)
+        // Count any open bugs regardless of priority
         const bugLines = bugResult.stdout.split("\n").filter(
-          (line) => lineIsBugType(line) && /P[01]/.test(line),
+          (line) => lineIsBugType(line),
         );
-        hasP0P1 = bugLines.length > 0;
+        hasBugs = bugLines.length > 0;
       } else {
         // If we can't query beads, assume bugs may exist (fail-safe)
-        hasP0P1 = true;
+        hasBugs = true;
       }
 
-      if (hasP0P1) {
-        // P0/P1 found — chain back to builder to fix same wave
+      if (hasBugs) {
+        // Open bugs found — chain back to builder to fix same wave
         // Extract wave number from the prompt (e.g., "Review Wave 2 changes for epic...")
         const waveMatch = session.prompt.match(/Wave (\d+)/);
         const reviewedWave = waveMatch ? parseInt(waveMatch[1], 10) : waveStatus.currentWave;
