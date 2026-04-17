@@ -218,7 +218,7 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}.`;
+        const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}. Standing orders and agent instructions are in fleet-core — read them before starting.`;
 
         const session = await launchAgent({
           repoPath: repoPath,
@@ -936,7 +936,7 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+        const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}. Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
 
         const startWaveSession = await launchAgent({
           repoPath: waveRepoPath,
