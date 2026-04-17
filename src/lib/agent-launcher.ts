@@ -196,7 +196,7 @@ export function sessionScopeSuffix(waveNumber?: number, beadId?: string): string
     parts.push(`wave${waveNumber}`);
   }
   if (beadId) {
-    parts.push(beadId.replace(/[^a-zA-Z0-9_.-]/g, "-"));
+    parts.push(beadId.replace(/[^a-zA-Z0-9_-]/g, "-"));
   }
   return parts.length > 0 ? `-${parts.join("-")}` : "";
 }
