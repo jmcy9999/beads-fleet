@@ -1329,12 +1329,12 @@ describe("POST /api/fleet/action", () => {
       );
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["plan:approved", "pipeline:development", "agent:running"],
+        ["plan:approved", "pipeline:test-spec", "agent:running"],
         expect.any(String),
       );
     });
 
-    it("launches development agent with 500 maxTurns", async () => {
+    it("launches test-spec agent with 200 maxTurns", async () => {
       mockReadFile.mockRejectedValue(new Error("File not found"));
 
       const req = makeRequest({
@@ -1347,13 +1347,14 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          pipelineStage: "development",
-          maxTurns: 500,
+          pipelineStage: "test-spec",
+          agentName: "test-spec",
+          maxTurns: 200,
         }),
       );
     });
 
-    it("includes feature approval in prompt when approval file exists", async () => {
+    it("launches test-spec agent (feature approval file is ignored for test-spec)", async () => {
       const approvalData = {
         features: [
           { name: "Feature A", status: "approved" },
@@ -1373,17 +1374,8 @@ describe("POST /api/fleet/action", () => {
 
       expect(mockLaunchAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          prompt: expect.stringContaining("APPROVED features"),
-        }),
-      );
-      expect(mockLaunchAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: expect.stringContaining("REJECTED features"),
-        }),
-      );
-      expect(mockLaunchAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: expect.stringContaining("DEFERRED features"),
+          pipelineStage: "test-spec",
+          agentName: "test-spec",
         }),
       );
     });
