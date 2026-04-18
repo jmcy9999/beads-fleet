@@ -19,6 +19,7 @@ import os from "os";
 import { promisify } from "util";
 import { getBdPath, getBdEnv } from "./bd-path";
 import { buildOtelEnv, buildLangfuseTraceUrl, isLangfuseConfigured } from "./langfuse-env";
+import { withLock, chainLock, LockTimeoutError } from "./locks";
 
 const execAsync = promisify(exec);
 
@@ -185,7 +186,14 @@ export function isAgentActive(repoPath: string, beadId?: string): boolean {
  * Exported for tests.
  */
 export function hasActiveAgentForEpic(epicId: string): boolean {
-  for (const agent of activeAgents.values()) {
+  // factory-core-ppx.6 (Feature 3 NFR — snapshot iteration): capture
+  // Array.from(...) BEFORE iterating. Under concurrent epics an exit
+  // handler in a different async context can mutate `activeAgents`
+  // (delete on exit) while we iterate. ECMAScript Map iteration tolerates
+  // deletion, but the snapshot-iteration rule keeps the read/write
+  // contract explicit and defends against future changes that might add
+  // mid-iteration inserts (which ARE observable).
+  for (const agent of Array.from(activeAgents.values())) {
     if (agent.session.epicId === epicId) return true;
   }
   return false;
@@ -974,6 +982,108 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
 }
 
 // ---------------------------------------------------------------------------
+// factory-core-ppx.6: atomic state read for handleChainAction
+// ---------------------------------------------------------------------------
+
+/**
+ * Immutable snapshot of epic state used by {@link handleChainAction} to make
+ * branching decisions atomically. Captured ONCE inside the chain lock; every
+ * downstream decision (fire review-wave, advance to QA, refire start-wave,
+ * count QA bugs, etc.) reads from this snapshot rather than issuing a fresh
+ * `bd` call mid-way through the handler.
+ *
+ * Architecture (ADR-002 / functional spec Feature 2):
+ *   Two parallel exits must not both read "current wave complete" and both
+ *   dispatch a transition. The `chainLock` serializes the read+decide+execute
+ *   block; the snapshot makes the "decide" half self-consistent so that even
+ *   if one part of the snapshot were slow to read, the branching still
+ *   references a single coherent picture (no TOCTOU — Read/Write Disconnect,
+ *   regression-patterns.md #1).
+ *
+ * `openBugCount === -1` encodes "bd failed — unknown" per the existing
+ * fail-safe pattern (see `execBdSync`, regression-patterns.md #13 Silent
+ * Exception Swallowing). Callers must treat -1 as "assume bugs exist" and
+ * refuse to advance past QA, exactly as the pre-ppx.6 inline code did.
+ */
+export interface EpicStateSnapshot {
+  /** Labels read from `bd show <epicId>` (empty array on bd failure). */
+  labels: string[];
+  /**
+   * Wave completion state. `waveStatus.error` is still meaningful inside the
+   * snapshot — callers MUST check it before advancing, same contract as
+   * z9h.10 (see `getWaveStatus`).
+   */
+  waveStatus: WaveStatus;
+  /**
+   * Count of open bug beads under the epic. `-1` means the bd query failed —
+   * caller must treat this as "unknown, assume bugs exist" (fail-safe).
+   */
+  openBugCount: number;
+  /** `Date.now()` at the moment the snapshot was read. Useful for logs. */
+  capturedAt: number;
+}
+
+/**
+ * Read epic state in one pass for atomic branching in `handleChainAction`.
+ *
+ * Called ONLY inside `withLock(chainLock(epicId), ...)` — the whole point of
+ * the snapshot is that callers do not re-read `bd` mid-handler. The reader
+ * is inlined as a private helper (not extracted to its own module) until a
+ * second caller appears — Rule of Three per the architecture's "Component
+ * Boundaries" section.
+ *
+ * Does NOT throw: bd failures degrade gracefully into a fail-safe snapshot
+ * (empty labels, waveStatus.error set by getWaveStatus, openBugCount=-1).
+ * Callers inspect `waveStatus.error` / `openBugCount` and decide whether to
+ * refuse to advance.
+ *
+ * Exported for unit testing (factory-core-ppx.6 regression coverage).
+ */
+export async function readEpicState(
+  epicId: string,
+  repoPath: string,
+): Promise<EpicStateSnapshot> {
+  // 1) Wave status — internally already queries `bd show` + `bd list` +
+  //    per-child `bd show`, and returns a populated `.error` field on
+  //    failure (z9h.8/z9h.10). Do not second-guess that contract here.
+  const waveStatus = await getWaveStatus(epicId, repoPath);
+
+  // 2) Labels — scope detection for bug filter below AND useful for
+  //    structured logs. Reuses the same `bd show` format the rest of the
+  //    codebase parses (pipeline-labels.ts `getEpicLabels`).
+  const epicResult = execBdSync(["show", epicId], repoPath, 10000);
+  let labels: string[] = [];
+  if (epicResult.success) {
+    const labelsMatch = epicResult.stdout.match(/LABELS:\s*(.+)/);
+    if (labelsMatch) {
+      labels = labelsMatch[1]
+        .split(",")
+        .map((l: string) => l.trim())
+        .filter(Boolean);
+    }
+  }
+
+  // 3) Open bug count — scope by `--parent=` for internal epics, by
+  //    `--label epic:<id>` for product epics (same branching rule the
+  //    pre-ppx.6 inline code used in both the build-review and qa stages).
+  const isInternal = labels.some((l) => l === "ship-type:internal");
+  const bugFilterArgs = isInternal
+    ? ["list", "--status=open", `--parent=${epicId}`]
+    : ["list", "--status=open", "--label", `epic:${epicId}`];
+  const bugResult = execBdSync(bugFilterArgs, repoPath, 10000);
+  const openBugCount = bugResult.success
+    ? bugResult.stdout.split("\n").filter((line) => lineIsBugType(line)).length
+    : -1; // fail-safe sentinel
+
+  return {
+    labels,
+    waveStatus,
+    openBugCount,
+    capturedAt: Date.now(),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // factory-core-z9h.3: per-bead parallel builders
 // ---------------------------------------------------------------------------
 
@@ -1242,14 +1352,89 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
     return false;
   }
 
+  // factory-core-ppx.6: every remaining stage needs an epicId to look up
+  // wave state / bug counts. Without one we cannot safely form a chain lock
+  // key or read a snapshot — bail with a warn so the normal NEXT_STAGE path
+  // applies (no orphaned lock, no silent advance). Mirrors the fail-safe
+  // pattern the rest of the chain handler uses.
+  if (!session.epicId) {
+    console.warn(
+      "[handleChainAction] skipping chain — session has no epicId " +
+        `(stage=${stage ?? "unknown"})`,
+    );
+    return false;
+  }
+  const epicId = session.epicId;
+
+  // -------------------------------------------------------------------------
+  // factory-core-ppx.6: atomic read-decide-execute under `chainLock(epicId)`.
+  //
+  // Before ppx.6, two near-simultaneous exits could both read "current wave
+  // complete" and both dispatch a transition. The `firedWaveReviews` Set
+  // (z9h.6) only protects the review-wave path — send-for-qa and start-wave
+  // still raced.
+  //
+  // Per architecture ADR-002, we use `chainLock(epicId)` (NOT `epicLock`)
+  // because the handler internally calls `addLabelsToEpic` /
+  // `removeLabelsFromEpic`, which acquire `epicLock(epicId)` (ppx.5). Two
+  // distinct keys mean no deadlock.
+  //
+  // The lock also catches `LockTimeoutError` (500ms wait) — returning false
+  // is the safer choice: another exit handler is already serving this epic,
+  // whatever decision we'd make has either been made or is being made. Let
+  // the in-flight handler decide; do not double-fire.
+  // -------------------------------------------------------------------------
+  try {
+    return await withLock(chainLock(epicId), 500, async () => {
+      // Read epic state ONCE. All branching below consults this snapshot;
+      // no fresh bd calls mid-handler. This is the Feature 2 AC: the
+      // wave-status read, the bug-count read, and the transition decision
+      // all reference the same state.
+      const snapshot = await readEpicState(epicId, session.repoPath);
+      return await dispatchChainAction(session, stage, snapshot);
+    });
+  } catch (err) {
+    if (err instanceof LockTimeoutError) {
+      // Another exit handler is holding the chain lock for the same epic.
+      // This is the exact case we're protecting against — both handlers
+      // would race to make the same transition. Returning false here is
+      // safer than retrying: the in-flight handler will make the call.
+      console.warn(
+        `[handleChainAction] chain lock timeout for epic ${epicId} ` +
+          `(${err.timeoutMs}ms) — skipping this exit's chain attempt`,
+      );
+      return false;
+    }
+    // Anything else is a real error. Log + return false to keep the
+    // pipeline label unchanged (regression pattern #13 — never silently
+    // swallow and never silently advance).
+    console.error(`[handleChainAction] epic ${epicId}:`, err);
+    return false;
+  }
+}
+
+/**
+ * Dispatch the stage-specific chain logic using a pre-captured snapshot.
+ *
+ * factory-core-ppx.6: extracted from `handleChainAction` so the lock-
+ * acquisition wrapper stays a single `withLock` call around `readEpicState`
+ * + `dispatchChainAction`. The snapshot is the single source of truth for
+ * wave status, labels, and open bug count — every branch reads from it, not
+ * from fresh bd calls.
+ */
+async function dispatchChainAction(
+  session: AgentSession,
+  stage: string | undefined,
+  snapshot: EpicStateSnapshot,
+): Promise<boolean> {
   // -------------------------------------------------------------------------
   // development -> wave review or QA: check wave status before chaining
   // -------------------------------------------------------------------------
   if (stage === "development") {
     try {
-      // Use session.repoPath: for internal products that's fleet-core,
-      // for other ship types it's the product repo where wave-labeled beads live
-      const waveStatus = await getWaveStatus(session.epicId!, session.repoPath);
+      // factory-core-ppx.6: wave status comes from the locked snapshot, not
+      // a fresh `bd` call. Everything below references the same state.
+      const { waveStatus } = snapshot;
 
       // factory-core-z9h.10: a bd failure means wave state is UNKNOWN.
       // Before this guard, a failed `bd list` returned hasWaves=false and
@@ -1380,35 +1565,21 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
   // -------------------------------------------------------------------------
   if (stage === "build-review") {
     try {
-      const waveStatus = await getWaveStatus(session.epicId!, session.repoPath);
+      // factory-core-ppx.6: wave status + bug count come from the snapshot.
+      // Branching below references snapshot data only — no fresh bd calls
+      // mid-handler (Feature 2 AC: no TOCTOU between read and transition).
+      const { waveStatus, openBugCount } = snapshot;
 
       if (!waveStatus.hasWaves) {
         // No waves — shouldn't happen for wave review, but handle gracefully
         return false;
       }
 
-      // Check if reviewer found any open bugs — scoped to this epic
-      // All bugs must be fixed regardless of priority before advancing
-      let hasBugs = false;
-      const isInternalBuild = session.epicLabels?.some((l) => l === "ship-type:internal") ?? false;
-      const bugFilterArgs = isInternalBuild
-        ? ["list", "--status=open", `--parent=${session.epicId}`]
-        : ["list", "--status=open", "--label", `epic:${session.epicId}`];
-      const bugResult = execBdSync(
-        bugFilterArgs,
-        session.repoPath,
-        10000,
-      );
-      if (bugResult.success) {
-        // Count any open bugs regardless of priority
-        const bugLines = bugResult.stdout.split("\n").filter(
-          (line) => lineIsBugType(line),
-        );
-        hasBugs = bugLines.length > 0;
-      } else {
-        // If we can't query beads, assume bugs may exist (fail-safe)
-        hasBugs = true;
-      }
+      // factory-core-ppx.6: `openBugCount === -1` is the fail-safe sentinel
+      // from readEpicState (bd failure). Treat it the same as "bugs exist"
+      // so the wave is re-run (same contract as the pre-ppx.6 inline code
+      // which set `hasBugs = true` on bd failure). Regression pattern #13.
+      const hasBugs = openBugCount === -1 || openBugCount > 0;
 
       if (hasBugs) {
         // Open bugs found — chain back to builder to fix same wave
@@ -1495,27 +1666,22 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
     // binary via Next.js PATH; '2>/dev/null || echo ""' swallowed the error,
     // returned empty string, hasBugs=false, pipeline advanced. Fix: use
     // execBdSync (getBdPath + getBdEnv) and treat bd failures as fail-safe.
+    //
+    // factory-core-ppx.6: bug count now comes from the snapshot — same
+    // atomic read used by build-review, under the chain lock. No TOCTOU
+    // between the bug-count read and the transition (Feature 2 AC).
     try {
-      // Scope bug check to this epic
-      const isInternalQA = session.epicLabels?.some((l) => l === "ship-type:internal") ?? false;
-      const qaFilterArgs = isInternalQA
-        ? ["list", "--status=open", `--parent=${session.epicId}`]
-        : ["list", "--status=open", "--label", `epic:${session.epicId}`];
-      const childrenResult = execBdSync(
-        qaFilterArgs,
-        session.repoPath,
-        15000,
-      );
+      const { openBugCount } = snapshot;
 
-      // FAIL-SAFE: if bd command failed, stay at QA
-      if (!childrenResult.success) {
+      // FAIL-SAFE: if bd command failed, stay at QA. `openBugCount === -1`
+      // is the readEpicState sentinel for bd failure (preserves the cur.1.24
+      // contract: never advance past QA on an unknown bug count).
+      if (openBugCount === -1) {
         console.error("QA chain: bd list failed — staying at QA (fail-safe)");
         return true;
       }
 
-      // Check for any open bug beads under the epic
-      // (factory-core-cur.1.25: use lineIsBugType() for format-resilient detection)
-      const hasBugs = childrenResult.stdout.split("\n").some((line) => lineIsBugType(line));
+      const hasBugs = openBugCount > 0;
 
       if (hasBugs) {
         // Check round count -- max 20 rounds
@@ -1976,8 +2142,12 @@ export async function getAgentStatus(repoPath?: string): Promise<AgentStatus> {
     };
   }
 
-  // No repoPath: return first running agent (backwards compat)
-  for (const [key, agent] of activeAgents) {
+  // No repoPath: return first running agent (backwards compat).
+  // factory-core-ppx.6 (Feature 3 NFR — snapshot iteration): capture the
+  // Map entries BEFORE iterating. We mutate activeAgents mid-iteration
+  // (delete stale sessions) AND concurrent exit handlers can mutate it
+  // from other async contexts. Iterating a snapshot decouples the two.
+  for (const [key, agent] of Array.from(activeAgents.entries())) {
     if (agent.session.tmuxSessionName) {
       const stillRunning = await tmuxSessionAlive(agent.session.tmuxSessionName);
       if (!stillRunning) {
@@ -2003,7 +2173,11 @@ export async function getFleetAgentStatus(): Promise<FleetStatus> {
 
   const agents: AgentStatus[] = [];
 
-  for (const [key, agent] of activeAgents) {
+  // factory-core-ppx.6 (Feature 3 NFR — snapshot iteration): concurrent
+  // exit handlers routinely mutate activeAgents (delete on exit). Iterating
+  // a snapshot means this read does not race with those writes — each
+  // caller sees a self-consistent picture for the duration of its loop.
+  for (const [key, agent] of Array.from(activeAgents.entries())) {
     if (agent.session.tmuxSessionName) {
       const stillRunning = await tmuxSessionAlive(agent.session.tmuxSessionName);
       if (!stillRunning) {
@@ -2032,7 +2206,10 @@ export async function getFleetAgentStatus(): Promise<FleetStatus> {
 export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; pid?: number; stoppedCount?: number }> {
   if (repoPath === "all") {
     let count = 0;
-    for (const [key, agent] of activeAgents) {
+    // factory-core-ppx.6 (Feature 3 NFR — snapshot iteration): we mutate
+    // activeAgents mid-iteration (delete each entry after killing). Snapshot
+    // the entries so the iteration is independent of the mutation.
+    for (const [key, agent] of Array.from(activeAgents.entries())) {
       await killAgent(agent);
       activeAgents.delete(key);
       await clearPersistedSession(
@@ -2052,8 +2229,10 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
     // session.repoPath resolves to the same realpath — preserving the
     // "stop this repo's work" semantic for single-agent callers while
     // also cleaning up all per-bead agents at once.
+    // factory-core-ppx.6 (Feature 3 NFR): snapshot before iterating so
+    // concurrent exit handlers elsewhere can mutate the live Map safely.
     const matches: Array<{ key: string; agent: ActiveAgent }> = [];
-    for (const [key, agent] of activeAgents) {
+    for (const [key, agent] of Array.from(activeAgents.entries())) {
       try {
         if (realpathSync(agent.session.repoPath) === real) {
           matches.push({ key, agent });
@@ -2083,8 +2262,9 @@ export async function stopAgent(repoPath?: string): Promise<{ stopped: boolean; 
     };
   }
 
-  // No repoPath: stop first running agent (backwards compat)
-  for (const [key, agent] of activeAgents) {
+  // No repoPath: stop first running agent (backwards compat).
+  // factory-core-ppx.6 (Feature 3 NFR — snapshot iteration): see notes above.
+  for (const [key, agent] of Array.from(activeAgents.entries())) {
     const pid = agent.session.pid;
     await killAgent(agent);
 
