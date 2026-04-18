@@ -5,12 +5,27 @@
 // Manages pipeline labels on fleet-core epics via the `bd` CLI.
 // Used by the agent launcher (on exit transitions) and the fleet action API
 // (on button clicks).
+//
+// Concurrency (factory-core-ppx.5):
+// Every label-mutating operation wraps its body in `withLock(epicLock(id), …)`
+// so two concurrent callers targeting the SAME epic are serialised, while
+// callers on DIFFERENT epics proceed in parallel (per architecture ADR-002).
+// Lock timeout: 30 s (functional spec NFR). On `LockTimeoutError`, we emit a
+// single-line `console.warn` and rethrow -- the caller decides whether to
+// retry (architecture risk #1; see `removeLabelsFromEpicStrict` vs
+// `removeLabelsFromEpic` for the existing pattern).
+//
+// No nested locking: these functions must not, while holding `epicLock(id)`,
+// call any other operation that acquires `epicLock(id)` for the same id.
+// Currently none do -- the accompanying concurrency test contains a nesting
+// detector that would trip if this invariant is ever violated.
 // =============================================================================
 
 import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import { findRepoForIssue } from "./repo-config";
 import { getBdPath, getBdEnv } from "./bd-path";
+import { withLock, epicLock, LockTimeoutError } from "./locks";
 
 const execFile = promisify(execFileCb);
 // Lazy-initialize BD to avoid stale references during Next.js hot reload.
@@ -23,6 +38,70 @@ function BD(): string {
 }
 
 const BD_TIMEOUT = 15_000;
+
+// ---------------------------------------------------------------------------
+// Epic-label lock timeout (factory-core-ppx.5)
+// ---------------------------------------------------------------------------
+// Default: 30 s per the functional spec NFR. Stored as a module-level `let`
+// so tests can artificially lower it via `__setEpicLabelLockTimeoutMsForTests`
+// -- the same test-only override convention used by `__lockManagerResetForTests`
+// in `locks/lock-manager.ts`. Production code never mutates this.
+// ---------------------------------------------------------------------------
+const DEFAULT_EPIC_LABEL_LOCK_TIMEOUT_MS = 30_000;
+let epicLabelLockTimeoutMs = DEFAULT_EPIC_LABEL_LOCK_TIMEOUT_MS;
+
+/** @internal Exposed for unit tests only. Overrides the epic-label lock timeout. */
+export function __setEpicLabelLockTimeoutMsForTests(ms: number): void {
+  epicLabelLockTimeoutMs = ms;
+}
+
+/** @internal Exposed for unit tests only. Restores the default 30 s timeout. */
+export function __resetEpicLabelLockTimeoutMsForTests(): void {
+  epicLabelLockTimeoutMs = DEFAULT_EPIC_LABEL_LOCK_TIMEOUT_MS;
+}
+
+/**
+ * Validate an issueId before we do anything with it -- including before we
+ * acquire any lock. A nil/empty/non-string id is a programmer error and
+ * must surface a descriptive message (never an orphaned lock entry in the
+ * LockManager's Map). Factory-core-ppx.5 boundary AC.
+ */
+function assertValidIssueId(
+  fnName: string,
+  issueId: unknown,
+): asserts issueId is string {
+  if (typeof issueId !== "string" || issueId.length === 0) {
+    throw new TypeError(
+      `${fnName}: issueId must be a non-empty string (got ${
+        issueId === null ? "null" : typeof issueId
+      })`,
+    );
+  }
+}
+
+/**
+ * Wrap a label-mutating body in `withLock(epicLock(issueId), …)`.
+ *
+ * On `LockTimeoutError`: log one structured warn line and rethrow. Never
+ * silently swallow (regression-patterns.md #13). Other errors from `body`
+ * propagate unchanged.
+ */
+async function withEpicLabelLock<T>(
+  fnName: string,
+  issueId: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await withLock(epicLock(issueId), epicLabelLockTimeoutMs, body);
+  } catch (err) {
+    if (err instanceof LockTimeoutError) {
+      console.warn(
+        `[pipeline-labels] ${fnName} timed out waiting for ${err.key} after ${err.timeoutMs}ms`,
+      );
+    }
+    throw err;
+  }
+}
 
 /**
  * Resolve the repo path for a given issue. If epicRepoPath is provided,
@@ -68,31 +147,39 @@ export async function getEpicLabels(
 
 /**
  * Add labels to an epic via `bd label add <issueId> <label1> <label2> ...`.
+ *
+ * Serialised per-epic via `epicLock(issueId)` (factory-core-ppx.5). Two
+ * callers on the same epic queue FIFO; callers on different epics do not
+ * contend.
  */
 export async function addLabelsToEpic(
   issueId: string,
   labels: string[],
   epicRepoPath?: string,
 ): Promise<void> {
-  if (labels.length === 0) return;
+  assertValidIssueId("addLabelsToEpic", issueId);
 
-  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
+  return withEpicLabelLock("addLabelsToEpic", issueId, async () => {
+    if (labels.length === 0) return;
 
-  for (const label of labels) {
-    try {
-      await execFile(BD(), ["label", "add", issueId, label], {
-        cwd: repoPath,
-        timeout: BD_TIMEOUT,
-        env: { ...process.env, NO_COLOR: "1" },
-      });
-    } catch (err) {
-      // If the label already exists, bd may error -- that's OK
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("already")) {
-        console.error(`Failed to add label "${label}" to ${issueId}:`, msg);
+    const repoPath = await resolveRepoPath(issueId, epicRepoPath);
+
+    for (const label of labels) {
+      try {
+        await execFile(BD(), ["label", "add", issueId, label], {
+          cwd: repoPath,
+          timeout: BD_TIMEOUT,
+          env: { ...process.env, NO_COLOR: "1" },
+        });
+      } catch (err) {
+        // If the label already exists, bd may error -- that's OK
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("already")) {
+          console.error(`Failed to add label "${label}" to ${issueId}:`, msg);
+        }
       }
     }
-  }
+  });
 }
 
 /**
@@ -103,31 +190,37 @@ export async function addLabelsToEpic(
  * so a transient bd hiccup doesn't break a long pipeline chain. Callers
  * that must surface errors to the user should use
  * {@link removeLabelsFromEpicStrict} instead. (factory-core-509.9)
+ *
+ * Serialised per-epic via `epicLock(issueId)` (factory-core-ppx.5).
  */
 export async function removeLabelsFromEpic(
   issueId: string,
   labels: string[],
   epicRepoPath?: string,
 ): Promise<void> {
-  if (labels.length === 0) return;
+  assertValidIssueId("removeLabelsFromEpic", issueId);
 
-  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
+  return withEpicLabelLock("removeLabelsFromEpic", issueId, async () => {
+    if (labels.length === 0) return;
 
-  for (const label of labels) {
-    try {
-      await execFile(BD(), ["label", "remove", issueId, label], {
-        cwd: repoPath,
-        timeout: BD_TIMEOUT,
-        env: { ...process.env, NO_COLOR: "1" },
-      });
-    } catch (err) {
-      // If the label doesn't exist, bd may error -- that's OK
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("not found") && !msg.includes("does not have")) {
-        console.error(`Failed to remove label "${label}" from ${issueId}:`, msg);
+    const repoPath = await resolveRepoPath(issueId, epicRepoPath);
+
+    for (const label of labels) {
+      try {
+        await execFile(BD(), ["label", "remove", issueId, label], {
+          cwd: repoPath,
+          timeout: BD_TIMEOUT,
+          env: { ...process.env, NO_COLOR: "1" },
+        });
+      } catch (err) {
+        // If the label doesn't exist, bd may error -- that's OK
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("not found") && !msg.includes("does not have")) {
+          console.error(`Failed to remove label "${label}" from ${issueId}:`, msg);
+        }
       }
     }
-  }
+  });
 }
 
 /**
@@ -143,6 +236,10 @@ export async function removeLabelsFromEpic(
  * is re-thrown so the HTTP handler returns 500 and the client shows an
  * error toast.
  *
+ * Serialised per-epic via `epicLock(issueId)` (factory-core-ppx.5) so the
+ * validation read AND the remove happen within the same lock -- no TOCTOU
+ * window (regression-patterns.md Read/Write Disconnect).
+ *
  * Regression reference: regression-patterns.md #13 Silent Exception Swallowing.
  * Spec AC: docs/research/surface-hook-enforcement-and-human-functional-spec.md
  * line 90. (factory-core-509.9)
@@ -152,27 +249,31 @@ export async function removeLabelsFromEpicStrict(
   labels: string[],
   epicRepoPath?: string,
 ): Promise<void> {
-  if (labels.length === 0) return;
+  assertValidIssueId("removeLabelsFromEpicStrict", issueId);
 
-  const repoPath = await resolveRepoPath(issueId, epicRepoPath);
+  return withEpicLabelLock("removeLabelsFromEpicStrict", issueId, async () => {
+    if (labels.length === 0) return;
 
-  for (const label of labels) {
-    try {
-      await execFile(BD(), ["label", "remove", issueId, label], {
-        cwd: repoPath,
-        timeout: BD_TIMEOUT,
-        env: { ...process.env, NO_COLOR: "1" },
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Idempotency: removing a label that was never there is a no-op success.
-      if (msg.includes("not found") || msg.includes("does not have")) continue;
-      // Everything else is a real failure the caller must handle.
-      throw new Error(
-        `Failed to remove label "${label}" from ${issueId}: ${msg}`,
-      );
+    const repoPath = await resolveRepoPath(issueId, epicRepoPath);
+
+    for (const label of labels) {
+      try {
+        await execFile(BD(), ["label", "remove", issueId, label], {
+          cwd: repoPath,
+          timeout: BD_TIMEOUT,
+          env: { ...process.env, NO_COLOR: "1" },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Idempotency: removing a label that was never there is a no-op success.
+        if (msg.includes("not found") || msg.includes("does not have")) continue;
+        // Everything else is a real failure the caller must handle.
+        throw new Error(
+          `Failed to remove label "${label}" from ${issueId}: ${msg}`,
+        );
+      }
     }
-  }
+  });
 }
 
 /**
