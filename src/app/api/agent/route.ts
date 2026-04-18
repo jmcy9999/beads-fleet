@@ -62,7 +62,11 @@ export async function POST(request: NextRequest) {
         const epicRepoPath = typeof stopRepoPath === "string" ? stopRepoPath : undefined;
         try {
           await removeLabelsFromEpic(epicId, ["agent:running"], epicRepoPath);
-          invalidateCache();
+          // Stop action is scoped to a specific epic — only that epic's cached
+          // entries (label lists, wave status, etc.) need eviction. Other
+          // epics' data must stay hot so concurrent agents on sibling epics
+          // keep seeing fresh reads without re-fetching (ADR-004 / ppx.8).
+          invalidateCache({ type: "epic", epicId });
         } catch {
           // Label removal failure should not block the stop
         }
@@ -110,7 +114,9 @@ export async function POST(request: NextRequest) {
         // Add pipeline stage label and agent:running
         const labelsToAdd = [`pipeline:${pipelineStage}`, "agent:running"];
         await addLabelsToEpic(epicId, labelsToAdd, fleetCorePath);
-        invalidateCache();
+        // Launch mutates this epic's labels only — scope invalidation to the
+        // epic so sibling-epic cache entries survive (ADR-004 / ppx.8).
+        invalidateCache({ type: "epic", epicId });
       } catch (err) {
         // Log but don't block agent launch
         console.error("Failed to update epic labels:", err);

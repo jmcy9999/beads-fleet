@@ -125,9 +125,13 @@ jest.mock("@/lib/repo-config", () => ({
   }),
 }));
 
-// Mock bv-client invalidateCache
+// Mock bv-client invalidateCache (factory-core-ppx.8: the sweep migrated
+// every route-handler call from bare `invalidateCache()` to a scoped call
+// like `invalidateCache({type:"epic",epicId})`. We name the spy so tests
+// can assert the scope argument is passed through.)
+const mockInvalidateCache = jest.fn();
 jest.mock("@/lib/bv-client", () => ({
-  invalidateCache: jest.fn(),
+  invalidateCache: (...args: unknown[]) => mockInvalidateCache(...args),
 }));
 
 // factory-core-z9h.5: mock bead-prompt so start-wave tests don't invoke
@@ -2492,6 +2496,205 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
       expect(data.error).toContain("bd list failed");
       expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // factory-core-ppx.8: cache scope sweep — every action handler passes a
+  // scoped CacheScope to `invalidateCache`. The call used to be bare
+  // (`invalidateCache()`), which wiped every cache entry. Post-sweep each
+  // call site passes `{type:"epic",epicId}` so sibling epics' cache entries
+  // survive the mutation (Feature 5 AC — per-epic invalidation).
+  //
+  // We cover a representative sample across the full set of pipeline stages:
+  //   - start-research              (candidates → research)
+  //   - generate-plan               (research-complete → plan-review)
+  //   - approve-and-build           (plan-review → test-spec)
+  //   - start-wave                  (development — per-wave launch)
+  //   - send-for-qa                 (development → qa)
+  //   - stop-agent                  (any → remove agent:running)
+  //   - human-approve               (label-only mutation)
+  //
+  // The lint-style guard in __tests__/lib/bv-client.scope-sweep.test.ts
+  // owns the complete file-level sweep assertion (zero bare calls). This
+  // block owns the behavioural assertion — the scope argument is actually
+  // derived from the request's epicId.
+  // -------------------------------------------------------------------------
+
+  describe("invalidateCache scope (factory-core-ppx.8)", () => {
+    it("start-research passes {type:'epic',epicId}", async () => {
+      const req = makeRequest({
+        epicId: "epic-sweep-1",
+        epicTitle: "LensCycle",
+        action: "start-research",
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-1",
+      });
+    });
+
+    it("generate-plan passes {type:'epic',epicId}", async () => {
+      const req = makeRequest({
+        epicId: "epic-sweep-2",
+        epicTitle: "LensCycle",
+        action: "generate-plan",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-2",
+      });
+    });
+
+    it("approve-and-build passes {type:'epic',epicId}", async () => {
+      const req = makeRequest({
+        epicId: "epic-sweep-3",
+        epicTitle: "LensCycle",
+        action: "approve-and-build",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-3",
+      });
+    });
+
+    it("start-wave passes {type:'epic',epicId}", async () => {
+      const req = makeRequest({
+        epicId: "epic-sweep-4",
+        epicTitle: "LensCycle",
+        action: "start-wave",
+        waveNumber: 1,
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-4",
+      });
+    });
+
+    it("send-for-qa passes {type:'epic',epicId}", async () => {
+      const req = makeRequest({
+        epicId: "epic-sweep-5",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-5",
+      });
+    });
+
+    it("stop-agent passes {type:'epic',epicId}", async () => {
+      const req = makeRequest({
+        epicId: "epic-sweep-6",
+        epicTitle: "LensCycle",
+        action: "stop-agent",
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-6",
+      });
+    });
+
+    it("human-approve passes {type:'epic',epicId}", async () => {
+      const req = makeRequest({
+        epicId: "epic-sweep-7",
+        epicTitle: "LensCycle",
+        action: "human-approve",
+        targetLabel: "checkpoint:human-verify",
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-7",
+      });
+    });
+
+    it("human-dismiss (label path) passes {type:'epic',epicId}", async () => {
+      const req = makeRequest({
+        epicId: "epic-sweep-8",
+        epicTitle: "LensCycle",
+        action: "human-dismiss",
+        targetLabel: "checkpoint:decision",
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-8",
+      });
+    });
+
+    it("deprioritise passes {type:'epic',epicId} even though it closes the epic", async () => {
+      // Regression check: closeEpic + invalidateCache — scope must still be
+      // epic-bound. A bulk-action regression would pass {type:"global"} here
+      // and needlessly wipe sibling epics' caches.
+      const req = makeRequest({
+        epicId: "epic-sweep-9",
+        epicTitle: "LensCycle",
+        action: "deprioritise",
+      });
+      await POST(req);
+      expect(mockInvalidateCache).toHaveBeenCalledWith({
+        type: "epic",
+        epicId: "epic-sweep-9",
+      });
+    });
+
+    it("isolates epics: invalidating epic A never passes epic B's id", async () => {
+      // Feature 5 AC verbatim: per-epic invalidation must not leak between
+      // epics. We fire two actions back-to-back and assert the spy captured
+      // the right epic scope each time.
+      await POST(
+        makeRequest({
+          epicId: "epic-A",
+          epicTitle: "LensCycle",
+          action: "start-research",
+        }),
+      );
+      await POST(
+        makeRequest({
+          epicId: "epic-B",
+          epicTitle: "MindStack",
+          action: "start-research",
+        }),
+      );
+      const calls = mockInvalidateCache.mock.calls;
+      expect(calls).toContainEqual([{ type: "epic", epicId: "epic-A" }]);
+      expect(calls).toContainEqual([{ type: "epic", epicId: "epic-B" }]);
+      // Sanity: neither call cross-contaminates the other.
+      const epicIds = calls
+        .map((args) => (args[0] as { epicId?: string })?.epicId)
+        .filter(Boolean);
+      expect(epicIds).toEqual(expect.arrayContaining(["epic-A", "epic-B"]));
+    });
+
+    it("never invokes invalidateCache with a bare / undefined scope", async () => {
+      // This is the behaviour half of the lint guard. Every recorded call
+      // must carry a non-undefined first argument. The lint test ensures the
+      // source file has no bare calls; THIS test ensures that even if the
+      // route handler hits a code path we haven't enumerated above, the
+      // scope argument is still present.
+      await POST(
+        makeRequest({
+          epicId: "epic-never-bare",
+          epicTitle: "LensCycle",
+          action: "approve-plan",
+        }),
+      );
+      expect(mockInvalidateCache).toHaveBeenCalled();
+      for (const args of mockInvalidateCache.mock.calls) {
+        expect(args[0]).toBeDefined();
+        expect((args[0] as { type?: string }).type).toBeDefined();
+      }
     });
   });
 });

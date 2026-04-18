@@ -198,7 +198,7 @@ export async function POST(request: NextRequest) {
       case "start-research": {
         await addLabelsToEpic(epicId, ["pipeline:research", "agent:running"], fleetCorePath);
         await updateEpicStatus(epicId, "in_progress", fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const researchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}.`;
 
@@ -304,7 +304,7 @@ export async function POST(request: NextRequest) {
           ["pipeline:development", "agent:running"],
           fleetCorePath,
         );
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         // Wave routing: dispatch to the same per-wave launch logic as
         // start-wave — same prompt shape, same pipelineStage, same wave
@@ -379,7 +379,7 @@ export async function POST(request: NextRequest) {
       case "more-research": {
         await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending", "plan:approved"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:research", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const feedbackStr = typeof feedback === "string" && feedback.trim()
           ? ` Jane's feedback: "${feedback}".`
@@ -411,7 +411,7 @@ export async function POST(request: NextRequest) {
       case "run-pm": {
         await removeLabelsFromEpic(epicId, ["pipeline:research-complete"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:product-spec", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: pmRepoPath, repoName: pmRepoName, researchPath: pmResearchPath } = resolveRepoPath(
           shipType,
@@ -447,7 +447,7 @@ export async function POST(request: NextRequest) {
       case "run-architect": {
         await removeLabelsFromEpic(epicId, ["pipeline:product-spec"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:architecture", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: archRepoPath, repoName: archRepoName, researchPath: archResearchPath, specPath: archSpecPath } = resolveRepoPath(
           shipType,
@@ -482,7 +482,7 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "revise-spec": {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: rsRepoPath, repoName: rsRepoName, researchPath: rsResearchPath } = resolveRepoPath(
           shipType,
@@ -520,7 +520,7 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "revise-architecture": {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: raRepoPath, repoName: raRepoName, researchPath: raResearchPath, specPath: raSpecPath } = resolveRepoPath(
           shipType,
@@ -559,7 +559,7 @@ export async function POST(request: NextRequest) {
       case "run-test-spec": {
         await removeLabelsFromEpic(epicId, ["pipeline:plan-review"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:test-spec", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: tsRepoPath, researchPath: tsResearchPath, specPath: tsSpecPath, architecturePath: tsArchPath } = resolveRepoPath(
           shipType,
@@ -593,7 +593,7 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "revise-test-spec": {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: rtsRepoPath, researchPath: rtsResearchPath, specPath: rtsSpecPath, architecturePath: rtsArchPath } = resolveRepoPath(
           shipType,
@@ -638,7 +638,7 @@ export async function POST(request: NextRequest) {
           ? feedback
           : "Abandoned from fleet board";
         await closeEpic(epicId, reason, fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         return NextResponse.json({ success: true, action, epicId });
       }
@@ -648,7 +648,7 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "approve-submission": {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -675,7 +675,7 @@ export async function POST(request: NextRequest) {
         const sendBackLabels = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, sendBackLabels, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath, repoName, researchPath } = resolveRepoPath(
           shipType,
@@ -719,7 +719,7 @@ export async function POST(request: NextRequest) {
         );
         await removeLabelsFromEpic(epicId, submissionLabels, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:kit-management", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -745,7 +745,7 @@ export async function POST(request: NextRequest) {
         // (factory-core-lxc.5: architecture is the new pre-plan stage for non-ventures)
         await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "pipeline:architecture"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:plan-review", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath, repoName, researchPath, specPath, architecturePath } = resolveRepoPath(
           shipType,
@@ -783,7 +783,7 @@ export async function POST(request: NextRequest) {
       case "approve-plan": {
         await removeLabelsFromEpic(epicId, ["plan:pending"], fleetCorePath);
         await addLabelsToEpic(epicId, ["plan:approved"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         return NextResponse.json({ success: true, action, epicId });
       }
@@ -796,7 +796,7 @@ export async function POST(request: NextRequest) {
         // Test-spec writes test scenarios before the builder starts
         await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending"], fleetCorePath);
         await addLabelsToEpic(epicId, ["plan:approved", "pipeline:test-spec", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: aabRepoPath, repoName: aabRepoName, researchPath: aabResearchPath, specPath: aabSpecPath, architecturePath: aabArchPath } = resolveRepoPath(
           shipType,
@@ -832,7 +832,7 @@ export async function POST(request: NextRequest) {
       case "revise-plan": {
         await removeLabelsFromEpic(epicId, ["plan:approved", "plan:pending"], fleetCorePath);
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath, repoName } = resolveRepoPath(
           shipType,
@@ -870,7 +870,7 @@ export async function POST(request: NextRequest) {
       case "skip-to-plan": {
         await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], fleetCorePath);
         await updateEpicStatus(epicId, "in_progress", fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath, repoName } = resolveRepoPath(
           shipType,
@@ -904,7 +904,7 @@ export async function POST(request: NextRequest) {
       case "revise-plan-from-launch": {
         await removeLabelsFromEpic(epicId, ["pipeline:submission-prep"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath, repoName } = resolveRepoPath(
           shipType,
@@ -951,7 +951,7 @@ export async function POST(request: NextRequest) {
         await removeAllPipelineLabels(epicId as string, actualLabels, fleetCorePath);
         await removeLabelsFromEpic(epicId, roundLabels, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:qa", `qa:round-${currentRound}`, "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const qaAppName = extractAppName(epicTitle as string) ?? appName;
         const { repoPath, repoName, researchPath, planPath } = resolveRepoPath(
@@ -1002,7 +1002,7 @@ export async function POST(request: NextRequest) {
         // Called internally when QA finds bugs -- sends back to dev then auto-retests
         await removeLabelsFromEpic(epicId, ["pipeline:qa"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const fixAppName = extractAppName(epicTitle as string) ?? appName;
         const { repoPath, repoName, researchPath, planPath } = resolveRepoPath(
@@ -1035,7 +1035,7 @@ export async function POST(request: NextRequest) {
       case "mark-ready-to-deploy": {
         await removeLabelsFromEpic(epicId, ["pipeline:development"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:deploying"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
         return NextResponse.json({ success: true, action, epicId });
       }
 
@@ -1045,7 +1045,7 @@ export async function POST(request: NextRequest) {
       case "mark-venture-live": {
         await removeLabelsFromEpic(epicId, ["pipeline:deploying"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:live"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
         return NextResponse.json({ success: true, action, epicId });
       }
 
@@ -1056,7 +1056,7 @@ export async function POST(request: NextRequest) {
         await removeLabelsFromEpic(epicId, ["pipeline:live"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:completed"], fleetCorePath);
         await closeEpic(epicId, "Venture complete", fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
         return NextResponse.json({ success: true, action, epicId });
       }
 
@@ -1066,7 +1066,7 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "resume-build": {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: rbRepoPath, repoName: rbRepoName, researchPath: rbResearchPath, planPath: rbPlanPath } = resolveRepoPath(
           shipType,
@@ -1125,7 +1125,7 @@ export async function POST(request: NextRequest) {
         }
 
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const {
           repoPath: waveRepoPath,
@@ -1323,7 +1323,7 @@ export async function POST(request: NextRequest) {
         }
 
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: rRepoPath, repoName: rRepoName, researchPath: rResearchPath, planPath: rPlanPath } = resolveRepoPath(
           shipType,
@@ -1364,7 +1364,7 @@ export async function POST(request: NextRequest) {
       case "send-for-review": {
         await removeLabelsFromEpic(epicId, ["pipeline:development"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:build-review", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: reviewRepoPath, repoName: reviewRepoName, researchPath: reviewResearchPath, planPath: reviewPlanPath } = resolveRepoPath(
           shipType,
@@ -1417,13 +1417,13 @@ export async function POST(request: NextRequest) {
             ? Math.max(...roundLabels.map(l => parseInt(l.split("-")[1]))) : 1;
           await removeLabelsFromEpic(epicId, ["pipeline:qa", ...roundLabels], fleetCorePath);
           await addLabelsToEpic(epicId, ["pipeline:qa", `qa:round-${currentRound + 1}`], fleetCorePath);
-          invalidateCache();
+          invalidateCache({ type: "epic", epicId });
           return NextResponse.json({ success: true, action, epicId, skipped: true, reason: "Non-UI ship type -- no polish needed" });
         }
 
         await removeLabelsFromEpic(epicId, ["pipeline:qa"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:ux-polish", "agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
 
         const { repoPath: polishRepoPath, repoName: polishRepoName, researchPath: polishResearchPath, planPath: polishPlanPath } = resolveRepoPath(
           shipType,
@@ -1462,7 +1462,7 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "stop-agent": {
         await removeLabelsFromEpic(epicId, ["agent:running"], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
         const result = await stopAgent();
         return NextResponse.json({ success: true, action, epicId, ...result });
       }
@@ -1484,7 +1484,7 @@ export async function POST(request: NextRequest) {
         // instead of lying "approve completed" while the label remains.
         // (factory-core-509.9)
         await removeLabelsFromEpicStrict(epicId, [targetLabel], fleetCorePath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
         return NextResponse.json({ success: true, action, epicId, targetLabel });
       }
 
@@ -1514,7 +1514,7 @@ export async function POST(request: NextRequest) {
             [targetLabel as string],
             fleetCorePath,
           );
-          invalidateCache();
+          invalidateCache({ type: "epic", epicId });
           return NextResponse.json({ success: true, action, epicId, targetLabel });
         }
         // hasBeadId case: resolve the repo that owns the bead (child beads
@@ -1527,7 +1527,7 @@ export async function POST(request: NextRequest) {
           fleetCorePath,
         );
         await dismissHumanItem(targetBeadId as string, beadRepoPath);
-        invalidateCache();
+        invalidateCache({ type: "epic", epicId });
         return NextResponse.json({ success: true, action, epicId, targetBeadId });
       }
 
