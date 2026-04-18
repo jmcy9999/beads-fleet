@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from "fs";
 import path from "path";
 import { promisify } from "util";
 
-import { cache } from "./cache";
+import { cache, type CacheScope } from "./cache";
 import { computeInsightsFromIssues } from "./graph-metrics";
 import { readIssuesFromDolt } from "./dolt-reader";
 import {
@@ -648,153 +648,164 @@ const CACHE_KEY_PRIORITY = "bv:priority";
 /**
  * Fetch graph-based insights from `bv --robot-insights`.
  * Falls back to an empty structure if bv is unavailable.
+ *
+ * Cache scope: `{type:"repo",repoPath}` — insights are derived from the
+ * whole repo's issue graph. Invalidation at the repo (or global) level
+ * clears this entry; per-epic invalidation does not, because the
+ * insights surface cross-epic metrics (bottlenecks, hubs, authorities).
+ *
+ * Concurrency: uses `cache.getOrCompute` so that N concurrent callers
+ * share a single subprocess / Dolt read. The compute closure handles
+ * bd errors internally and returns the fallback structure — preserving
+ * the pre-ppx.7 behaviour where a stale / empty structure was cached
+ * and served when bd was temporarily unavailable (functional spec:
+ * "fallback-on-error pattern"). A rejection from `compute` only
+ * propagates if the fallback path itself (`readIssuesFromDolt`) throws,
+ * in which case the in-flight entry is cleared by `getOrCompute` and
+ * the next caller retries (regression pattern #13 — no silent swallow,
+ * no stuck pending).
  */
 export async function getInsights(projectPath?: string): Promise<RobotInsights> {
   const resolvedPath = resolveProjectPath(projectPath);
   const cacheKey = `${CACHE_KEY_INSIGHTS}:${resolvedPath}`;
-  const cached = cache.get<RobotInsights>(cacheKey);
-  if (cached) return cached;
+  const scope: CacheScope = { type: "repo", repoPath: resolvedPath };
 
-  try {
-    const stdout = await execBv(["--robot-insights"], resolvedPath);
-    const raw = JSON.parse(stdout);
-    const data = normalizeInsights(raw, resolvedPath);
-    cache.set(cacheKey, data);
-    return data;
-  } catch (error) {
-    if (isBvNotFoundError(error)) {
+  return cache.getOrCompute<RobotInsights>(cacheKey, scope, async () => {
+    try {
+      const stdout = await execBv(["--robot-insights"], resolvedPath);
+      const raw = JSON.parse(stdout);
+      return normalizeInsights(raw, resolvedPath);
+    } catch (error) {
+      // bv unavailable (ENOENT) or bv errored — fall back to Dolt-derived
+      // insights. Both branches historically cached the fallback; we
+      // preserve that by returning it from the compute (getOrCompute
+      // caches the return value). `isBvNotFoundError` is retained as a
+      // decision point for future telemetry even though both branches
+      // currently do the same thing.
+      void isBvNotFoundError(error);
       const issues = await readIssuesFromDolt(resolvedPath);
-      const fallback = computeInsightsFromIssues(issues, resolvedPath);
-      cache.set(cacheKey, fallback);
-      return fallback;
+      return computeInsightsFromIssues(issues, resolvedPath);
     }
-    const issues = await readIssuesFromDolt(resolvedPath);
-    const fallback = computeInsightsFromIssues(issues, resolvedPath);
-    cache.set(cacheKey, fallback);
-    return fallback;
-  }
+  });
 }
 
 /**
  * Fetch the full plan from `bv --robot-plan`.
  * Falls back to JSONL-based plan if bv is unavailable.
+ *
+ * Cache scope: `{type:"repo",repoPath}` — the plan encompasses every
+ * issue in the repo across all epics.
+ *
+ * Concurrency: `getOrCompute` collapses N concurrent callers onto one
+ * rebuild (functional spec Feature 5 AC: "only one rebuild runs per
+ * invalidation — not N concurrent rebuilds thrashing"). Fallback-on-
+ * error is preserved inside the compute closure so stale / best-effort
+ * plans are still cached when bv fails.
  */
 export async function getPlan(projectPath?: string): Promise<RobotPlan> {
   const resolvedPath = resolveProjectPath(projectPath);
   const cacheKey = `${CACHE_KEY_PLAN}:${resolvedPath}`;
-  const cached = cache.get<RobotPlan>(cacheKey);
-  if (cached) return cached;
+  const scope: CacheScope = { type: "repo", repoPath: resolvedPath };
 
-  try {
-    const stdout = await execBv(["--robot-plan"], resolvedPath);
-    const raw = JSON.parse(stdout);
-    const data = normalizePlan(raw, resolvedPath);
+  return cache.getOrCompute<RobotPlan>(cacheKey, scope, async () => {
+    try {
+      const stdout = await execBv(["--robot-plan"], resolvedPath);
+      const raw = JSON.parse(stdout);
+      const data = normalizePlan(raw, resolvedPath);
 
-    // bv --robot-plan only returns actionable/triage items in tracks.
-    // Supplement all_issues with the full issue list from SQLite so the
-    // dashboard shows every issue, not just the 4-5 triage picks.
-    const fullIssues = await readIssuesFromDolt(resolvedPath);
-    if (fullIssues.length > data.all_issues.length) {
-      const fullPlan = issuesToPlan(fullIssues, resolvedPath);
-      data.all_issues = fullPlan.all_issues;
-      data.summary = {
-        ...fullPlan.summary,
-        highest_impact: data.summary.highest_impact ?? fullPlan.summary.highest_impact,
-      };
-    }
+      // bv --robot-plan only returns actionable/triage items in tracks.
+      // Supplement all_issues with the full issue list from Dolt so the
+      // dashboard shows every issue, not just the 4-5 triage picks.
+      const fullIssues = await readIssuesFromDolt(resolvedPath);
+      if (fullIssues.length > data.all_issues.length) {
+        const fullPlan = issuesToPlan(fullIssues, resolvedPath);
+        data.all_issues = fullPlan.all_issues;
+        data.summary = {
+          ...fullPlan.summary,
+          highest_impact: data.summary.highest_impact ?? fullPlan.summary.highest_impact,
+        };
+      }
 
-    cache.set(cacheKey, data);
-    return data;
-  } catch (error) {
-    if (isBvNotFoundError(error)) {
+      return data;
+    } catch (error) {
+      void isBvNotFoundError(error);
       const issues = await readIssuesFromDolt(resolvedPath);
-      const fallback = issuesToPlan(issues, resolvedPath);
-      cache.set(cacheKey, fallback);
-      return fallback;
+      return issuesToPlan(issues, resolvedPath);
     }
-    const issues = await readIssuesFromDolt(resolvedPath);
-    const fallback = issuesToPlan(issues, resolvedPath);
-    cache.set(cacheKey, fallback);
-    return fallback;
-  }
+  });
 }
 
 /**
  * Fetch priority recommendations from `bv --robot-priority`.
  * Falls back to an empty structure if bv is unavailable.
+ *
+ * Cache scope: `{type:"repo",repoPath}` — priority recommendations
+ * rank issues across the whole repo.
  */
 export async function getPriority(projectPath?: string): Promise<RobotPriority> {
   const resolvedPath = resolveProjectPath(projectPath);
   const cacheKey = `${CACHE_KEY_PRIORITY}:${resolvedPath}`;
-  const cached = cache.get<RobotPriority>(cacheKey);
-  if (cached) return cached;
+  const scope: CacheScope = { type: "repo", repoPath: resolvedPath };
 
-  try {
-    const stdout = await execBv(["--robot-priority"], resolvedPath);
-    const raw = JSON.parse(stdout);
-    const data = normalizePriority(raw, resolvedPath);
-    cache.set(cacheKey, data);
-    return data;
-  } catch (error) {
-    if (isBvNotFoundError(error)) {
-      const fallback = emptyPriority(resolvedPath);
-      cache.set(cacheKey, fallback);
-      return fallback;
+  return cache.getOrCompute<RobotPriority>(cacheKey, scope, async () => {
+    try {
+      const stdout = await execBv(["--robot-priority"], resolvedPath);
+      const raw = JSON.parse(stdout);
+      return normalizePriority(raw, resolvedPath);
+    } catch (error) {
+      void isBvNotFoundError(error);
+      return emptyPriority(resolvedPath);
     }
-    const fallback = emptyPriority(resolvedPath);
-    cache.set(cacheKey, fallback);
-    return fallback;
-  }
+  });
 }
 
 /**
  * Fetch diff since a git reference from `bv --robot-diff --diff-since <since>`.
  * Falls back to a git-based JSONL snapshot diff when bv returns empty results
  * or is unavailable. Returns an empty changes list only as a last resort.
+ *
+ * Cache scope: `{type:"repo",repoPath}` — the diff compares two snapshots
+ * of the whole repo's issues.
  */
 export async function getDiff(since: string, projectPath?: string): Promise<RobotDiff> {
   const resolvedPath = resolveProjectPath(projectPath);
   const cacheKey = `bv:diff:${since}:${resolvedPath}`;
-  const cached = cache.get<RobotDiff>(cacheKey);
-  if (cached) return cached;
+  const scope: CacheScope = { type: "repo", repoPath: resolvedPath };
 
-  try {
-    const stdout = await execBv(["--robot-diff", "--diff-since", since], resolvedPath);
-    const raw = JSON.parse(stdout);
-    const data = normalizeDiff(raw, resolvedPath, since);
+  return cache.getOrCompute<RobotDiff>(cacheKey, scope, async () => {
+    try {
+      const stdout = await execBv(["--robot-diff", "--diff-since", since], resolvedPath);
+      const raw = JSON.parse(stdout);
+      const data = normalizeDiff(raw, resolvedPath, since);
 
-    // If bv returned empty diff, compute from git JSONL comparison
-    if (data.changes.length === 0) {
+      // If bv returned empty diff, compute from git JSONL comparison
+      if (data.changes.length === 0) {
+        const gitDiff = await computeDiffFromGit(resolvedPath, since);
+        if (gitDiff.changes.length > 0) {
+          return gitDiff;
+        }
+      }
+
+      return data;
+    } catch {
+      // bv failed entirely — try git-based JSONL diff before returning empty
       const gitDiff = await computeDiffFromGit(resolvedPath, since);
       if (gitDiff.changes.length > 0) {
-        cache.set(cacheKey, gitDiff);
         return gitDiff;
       }
-    }
 
-    cache.set(cacheKey, data);
-    return data;
-  } catch {
-    // bv failed entirely — try git-based JSONL diff before returning empty
-    const gitDiff = await computeDiffFromGit(resolvedPath, since);
-    if (gitDiff.changes.length > 0) {
-      cache.set(cacheKey, gitDiff);
-      return gitDiff;
+      return {
+        timestamp: new Date().toISOString(),
+        project_path: resolvedPath,
+        since_ref: since,
+        new_count: 0,
+        closed_count: 0,
+        modified_count: 0,
+        reopened_count: 0,
+        changes: [],
+      };
     }
-
-    const fallback: RobotDiff = {
-      timestamp: new Date().toISOString(),
-      project_path: resolvedPath,
-      since_ref: since,
-      new_count: 0,
-      closed_count: 0,
-      modified_count: 0,
-      reopened_count: 0,
-      changes: [],
-    };
-    cache.set(cacheKey, fallback);
-    return fallback;
-  }
+  });
 }
 
 /**
@@ -903,9 +914,49 @@ export async function getIssueById(
 }
 
 /**
- * Invalidate all cached bv responses. Call this after mutations
- * (e.g. issue creation, status change) to force fresh data.
+ * Invalidate cached bv responses. Call after mutations (issue creation,
+ * status change, label update) to force fresh data.
+ *
+ * Backward-compatible contract (factory-core-ppx.7):
+ * - `invalidateCache()` (no args) — equivalent to the pre-ppx.7 behaviour:
+ *   clears every cached entry across every repo and every scope. This is
+ *   what all existing call sites (50+ in route handlers) still do; the
+ *   ppx.8 sweep will migrate those to scope-aware calls.
+ * - `invalidateCache({type:"global"})` — same as no-args (compat alias).
+ *   Semantic note: the underlying cache's `invalidateScope({type:"global"})`
+ *   clears only `global`-tagged entries. Here we upgrade to `invalidateAll`
+ *   because the historical contract of this function is "nuke everything".
+ * - `invalidateCache({type:"epic",epicId})` — clears only entries tagged
+ *   for that epic. Repo-level, other-epic-level, and global entries are
+ *   preserved (functional spec Feature 5 AC: "epic A's invalidation does
+ *   not dump epic B's cache").
+ * - `invalidateCache({type:"repo",repoPath})` — clears only entries tagged
+ *   for that repo. Other repos' caches survive.
+ *
+ * See ADR-004 in beads-web-concurrency-safety-architecture.md.
  */
-export function invalidateCache(): void {
-  cache.invalidateAll();
+export function invalidateCache(scope?: CacheScope): void {
+  // Resolve missing/undefined argument to the default scope — matches the
+  // bead's "Nil/missing" boundary: `invalidateCache(undefined)` behaves
+  // identically to `invalidateCache()` which behaves identically to
+  // `invalidateCache({type:"global"})`.
+  const effectiveScope: CacheScope = scope ?? { type: "global" };
+
+  // Exhaustive branch on the scope type — pattern #7 guard. Adding a new
+  // variant to `CacheScope` surfaces a TypeScript error here until handled.
+  switch (effectiveScope.type) {
+    case "global":
+      // Preserve the pre-ppx.7 contract: global invalidation wipes the
+      // entire cache. This is what every legacy call site expects.
+      cache.invalidateAll();
+      return;
+    case "epic":
+    case "repo":
+      cache.invalidateScope(effectiveScope);
+      return;
+    default: {
+      const _exhaustive: never = effectiveScope;
+      return _exhaustive;
+    }
+  }
 }

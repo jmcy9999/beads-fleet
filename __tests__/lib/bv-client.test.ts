@@ -75,13 +75,24 @@ jest.mock("fs", () => {
   };
 });
 
-// Mock the cache to avoid stale data between tests
+// Mock the cache to avoid stale data between tests.
+//
+// Post-ppx.7, bv-client uses `cache.getOrCompute(key, scope, compute)` on the
+// read paths (single-flight rebuild). The mock simply invokes the `compute`
+// closure each call — the tests here exercise the branching inside compute
+// (bv success vs ENOENT fallback vs other-error fallback), which is
+// orthogonal to caching/coalescence behaviour (covered by cache.scoped.test.ts
+// and the ppx.9 integration test).
 jest.mock("@/lib/cache", () => ({
   cache: {
     get: jest.fn(() => null),
     set: jest.fn(),
     invalidate: jest.fn(),
     invalidateAll: jest.fn(),
+    invalidateScope: jest.fn(),
+    getOrCompute: jest.fn(
+      async (_key: string, _scope: unknown, compute: () => Promise<unknown>) => compute(),
+    ),
   },
 }));
 
