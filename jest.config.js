@@ -13,6 +13,7 @@ const config = {
         "<rootDir>/__tests__/lib/**/*.test.ts",
         "<rootDir>/__tests__/api/**/*.test.ts",
         "<rootDir>/__tests__/components/**/*.test.ts",
+        "<rootDir>/__tests__/integration/**/*.test.ts",
       ],
       transform: {
         "^.+\\.tsx?$": "ts-jest",
