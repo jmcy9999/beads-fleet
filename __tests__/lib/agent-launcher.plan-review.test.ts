@@ -203,7 +203,9 @@ function wirePlanReview(
       if (args[1] === epicId) return { stdout: epicShowFor(opts.labels) };
     }
     if (args[0] === "list" && args.includes("--status=open")) {
-      const isReviewPlanQuery = args.includes("review:plan");
+      // Internal ships use separate --label review:plan; product ships
+      // use the composite --label epic:<id>,review:plan form. Match both.
+      const isReviewPlanQuery = args.some((a) => a.includes("review:plan"));
       if (isReviewPlanQuery && opts.bugFailure) {
         return { error: new Error("bd list: timeout") };
       }
@@ -436,6 +438,72 @@ describe("handleChainAction plan-review branch (factory-core-k7gy.9 — F6/F7/F9
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].body.action).toBe("revise-plan-from-review");
     expect(fetchCalls[0].body.currentRound).toBe(2);
+  });
+
+  // factory-core-k7gy.15: REVISE branch must use session.reviewFilePath
+  // (set by the review-plan action using resolveRepoPath) when present,
+  // rather than deriving from session.repoPath — which is always
+  // fleet-core for reviewer launches and therefore wrong for product
+  // epics whose reviewer writes under the product repo.
+  it("flag ON, REVISE dispatch uses session.reviewFilePath when set (k7gy.15 product-epic case)", async () => {
+    setFleetFlag(true);
+    const epicId = nextEpic();
+    wirePlanReview(epicId, {
+      labels: "ship-type:ios-app, plan:revise-round-1",
+      bugs: 1,
+    });
+
+    const productReviewFile = `/Users/janemckay/dev/claude_projects/LensCycle/.beads/plans/${epicId}-review.md`;
+    const handled = await handleChainAction(
+      makeSession({
+        epicId,
+        pipelineStage: "plan-review",
+        // session.repoPath is STILL fleet-core (reviewer launched there)
+        // — the fix is that the correct path was precomputed at launch
+        // time and stashed on session.reviewFilePath.
+        repoPath: "/Users/janemckay/dev/fleet/fleet-core",
+        reviewFilePath: productReviewFile,
+      }),
+      0,
+    );
+
+    expect(handled).toBe(true);
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].body.action).toBe("revise-plan-from-review");
+    expect(fetchCalls[0].body.reviewFilePath).toBe(productReviewFile);
+    // Regression guard: the path MUST NOT be rooted at fleet-core for a
+    // product epic — that's the defect this bead exists to fix.
+    expect(fetchCalls[0].body.reviewFilePath).not.toContain(
+      "/fleet/fleet-core/.beads",
+    );
+  });
+
+  // Backward-compat: existing callers and tests that don't set
+  // session.reviewFilePath still hit the legacy derivation. We preserve
+  // that path so the fix is additive, not a breaking change.
+  it("flag ON, REVISE dispatch falls back to repoPath derivation when reviewFilePath absent (k7gy.15 back-compat)", async () => {
+    setFleetFlag(true);
+    const epicId = nextEpic();
+    wirePlanReview(epicId, {
+      labels: "ship-type:internal",
+      bugs: 1,
+    });
+
+    const handled = await handleChainAction(
+      makeSession({
+        epicId,
+        pipelineStage: "plan-review",
+        repoPath: "/Users/janemckay/dev/fleet/fleet-core",
+        // reviewFilePath intentionally unset.
+      }),
+      0,
+    );
+
+    expect(handled).toBe(true);
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].body.reviewFilePath).toBe(
+      `/Users/janemckay/dev/fleet/fleet-core/.beads/plans/${epicId}-review.md`,
+    );
   });
 
   it("flag ON, bug count > 0, plan:revise-round-2 AND plan:revise-round-1 (cumulative) → dispatch with currentRound:3 (F7 AC2 + ADR-004)", async () => {

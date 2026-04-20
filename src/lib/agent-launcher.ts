@@ -45,6 +45,16 @@ export interface AgentSession {
   waveNumber?: number;
   /** Bead ID this agent is scoped to (factory-core-z9h.3). */
   beadId?: string;
+  /**
+   * Absolute path to the file the reviewer writes its findings to
+   * (factory-core-k7gy.15). Set ONLY by the review-plan action when it
+   * launches a reviewer agent. The plan-review chain handler reads this
+   * to locate the review file when re-dispatching the planner on
+   * NEEDS REVISION — otherwise it falls back to constructing from
+   * session.repoPath, which is always fleet-core for reviewer launches
+   * and therefore wrong for product epics.
+   */
+  reviewFilePath?: string;
   // New tmux-specific fields
   tmuxWindow?: string;
   statusFile?: string;
@@ -88,6 +98,14 @@ export interface LaunchOptions {
    * manual "force re-review" buttons.
    */
   force?: boolean;
+  /**
+   * Absolute path where the reviewer writes its findings file
+   * (factory-core-k7gy.15). Propagated into the session so the chain
+   * handler can re-dispatch the planner with the correct --feedback
+   * path for product epics (where the review file lives under the
+   * product repo, not fleet-core).
+   */
+  reviewFilePath?: string;
 }
 
 export class NoDeltaDispatchError extends Error {
@@ -2015,7 +2033,16 @@ async function dispatchChainAction(
 
     // Under the cap — dispatch another revision round (F7 AC1/AC2).
     const nextRound = currentRound + 1;
-    const reviewFilePath = `${session.repoPath}/.beads/plans/${session.epicId}-review.md`;
+    // factory-core-k7gy.15: Prefer the session.reviewFilePath set by the
+    // review-plan action (which called resolveRepoPath with the real
+    // ship type and appName). Fall back to the legacy derivation only
+    // when the field is absent — that path is wrong for product epics
+    // because session.repoPath is always fleet-core for reviewer
+    // launches. The fallback preserves behaviour for older callers /
+    // tests that don't set the field.
+    const reviewFilePath =
+      session.reviewFilePath ??
+      `${session.repoPath}/.beads/plans/${session.epicId}-review.md`;
 
     try {
       const res = await fetch("http://localhost:3000/api/fleet/action", {
@@ -2300,6 +2327,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     langfuseSessionId,
     waveNumber: options.waveNumber,
     beadId: options.beadId,
+    reviewFilePath: options.reviewFilePath,
     tmuxWindow,
     statusFile,
     launcherScript,

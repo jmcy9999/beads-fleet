@@ -1601,6 +1601,17 @@ export async function POST(request: NextRequest) {
           fleetCorePath,
         );
 
+        // factory-core-k7gy.15: The reviewer writes its findings file to
+        // the PRODUCT repo (reviewer.md Stage 3 Phase 4). For internal
+        // epics product repo == fleet-core; for ios-app / web-app / etc.
+        // it's under productRepoBase/<appName>/. Compute the path here
+        // using resolveRepoPath's authoritative repo root and stash it
+        // on the session so the plan-review chain handler can hand it
+        // to the planner on NEEDS REVISION — previously the handler
+        // derived it from session.repoPath, which is always fleet-core
+        // for reviewer launches.
+        const reviewFilePath = `${reviewRepoPath}/.beads/plans/${epicId}-review.md`;
+
         const reviewSpecInfo = reviewSpecPath ? ` Spec: ${reviewSpecPath}.` : "";
         const reviewArchInfo = reviewArchPath ? ` Architecture: ${reviewArchPath}.` : "";
         const reviewPrompt = `Review the plan for "${epicTitle}" (epic: ${epicId}, stage: plan, platform: ${shipType}).${reviewSpecInfo}${reviewArchInfo} Product repo: ${reviewRepoPath}. Follow Stage 3 in .claude/agents/reviewer.md.`;
@@ -1617,6 +1628,7 @@ export async function POST(request: NextRequest) {
             epicLabels: priorLabels,
             pipelineStage: "plan-review",
             agentName: "reviewer",
+            reviewFilePath,
           });
           return NextResponse.json({ success: true, action, epicId, session: reviewSession });
         } catch (launchError: unknown) {
