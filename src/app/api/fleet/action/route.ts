@@ -150,6 +150,92 @@ function deriveAppName(epicTitle: string, epicId: string): string {
 }
 
 /**
+ * Shared PM-agent launch used by both the `run-pm` action and the
+ * `start-research` + `skip:research` bypass branch (factory-core-3yqr.2 ADR-004).
+ *
+ * Responsibilities (unchanged from the original `case "run-pm"` body):
+ *   1. Remove `pipeline:research-complete` (no-op when absent, so the skip
+ *      path can also call this without first transitioning through research).
+ *   2. Add `pipeline:product-spec` + `agent:running`.
+ *   3. Invalidate the epic's cache scope.
+ *   4. Build a PM-agent prompt and launch the agent in fleet-core.
+ *
+ * When `descriptionOverride` is provided (skip:research branch), the PM
+ * prompt inlines the epic description VERBATIM in place of the research-
+ * report path. Per F7 AC bullet 5 / ADR-004 there is no interpretation of
+ * URLs or paths — the PM agent decides what to do with what's there.
+ *
+ * External behaviour of `run-pm` (request body shape, response shape, label
+ * flow, prompt template for the non-skip path) is preserved byte-for-byte
+ * per 3yqr.2 non-functional requirements (ADR-003).
+ */
+async function launchPmAgent(params: {
+  epicId: string;
+  epicTitle: string;
+  shipType: string;
+  appName: string;
+  labels: string[];
+  fleetCorePath: string;
+  /**
+   * When set, the PM prompt inlines this text in place of the research-report
+   * path (skip:research bypass). Caller is responsible for validating length
+   * and ship-type compatibility before invoking the helper (F7 AC).
+   */
+  descriptionOverride?: string;
+}) {
+  const {
+    epicId,
+    epicTitle,
+    shipType,
+    appName,
+    labels,
+    fleetCorePath,
+    descriptionOverride,
+  } = params;
+
+  await removeLabelsFromEpic(
+    epicId,
+    ["pipeline:research-complete"],
+    fleetCorePath,
+  );
+  await addLabelsToEpic(
+    epicId,
+    ["pipeline:product-spec", "agent:running"],
+    fleetCorePath,
+  );
+  invalidateCache({ type: "epic", epicId });
+
+  const { researchPath: pmResearchPath } = resolveRepoPath(
+    shipType,
+    epicTitle,
+    appName,
+    epicId,
+    fleetCorePath,
+  );
+
+  // PM always runs in fleet-core — specs and research live there, the
+  // product repo may not exist yet.
+  const pmPrompt = descriptionOverride
+    ? `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. No research report — the epic description is provided inline below as your input context (skip:research bypass). Epic description:\n\n${descriptionOverride}\n\nFleet-core: ${fleetCorePath}.`
+    : `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${pmResearchPath}. Fleet-core: ${fleetCorePath}.`;
+
+  const pmSession = await launchAgent({
+    repoPath: fleetCorePath,
+    repoName: "fleet-core",
+    prompt: pmPrompt,
+    model: "opus",
+    maxTurns: 150,
+    allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+    epicId: epicId,
+    epicLabels: labels,
+    pipelineStage: "product-spec",
+    agentName: "product-manager",
+  });
+
+  return pmSession;
+}
+
+/**
  * POST /api/fleet/action -- Execute a pipeline action on a fleet-core epic.
  *
  * Body: { epicId: string, epicTitle: string, action: PipelineAction, feedback?: string, currentLabels?: string[] }
@@ -204,8 +290,97 @@ export async function POST(request: NextRequest) {
     switch (action as PipelineAction) {
       // -------------------------------------------------------------------
       // START RESEARCH: Ideas -> In Research
+      //
+      // factory-core-3yqr.2 (F7 / ADR-004): `skip:research` bypass.
+      // When the epic carries the `skip:research` label we must:
+      //   1. Reject 400 if `ship-type:venture` is also present (ventures are
+      //      research-only — ADR-007).
+      //   2. Reject 400 if the epic description is shorter than 50 characters
+      //      after trim (F7 AC; enforcement point is here, ADR-004 — NOT at
+      //      `bd create`, NOT in the research-agent prompt).
+      //   3. Otherwise dispatch the `run-pm` code path in-process via the
+      //      shared `launchPmAgent` helper (option A), passing the epic
+      //      description verbatim as PM input. The research agent is NOT
+      //      launched; the pipeline label transitions directly to
+      //      `pipeline:product-spec`.
+      //
+      // Rejection paths MUST NOT mutate epic labels (bead AC bullets 2 & 4 —
+      // "the epic remains at its starting state"). All three skip:research
+      // branches are distinct (regression pattern #7 Type Confusion): venture
+      // rejection, short-description rejection, happy-path dispatch.
       // -------------------------------------------------------------------
       case "start-research": {
+        if (labels.includes("skip:research")) {
+          if (shipType === "venture") {
+            return NextResponse.json(
+              {
+                error:
+                  "skip:research is not valid for ventures; ventures are research-only",
+              },
+              { status: 400 },
+            );
+          }
+
+          // Read the epic description via the existing bd-show helper used
+          // elsewhere in route.ts (loadBeadDetail in the per-bead wave
+          // launcher). No new query infrastructure — per 3yqr.2 NFR.
+          let description = "";
+          try {
+            const detail = loadBeadDetail(epicId, fleetCorePath);
+            description = (detail.description ?? "").trim();
+          } catch (err) {
+            // Surface, don't swallow (regression pattern #13). We do NOT
+            // mutate the epic state on this path — the owner can fix the bd
+            // issue and click Start again.
+            console.error(
+              `[start-research] skip:research bypass: failed to read description for ${epicId}:`,
+              err,
+            );
+            return NextResponse.json(
+              {
+                error: `skip:research requires reading the epic description, but bd show failed: ${err instanceof Error ? err.message : String(err)}`,
+              },
+              { status: 500 },
+            );
+          }
+
+          if (description.length < 50) {
+            return NextResponse.json(
+              {
+                error:
+                  "skip:research requires a description of at least 50 characters",
+              },
+              { status: 400 },
+            );
+          }
+
+          // Log the bypass so it's visible in logs / Langfuse traces.
+          console.info(
+            `[start-research] skip:research bypass active for epic ${epicId} — dispatching run-pm inline (F7).`,
+          );
+
+          const skipPmSession = await launchPmAgent({
+            epicId,
+            epicTitle: epicTitle as string,
+            shipType,
+            appName,
+            labels,
+            fleetCorePath,
+            descriptionOverride: description,
+          });
+
+          return NextResponse.json({
+            success: true,
+            action,
+            epicId,
+            dispatched: "run-pm",
+            bypass: "skip:research",
+            session: skipPmSession,
+          });
+        }
+
+        // Default (non-skip:research) path — preserved byte-for-byte per
+        // F7 AC bullet 3 / 3yqr.2 acceptance criteria.
         await addLabelsToEpic(epicId, ["pipeline:research", "agent:running"], fleetCorePath);
         await updateEpicStatus(epicId, "in_progress", fleetCorePath);
         invalidateCache({ type: "epic", epicId });
@@ -420,35 +595,18 @@ export async function POST(request: NextRequest) {
 
       // -------------------------------------------------------------------
       // RUN PM: Research Complete -> Product Spec (launch PM agent)
-      // (factory-core-lxc.5)
+      // (factory-core-lxc.5; factory-core-3yqr.2 extracted the body into
+      // `launchPmAgent` so the skip:research branch can share it without
+      // changing the request/response shape — ADR-003.)
       // -------------------------------------------------------------------
       case "run-pm": {
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete"], fleetCorePath);
-        await addLabelsToEpic(epicId, ["pipeline:product-spec", "agent:running"], fleetCorePath);
-        invalidateCache({ type: "epic", epicId });
-
-        const { repoPath: pmRepoPath, repoName: pmRepoName, researchPath: pmResearchPath } = resolveRepoPath(
+        const pmSession = await launchPmAgent({
+          epicId,
+          epicTitle: epicTitle as string,
           shipType,
-          epicTitle as string,
           appName,
-          epicId as string,
-          fleetCorePath
-        );
-
-        // PM always runs in fleet-core — research and specs live there, product repo doesn't exist yet
-        const pmPrompt = `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${pmResearchPath}. Fleet-core: ${fleetCorePath}.`;
-
-        const pmSession = await launchAgent({
-          repoPath: fleetCorePath,
-          repoName: "fleet-core",
-          prompt: pmPrompt,
-          model: "opus",
-          maxTurns: 150,
-          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
-          epicId: epicId,
-          epicLabels: labels,
-          pipelineStage: "product-spec",
-          agentName: "product-manager",
+          labels,
+          fleetCorePath,
         });
 
         return NextResponse.json({ success: true, action, epicId, session: pmSession });
