@@ -2681,10 +2681,16 @@ async function readRecentLog(logFile: string): Promise<string | undefined> {
  * (backwards-compatible for existing callers that expect a single agent).
  */
 export async function getAgentStatus(repoPath?: string): Promise<AgentStatus> {
-  // Recover sessions lost to hot-reloads
-  if (activeAgents.size === 0) {
-    await attemptRecovery();
-  }
+  // factory-core-mwhm.1: Recover sessions lost to hot-reloads. Call
+  // attemptRecovery() unconditionally — the inner `activeAgents.has(key)`
+  // check (lines ~692-697) already makes recovery idempotent for sessions
+  // we already track. The previous `if (activeAgents.size === 0)` gate
+  // was harmful: as soon as ANY new agent was launched after a hot-reload
+  // wiped the map, recovery would be skipped forever and orphaned sessions
+  // from before the reload were never re-attached (observed three times
+  // on 2026-04-20: 3yqr architect, 3yqr build-reviewer, jba QA).
+  // RECOVERY_DEBOUNCE_MS (10s) still prevents hot-loop recovery attempts.
+  await attemptRecovery();
 
   if (repoPath) {
     const key = realpathSync(repoPath);
@@ -2728,10 +2734,16 @@ export async function getAgentStatus(repoPath?: string): Promise<AgentStatus> {
 
 /** Get status of all running agents */
 export async function getFleetAgentStatus(): Promise<FleetStatus> {
-  // Recover sessions lost to hot-reloads
-  if (activeAgents.size === 0) {
-    await attemptRecovery();
-  }
+  // factory-core-mwhm.1: Recover sessions lost to hot-reloads. Call
+  // attemptRecovery() unconditionally — the inner `activeAgents.has(key)`
+  // check (lines ~692-697) already makes recovery idempotent for sessions
+  // we already track. The previous `if (activeAgents.size === 0)` gate
+  // was harmful: as soon as ANY new agent was launched after a hot-reload
+  // wiped the map, recovery would be skipped forever and orphaned sessions
+  // from before the reload were never re-attached (observed three times
+  // on 2026-04-20: 3yqr architect, 3yqr build-reviewer, jba QA).
+  // RECOVERY_DEBOUNCE_MS (10s) still prevents hot-loop recovery attempts.
+  await attemptRecovery();
 
   const agents: AgentStatus[] = [];
 
