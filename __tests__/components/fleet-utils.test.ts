@@ -15,6 +15,8 @@ import {
   collectWaveNumbers,
   appHasWave,
   getAttentionItems,
+  deriveCurrentRound,
+  classifyPlanReviewSubState,
   ATTENTION_CONFIG,
   FLEET_STAGES,
   FLEET_STAGE_CONFIG,
@@ -1058,5 +1060,157 @@ describe("getAttentionItems", () => {
     // Each epic: 1 (checkpoint) + 10 (every other child) = 11 items
     expect(totals.every((n) => n === 11)).toBe(true);
     expect(elapsed).toBeLessThan(500); // generous — synchronous detection is microseconds
+  });
+});
+
+// =============================================================================
+// factory-core-k7gy.6 — plan-review auto-chain helpers
+// =============================================================================
+
+describe("deriveCurrentRound (k7gy.6 F8 AC)", () => {
+  it("returns 0 when no plan:revise-round-* labels are present", () => {
+    expect(deriveCurrentRound(["plan:needs-revision"])).toBe(0);
+  });
+
+  it("returns 1 when only plan:revise-round-1 is present", () => {
+    expect(
+      deriveCurrentRound(["plan:needs-revision", "plan:revise-round-1"]),
+    ).toBe(1);
+  });
+
+  it("returns the highest numeric suffix when cumulative labels are present (ADR-004)", () => {
+    expect(
+      deriveCurrentRound([
+        "plan:needs-revision",
+        "plan:revise-round-1",
+        "plan:revise-round-2",
+      ]),
+    ).toBe(2);
+  });
+
+  it("returns 3 at the cap", () => {
+    expect(
+      deriveCurrentRound([
+        "plan:revise-round-1",
+        "plan:revise-round-2",
+        "plan:revise-round-3",
+      ]),
+    ).toBe(3);
+  });
+
+  it("is future-proof against double-digit round labels", () => {
+    expect(deriveCurrentRound(["plan:revise-round-10"])).toBe(10);
+  });
+
+  it("returns 3 when only the round-3 label is present (independent of earlier labels)", () => {
+    expect(deriveCurrentRound(["plan:revise-round-3"])).toBe(3);
+  });
+
+  it("ignores unrelated labels", () => {
+    expect(
+      deriveCurrentRound(["pipeline:plan-review", "wave:1", "ship-type:internal"]),
+    ).toBe(0);
+  });
+});
+
+describe("classifyPlanReviewSubState (k7gy.6 F8 AC)", () => {
+  it("returns 'reviewing' when plan:reviewing is present", () => {
+    expect(classifyPlanReviewSubState(["plan:reviewing", "agent:running"]))
+      .toBe("reviewing");
+  });
+
+  it("returns 'needs-revision-round-1-or-2' for round 1", () => {
+    expect(
+      classifyPlanReviewSubState([
+        "plan:needs-revision",
+        "plan:revise-round-1",
+      ]),
+    ).toBe("needs-revision-round-1-or-2");
+  });
+
+  it("returns 'needs-revision-round-1-or-2' for round 2", () => {
+    expect(
+      classifyPlanReviewSubState([
+        "plan:needs-revision",
+        "plan:revise-round-1",
+        "plan:revise-round-2",
+      ]),
+    ).toBe("needs-revision-round-1-or-2");
+  });
+
+  it("returns 'needs-revision-round-3' at the cap", () => {
+    expect(
+      classifyPlanReviewSubState([
+        "plan:needs-revision",
+        "plan:revise-round-1",
+        "plan:revise-round-2",
+        "plan:revise-round-3",
+      ]),
+    ).toBe("needs-revision-round-3");
+  });
+
+  it("returns 'reviewed' transient state", () => {
+    expect(classifyPlanReviewSubState(["plan:reviewed"])).toBe("reviewed");
+  });
+
+  it("returns 'approved' unchanged from pre-k7gy", () => {
+    expect(classifyPlanReviewSubState(["plan:approved", "pipeline:test-spec"]))
+      .toBe("approved");
+  });
+
+  it("returns 'pending' for the owner-override path", () => {
+    expect(classifyPlanReviewSubState(["plan:pending"])).toBe("pending");
+  });
+
+  it("returns 'none' when no plan:* label is present", () => {
+    expect(classifyPlanReviewSubState(["pipeline:plan-review"])).toBe("none");
+  });
+
+  it("plan:reviewing wins deterministically when both plan:reviewing and plan:needs-revision are present (regression #7)", () => {
+    expect(
+      classifyPlanReviewSubState(["plan:reviewing", "plan:needs-revision"]),
+    ).toBe("reviewing");
+  });
+});
+
+describe("detectStage — plan-review auto-chain mappings (k7gy.6 F8 AC5)", () => {
+  it("plan:reviewing maps to plan-review column", () => {
+    const epic = makePlanIssue({
+      issue_type: "epic",
+      labels: ["plan:reviewing", "agent:running"],
+    });
+    expect(detectStage(epic, [])).toBe("plan-review");
+  });
+
+  it("plan:reviewed maps to plan-review column", () => {
+    const epic = makePlanIssue({
+      issue_type: "epic",
+      labels: ["plan:reviewed"],
+    });
+    expect(detectStage(epic, [])).toBe("plan-review");
+  });
+
+  it("plan:needs-revision maps to plan-review column", () => {
+    const epic = makePlanIssue({
+      issue_type: "epic",
+      labels: ["plan:needs-revision", "plan:revise-round-1"],
+    });
+    expect(detectStage(epic, [])).toBe("plan-review");
+  });
+
+  it("plan:pending still maps to plan-review (regression-safe — pre-k7gy path)", () => {
+    const epic = makePlanIssue({
+      issue_type: "epic",
+      labels: ["pipeline:research-complete", "plan:pending"],
+    });
+    expect(detectStage(epic, [])).toBe("plan-review");
+  });
+
+  it("plan:approved still maps to plan-review (existing behaviour preserved)", () => {
+    const epic = makePlanIssue({
+      issue_type: "epic",
+      labels: ["pipeline:research-complete", "plan:approved"],
+    });
+    expect(detectStage(epic, [])).toBe("plan-review");
   });
 });

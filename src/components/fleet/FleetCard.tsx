@@ -11,6 +11,8 @@ import {
   isAgentRunning,
   getPhaseHistory,
   getWaveInfo,
+  classifyPlanReviewSubState,
+  deriveCurrentRound,
   FLEET_STAGE_CONFIG,
   type FleetApp,
   type EpicCost,
@@ -748,11 +750,122 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             )
           )}
 
-          {/* Plan Review: feature approval, approve & build, or revise the plan */}
+          {/* Plan Review: feature approval, approve & build, or revise the plan.
+              factory-core-k7gy.6 extends this block with four auto-chain
+              sub-states (reviewing / needs-revision round 1-2 / needs-revision
+              round 3 / reviewed) rendered within the same column per ADR-007.
+              The order below matches F8: plan:reviewing is checked first, so
+              it wins deterministically if multiple plan:* labels are somehow
+              present (regression #7). Owner-override buttons are preserved
+              against plan:pending and plan:revise-round-3 (spec non-goal). */}
           {app.stage === "plan-review" && (() => {
-            const hasPlanApproved = (epic.labels ?? []).includes("plan:approved");
+            const labelsForRender = epic.labels ?? [];
+            const subState = classifyPlanReviewSubState(labelsForRender);
+            const round = deriveCurrentRound(labelsForRender);
+            const reviewFileHref = `.beads/plans/${epic.id}-review.md`;
 
-            if (hasPlanApproved) {
+            if (subState === "reviewing") {
+              return (
+                <>
+                  <div className="text-xs text-violet-300 px-1 py-1.5">
+                    Reviewing plan…
+                  </div>
+                  {epicAgentRunning && (
+                    <button
+                      onClick={(e) => handleAction(e, "stop-agent")}
+                      disabled={isPendingThis}
+                      className={BTN_RED}
+                      aria-label="Stop Agent"
+                    >
+                      {isPendingThis && <Spinner />}
+                      Stop Agent
+                    </button>
+                  )}
+                </>
+              );
+            }
+
+            if (subState === "needs-revision-round-1-or-2") {
+              const displayRound = Math.max(round, 1);
+              return (
+                <>
+                  <div className="text-xs text-amber-300 px-1 py-1.5">
+                    Auto-revising plan (round {displayRound} of 3)…
+                  </div>
+                  <a
+                    href={reviewFileHref}
+                    className="text-xs text-blue-400 hover:text-blue-300 underline px-1"
+                  >
+                    View review file
+                  </a>
+                  {epicAgentRunning && (
+                    <button
+                      onClick={(e) => handleAction(e, "stop-agent")}
+                      disabled={isPendingThis}
+                      className={BTN_RED}
+                      aria-label="Stop Agent"
+                    >
+                      {isPendingThis && <Spinner />}
+                      Stop Agent
+                    </button>
+                  )}
+                </>
+              );
+            }
+
+            if (subState === "needs-revision-round-3") {
+              // Cap reached — owner override is explicitly re-surfaced per
+              // spec F8 AC4 and ADR-007.
+              return (
+                <>
+                  <div className="text-xs text-red-300 px-1 py-1.5">
+                    Plan revision cap reached — human review required
+                  </div>
+                  <a
+                    href={reviewFileHref}
+                    className="text-xs text-blue-400 hover:text-blue-300 underline px-1"
+                  >
+                    View review file
+                  </a>
+                  <button
+                    onClick={(e) => handleAction(e, "approve-and-build")}
+                    disabled={epicAgentRunning || isPendingThis}
+                    className={BTN_GREEN}
+                  >
+                    {isPendingThis && <Spinner />}
+                    {actionLabel("Approve & Test")}
+                  </button>
+                  <button
+                    onClick={(e) => handleFeedbackAction(e, "revise-plan")}
+                    disabled={epicAgentRunning || isPendingThis}
+                    className={BTN_AMBER}
+                  >
+                    {isPendingThis && <Spinner />}
+                    {actionLabel("Revise Plan")}
+                  </button>
+                  <button
+                    onClick={(e) => handleAction(e, "deprioritise")}
+                    disabled={epicAgentRunning || isPendingThis}
+                    className={BTN_RED}
+                  >
+                    Abandon
+                  </button>
+                </>
+              );
+            }
+
+            if (subState === "reviewed") {
+              // Transient: reviewer passed, orchestrator has not yet dispatched
+              // approve-and-build. Usually invisible but must render if caught
+              // mid-transition.
+              return (
+                <div className="text-xs text-violet-300 px-1 py-1.5">
+                  Advancing to test-spec…
+                </div>
+              );
+            }
+
+            if (subState === "approved") {
               return (
                 <>
                   <button
@@ -775,7 +888,9 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
               );
             }
 
-            // plan:pending — awaiting review with feature approval
+            // subState === "pending" (or "none" falling through to default).
+            // plan:pending — owner-override path, preserved byte-identical
+            // to pre-k7gy per spec F8 AC3.
             return (
               <>
                 <button
@@ -843,20 +958,20 @@ export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEp
             ) : (
               <>
                 <button
-                  onClick={(e) => handleAction(e, "run-test-spec")}
-                  disabled={isPendingThis}
-                  className={BTN_BLUE}
-                >
-                  {isPendingThis && <Spinner />}
-                  {actionLabel("Generate Tests")}
-                </button>
-                <button
                   onClick={(e) => handleAction(e, "send-for-development")}
                   disabled={isPendingThis}
                   className={BTN_GREEN}
                 >
                   {isPendingThis && <Spinner />}
                   {actionLabel("Begin Construction")}
+                </button>
+                <button
+                  onClick={(e) => handleAction(e, "run-test-spec")}
+                  disabled={isPendingThis}
+                  className={BTN_AMBER}
+                >
+                  {isPendingThis && <Spinner />}
+                  {actionLabel("Regenerate Tests")}
                 </button>
               </>
             )

@@ -322,6 +322,20 @@ export function detectStage(
     if (labels.includes("pipeline:research")) return "research";
   }
 
+  // factory-core-k7gy.6: the new plan-review auto-chain states
+  // (plan:reviewing / plan:reviewed / plan:needs-revision) all render
+  // within the plan-review column per ADR-007 — including when no
+  // pipeline:* label is set (defensive: the action handler always sets
+  // pipeline:plan-review alongside these, but label races / hot-reloads
+  // could briefly leave the epic without the pipeline label).
+  if (
+    labels.includes("plan:reviewing") ||
+    labels.includes("plan:reviewed") ||
+    labels.includes("plan:needs-revision")
+  ) {
+    return "plan-review";
+  }
+
   // --- Fallback: closed epic without pipeline label ---
   if (epic.status === "closed") return "completed";
 
@@ -344,6 +358,67 @@ export function detectStage(
   if (hasResearch) return "research";
 
   return "idea";
+}
+
+// ---------------------------------------------------------------------------
+// Plan-review auto-chain helpers (factory-core-k7gy.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the current revise round from the epic's labels. Reads the highest
+ * numeric suffix across all `plan:revise-round-*` labels present (cumulative
+ * per ADR-004). Returns 0 when no round label is present.
+ *
+ * Matches any numeric suffix so future rounds (e.g. `plan:revise-round-10`)
+ * work — regex `\d+$`, not a single digit.
+ */
+export function deriveCurrentRound(labels: readonly string[]): number {
+  let highest = 0;
+  for (const label of labels) {
+    const match = /^plan:revise-round-(\d+)$/.exec(label);
+    if (match) {
+      const value = parseInt(match[1], 10);
+      if (!Number.isNaN(value) && value > highest) {
+        highest = value;
+      }
+    }
+  }
+  return highest;
+}
+
+/**
+ * The four plan-review sub-states the dashboard renders within the
+ * plan-review column. Ordered by precedence — `plan:reviewing` wins over
+ * `plan:needs-revision` if both are somehow present at the same time
+ * (regression #7 — exhaustive enum branching with a deterministic default).
+ */
+export type PlanReviewSubState =
+  | "reviewing"
+  | "needs-revision-round-1-or-2"
+  | "needs-revision-round-3"
+  | "reviewed"
+  | "pending"
+  | "approved"
+  | "none";
+
+/**
+ * Classify an epic into one of the plan-review sub-states based on its labels.
+ * Guarantees a single winning state per call (the switch is exhaustive and
+ * deterministic; order matches F8's CTA rendering order).
+ */
+export function classifyPlanReviewSubState(
+  labels: readonly string[],
+): PlanReviewSubState {
+  if (labels.includes("plan:reviewing")) return "reviewing";
+  if (labels.includes("plan:needs-revision")) {
+    const round = deriveCurrentRound(labels);
+    if (round >= 3) return "needs-revision-round-3";
+    return "needs-revision-round-1-or-2";
+  }
+  if (labels.includes("plan:reviewed")) return "reviewed";
+  if (labels.includes("plan:approved")) return "approved";
+  if (labels.includes("plan:pending")) return "pending";
+  return "none";
 }
 
 /**
