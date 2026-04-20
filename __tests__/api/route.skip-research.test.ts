@@ -249,6 +249,30 @@ describe("start-research + skip:research (factory-core-3yqr.2)", () => {
       expect(bypassLog).toBeDefined();
       infoSpy.mockRestore();
     });
+
+    // ---------------------------------------------------------------------
+    // factory-core-g5sa: the skip:research happy path MUST set bd status to
+    // in_progress (previously only labels + agent:running advanced, leaving
+    // the epic at status=open). updateEpicStatus now lives inside
+    // launchPmAgent so both the skip branch and the existing run-pm case
+    // benefit — idempotent on an already-in-progress epic.
+    // ---------------------------------------------------------------------
+    it("sets bd epic status to in_progress on the skip:research happy path (factory-core-g5sa)", async () => {
+      const req = makeRequest({
+        epicId: "factory-core-demo",
+        epicTitle: "Demo internal epic",
+        action: "start-research",
+        currentLabels: ["skip:research", "ship-type:internal"],
+      });
+
+      await POST(req);
+
+      expect(mockUpdateStatus).toHaveBeenCalledWith(
+        "factory-core-demo",
+        "in_progress",
+        expect.any(String),
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------

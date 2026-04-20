@@ -203,6 +203,15 @@ async function launchPmAgent(params: {
     ["pipeline:product-spec", "agent:running"],
     fleetCorePath,
   );
+  // factory-core-g5sa: ensure bd status transitions to in_progress on EVERY
+  // path into PM. The non-skip `start-research` case also calls this (line
+  // 385 in its own branch for the pre-research transition), but the skip:
+  // research bypass previously skipped straight to launchPmAgent without
+  // setting status — leaving the epic at `status=open` while labels and
+  // `agent:running` progressed. updateEpicStatus is idempotent on already-
+  // in-progress epics, so the existing `case "run-pm"` path (which relied on
+  // start-research having set it) stays byte-for-byte correct.
+  await updateEpicStatus(epicId, "in_progress", fleetCorePath);
   invalidateCache({ type: "epic", epicId });
 
   const { researchPath: pmResearchPath } = resolveRepoPath(
