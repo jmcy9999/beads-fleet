@@ -20,7 +20,12 @@ import { promisify } from "util";
 import { getBdPath, getBdEnv } from "./bd-path";
 import { buildOtelEnv, buildLangfuseTraceUrl, isLangfuseConfigured } from "./langfuse-env";
 import { withLock, chainLock, LockTimeoutError } from "./locks";
-import { readFleetConfig } from "./fleet-config";
+import {
+  readFleetConfig,
+  autoChainEnabled,
+  AUTO_CHAIN_STAGES,
+  type AutoChainStage,
+} from "./fleet-config";
 
 const execAsync = promisify(exec);
 
@@ -1415,14 +1420,14 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
   const stage = session.pipelineStage;
 
   // -------------------------------------------------------------------------
-  // research -> research-complete: stop for human review (human gate)
-  // Human reviews research, then clicks "Run PM" from the dashboard.
-  // EXIT_LABELS handles the label transition. No auto-chain.
-  // (factory-core-lxc.1: removed auto-chain to generate-plan)
+  // research → product-spec auto-chain is now handled inside
+  // dispatchChainAction (factory-core-3yqr.4 F2). The pre-3yqr stub that
+  // returned false here (factory-core-lxc.1) is removed so the research
+  // stage falls through to the locked-snapshot path. When the F2 flag
+  // (`features.auto_chain_stages.research`) is OFF, the helper inside
+  // dispatchChainAction still returns false — preserving the pre-3yqr
+  // behaviour (pipeline:research-complete, manual "Run PM" CTA).
   // -------------------------------------------------------------------------
-  if (stage === "research") {
-    return false;
-  }
 
   // -------------------------------------------------------------------------
   // planning -> plan-review: auto-launch reviewer agent
@@ -1566,6 +1571,138 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
   }
 }
 
+// ---------------------------------------------------------------------------
+// factory-core-3yqr.4 — DRY helper for the four new auto-chain cases
+//
+// The four stages that 3yqr wires up (research → PM → Architect → Planner
+// → Wave 1) are near-identical: each one checks a per-stage flag, a venture
+// defense-in-depth label, a checkpoint pause label, and dispatches a single
+// action to the fleet action route. Rather than four 20-line copy-pasted
+// blocks (regression pattern #7 — subtle divergence between supposedly
+// identical branches), we extract the common body here per ADR-006. Each
+// branch in dispatchChainAction below remains a single grep-friendly
+// `if (stage === "...")` that delegates to this helper.
+//
+// Order of checks (ADR-005 fail-closed):
+//   1. Per-stage flag (autoChainEnabled) — kill switch for progressive rollout.
+//   2. ship-type:venture defense-in-depth (ADR-007) — ventures are research
+//      only, must never chain past research.
+//   3. checkpoint:after-<stage> label — owner-configured pause.
+//   4. Unknown checkpoint:after-* suffix handling (ADR-008) — log a note so
+//      typos surface, but do NOT treat as a pause.
+//   5. POST to /api/fleet/action. Any throw or non-2xx → fail-closed: log,
+//      no retry, no label mutation, return false.
+//   6. On 2xx, append a one-line audit entry to epic notes (ADR-009). The
+//      notes-append is best-effort: a bd failure here does NOT roll back the
+//      dispatch — the action route already transitioned the pipeline label.
+// ---------------------------------------------------------------------------
+
+async function chainToNextStage(
+  session: AgentSession,
+  snapshot: EpicStateSnapshot,
+  fromStage: AutoChainStage,
+  toStage: string,
+  targetAction: string,
+  extraBody: Record<string, unknown> = {},
+): Promise<boolean> {
+  // (1) Per-stage kill switch (F1/F2/F3/F4/F5 + ADR-002). Missing key /
+  //     malformed JSON / non-boolean value → false (fail-closed per F9).
+  if (!autoChainEnabled(fromStage)) {
+    return false;
+  }
+
+  // (2) Venture defense-in-depth (ADR-007). Ventures are research-only; if
+  //     one somehow reaches a chain case (misconfigured ship-type label,
+  //     future bug, manual reclassification), stop here.
+  if (snapshot.labels.includes("ship-type:venture")) {
+    return false;
+  }
+
+  // (3) Owner-configured pause (ADR-008 / CLAUDE.md § Chain-Pause Labels).
+  //     When the owner adds `checkpoint:after-<stage>`, we pause the chain
+  //     at that stage. The epic keeps its pipeline:<stage-complete> label
+  //     (applied by EXIT_LABELS / route handler) and the manual CTA stays
+  //     clickable for the owner to resume.
+  const pauseLabel = `checkpoint:after-${fromStage}`;
+  if (snapshot.labels.includes(pauseLabel)) {
+    return false;
+  }
+
+  // (4) Unknown checkpoint:after-* suffix handling (ADR-008). A typo like
+  //     `checkpoint:after-pm` is NOT a valid pause signal; the chain
+  //     proceeds as if the label were absent. We append a one-line note to
+  //     the epic so the owner sees their typo on `bd show` / the dashboard
+  //     card. Supported suffixes are derived from AUTO_CHAIN_STAGES so the
+  //     list cannot drift out of sync (internal guardrail 7).
+  const supportedSuffixes = new Set(AUTO_CHAIN_STAGES.map((s) => `checkpoint:after-${s}`));
+  for (const label of snapshot.labels) {
+    if (!label.startsWith("checkpoint:after-")) continue;
+    if (supportedSuffixes.has(label)) continue;
+    // Unknown suffix — log-only, do not abort the chain decision.
+    const noteLine =
+      `factory-core-3yqr: unrecognised checkpoint label '${label}' on epic ${session.epicId} — ` +
+      `supported suffixes are after-research, after-product-spec, after-architecture, after-test-spec`;
+    try {
+      execBdSync(["update", session.epicId!, "--append-notes", noteLine], FLEET_CORE_PATH, 10000);
+    } catch (err) {
+      // Log-only per ADR-008 — never let a bd failure abort the chain.
+      console.warn(
+        `[chainToNextStage] failed to note unknown checkpoint label '${label}' on epic ${session.epicId}:`,
+        err,
+      );
+    }
+  }
+
+  // (5) Dispatch. Any throw or non-2xx response → fail-closed (ADR-005,
+  //     regression pattern #13). No retry. No label mutation — the epic
+  //     stays at its current pipeline:<stage-complete> label; the owner
+  //     sees the existing manual CTA and can retry.
+  try {
+    const res = await fetch("http://localhost:3000/api/fleet/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: targetAction,
+        epicId: session.epicId,
+        epicTitle: session.repoName,
+        currentLabels: session.epicLabels,
+        ...extraBody,
+      }),
+    });
+    if (!res.ok) {
+      console.error(
+        `[chainToNextStage] ${fromStage} → ${toStage} dispatch failed: HTTP ${res.status} — ` +
+          `epic ${session.epicId} stays at current pipeline label`,
+      );
+      return false;
+    }
+  } catch (err) {
+    // Network error, loopback down, etc. Same contract as non-2xx: log,
+    // return false, no retry.
+    console.error(
+      `[chainToNextStage] ${fromStage} → ${toStage} dispatch threw for epic ${session.epicId}:`,
+      err,
+    );
+    return false;
+  }
+
+  // (6) Audit trail (ADR-009). Best-effort — a bd failure here does not
+  //     roll back the dispatch above (the action route has already applied
+  //     the next pipeline:* label) and does not change the return value.
+  //     Notes are the owner-visible breadcrumb of auto-chain activity.
+  const auditLine =
+    `factory-core-3yqr auto-chain: ${fromStage} → ${toStage} at ${new Date().toISOString()}`;
+  try {
+    execBdSync(["update", session.epicId!, "--append-notes", auditLine], FLEET_CORE_PATH, 10000);
+  } catch (err) {
+    console.warn(
+      `[chainToNextStage] ${fromStage} → ${toStage} audit note failed for epic ${session.epicId}:`,
+      err,
+    );
+  }
+  return true;
+}
+
 /**
  * Dispatch the stage-specific chain logic using a pre-captured snapshot.
  *
@@ -1580,6 +1717,30 @@ async function dispatchChainAction(
   stage: string | undefined,
   snapshot: EpicStateSnapshot,
 ): Promise<boolean> {
+  // -------------------------------------------------------------------------
+  // factory-core-3yqr.4 — four new auto-chain transitions (F2/F3/F4/F5).
+  //
+  // Alphabetical order (architecture, product-spec, research, test-spec) so
+  // grep-for-stage finds each branch individually (ADR-006). Each branch is a
+  // single call to chainToNextStage, which enforces the flag check, venture
+  // defense, checkpoint pause, unknown-suffix logging, fetch, and the audit
+  // notes line. Existing branches below (development/build-review/qa/qa-fixes/
+  // plan-review) are untouched — ADR-003 / architecture § Scope Boundaries.
+  // -------------------------------------------------------------------------
+  if (stage === "architecture") {
+    return chainToNextStage(session, snapshot, "architecture", "plan-review", "generate-plan");
+  }
+  if (stage === "product-spec") {
+    return chainToNextStage(session, snapshot, "product-spec", "architecture", "run-architect");
+  }
+  if (stage === "research") {
+    return chainToNextStage(session, snapshot, "research", "product-spec", "run-pm");
+  }
+  if (stage === "test-spec") {
+    return chainToNextStage(session, snapshot, "test-spec", "development", "start-wave", {
+      waveNumber: 1,
+    });
+  }
   // -------------------------------------------------------------------------
   // development -> wave review or QA: check wave status before chaining
   // -------------------------------------------------------------------------
