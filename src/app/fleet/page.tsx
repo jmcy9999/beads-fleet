@@ -10,7 +10,7 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { CardSkeleton } from "@/components/ui/LoadingSkeleton";
 import { useIssues } from "@/hooks/useIssues";
 import { useTokenUsageSummary } from "@/hooks/useTokenUsage";
-import { useAgentStatus, useAgentStop } from "@/hooks/useAgent";
+import { useFleetAgentStatus, useAgentStop } from "@/hooks/useAgent";
 import { usePipelineAction } from "@/hooks/usePipelineAction";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
 import { AttentionBadge } from "@/components/fleet/AttentionBadge";
@@ -18,7 +18,10 @@ import { AttentionBadge } from "@/components/fleet/AttentionBadge";
 export default function FleetPage() {
   const { data, isLoading, error, refetch } = useIssues();
   const { data: tokenData } = useTokenUsageSummary();
-  const { data: agentStatus } = useAgentStatus();
+  // factory-core-d5b.7: fleet-wide status (all agents) replaces the
+  // single-session query so parallel per-bead builders and concurrent
+  // epics are all visible.
+  const { data: fleetAgentStatus } = useFleetAgentStatus();
   const stopAgent = useAgentStop();
   const pipelineAction = usePipelineAction();
   const [pendingEpicId, setPendingEpicId] = useState<string | null>(null);
@@ -48,13 +51,17 @@ export default function FleetPage() {
   const attention = useAttentionItems(allIssues);
 
   // Build a map of epicId -> langfuseTraceUrl from agent sessions (factory-core-75e)
+  // factory-core-d5b.7: iterate over the full fleet — when many agents run
+  // concurrently, each contributes its own trace URL, keyed by epicId.
   const langfuseTraceUrls = useMemo(() => {
     const map = new Map<string, string>();
-    if (agentStatus?.session?.epicId && agentStatus.session.langfuseTraceUrl) {
-      map.set(agentStatus.session.epicId, agentStatus.session.langfuseTraceUrl);
+    for (const a of fleetAgentStatus?.agents ?? []) {
+      if (a.session?.epicId && a.session.langfuseTraceUrl) {
+        map.set(a.session.epicId, a.session.langfuseTraceUrl);
+      }
     }
     return map;
-  }, [agentStatus?.session?.epicId, agentStatus?.session?.langfuseTraceUrl]);
+  }, [fleetAgentStatus?.agents]);
 
   const handlePipelineAction = useCallback(
     (payload: PipelineActionPayload) => {
@@ -103,15 +110,20 @@ export default function FleetPage() {
         )}
       </div>
 
-      {/* Agent status banner */}
-      {agentStatus?.running && agentStatus.session && (
-        <AgentStatusBanner
-          session={agentStatus.session}
-          recentLog={agentStatus.recentLog}
-          onStop={() => stopAgent.mutate()}
-          isStopping={stopAgent.isPending}
-        />
-      )}
+      {/* Agent status banners — factory-core-d5b.7: one per running agent.
+          Previously single-session rendering hid all but the first under
+          z9h.3 parallel builders and ppx concurrent epics. */}
+      {(fleetAgentStatus?.agents ?? [])
+        .filter((a) => a.running && a.session)
+        .map((a) => (
+          <AgentStatusBanner
+            key={a.session!.tmuxSessionName ?? `${a.session!.repoName}-${a.session!.startedAt}`}
+            session={a.session!}
+            recentLog={a.recentLog}
+            onStop={() => stopAgent.mutate({ repoPath: a.session!.repoPath })}
+            isStopping={stopAgent.isPending}
+          />
+        ))}
 
       {error && (
         <ErrorState
@@ -142,7 +154,7 @@ export default function FleetPage() {
           issues={allIssues}
           epicCosts={epicCosts}
           onPipelineAction={handlePipelineAction}
-          agentRunning={agentStatus?.running ?? false}
+          agentRunning={(fleetAgentStatus?.totalRunning ?? 0) > 0}
           pendingEpicId={pendingEpicId}
           langfuseTraceUrls={langfuseTraceUrls}
           attentionByEpic={attention.countByEpic}

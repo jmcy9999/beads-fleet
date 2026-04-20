@@ -98,6 +98,10 @@ jest.mock("@/hooks/useTokenUsage", () => ({
 
 jest.mock("@/hooks/useAgent", () => ({
   useAgentStatus: () => ({ data: { running: false, session: null } }),
+  // factory-core-d5b.7: fleet page now uses fleet-wide status — return an
+  // empty agents array so existing attention-system tests see "no agents
+  // running" (matches the old single-session fixture).
+  useFleetAgentStatus: () => ({ data: { agents: [], totalRunning: 0 } }),
   useAgentStop: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 
