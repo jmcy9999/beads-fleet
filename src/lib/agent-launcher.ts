@@ -1980,12 +1980,28 @@ async function dispatchChainAction(
       // Add qa:needs-review so Jane is pulled in; return true so NEXT_STAGE
       // is skipped and the epic stays visible under plan-review with the
       // human-gate indicator active.
+      //
+      // factory-core-k7gy.14: ALSO strip plan:reviewing / plan:reviewed
+      // before applying qa:needs-review. review-plan (route.ts) sets
+      // plan:reviewing at launch; EXIT_LABELS leaves it in place on
+      // reviewer exit so the cap branch inherits stranded review-phase
+      // labels. FleetCard's classifyPlanReviewSubState prioritises
+      // plan:reviewing over plan:needs-revision, so without this cleanup
+      // the round-3 CTAs (Approve & Test / Revise / Abandon) are hidden
+      // behind a 'Reviewing plan…' banner that has no agent actually
+      // running — dead-end state.
       try {
-        const { addLabelsToEpic } = await import("./pipeline-labels");
+        const { addLabelsToEpic, removeLabelsFromEpic } = await import(
+          "./pipeline-labels"
+        );
+        await removeLabelsFromEpic(session.epicId!, [
+          "plan:reviewing",
+          "plan:reviewed",
+        ]);
         await addLabelsToEpic(session.epicId!, ["qa:needs-review"]);
         console.log(
           `[handleChainAction] plan-review revise cap reached for epic ${session.epicId} ` +
-            `(round ${currentRound}) — applied qa:needs-review, stopping auto-chain`,
+            `(round ${currentRound}) — stripped plan:reviewing/reviewed, applied qa:needs-review, stopping auto-chain`,
         );
       } catch (err) {
         console.error(

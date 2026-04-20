@@ -482,6 +482,50 @@ describe("handleChainAction plan-review branch (factory-core-k7gy.9 — F6/F7/F9
     expect(adds[0].labels).toContain("qa:needs-review");
   });
 
+  // factory-core-k7gy.14: when review-plan launched the reviewer, it set
+  // plan:reviewing. If the reviewer exits at cap with bugs > 0, the cap
+  // branch must strip plan:reviewing (and plan:reviewed) so the FleetCard
+  // round-3 override CTAs actually surface. Without the strip, the card
+  // stays stuck on the 'Reviewing plan…' banner with no running agent.
+  it("flag ON, plan:reviewing stranded on cap → stripped before qa:needs-review applied (k7gy.14)", async () => {
+    setFleetFlag(true);
+    const epicId = nextEpic();
+    wirePlanReview(epicId, {
+      // Real-world label state: review-plan added plan:reviewing at launch
+      // time and cumulative revise-round-N labels accrued over prior rounds.
+      labels:
+        "ship-type:internal, plan:reviewing, plan:needs-revision, plan:revise-round-1, plan:revise-round-2, plan:revise-round-3",
+      bugs: 2,
+    });
+
+    const handled = await handleChainAction(
+      makeSession({ epicId, pipelineStage: "plan-review" }),
+      0,
+    );
+
+    expect(handled).toBe(true);
+    expect(fetchCalls).toHaveLength(0);
+
+    // Cap path must strip plan:reviewing (and plan:reviewed if present).
+    const removes = labelCalls.filter((c) => c.op === "remove");
+    expect(removes).toHaveLength(1);
+    expect(removes[0].issueId).toBe(epicId);
+    expect(removes[0].labels).toContain("plan:reviewing");
+    expect(removes[0].labels).toContain("plan:reviewed");
+
+    // And THEN apply qa:needs-review.
+    const adds = labelCalls.filter((c) => c.op === "add");
+    expect(adds).toHaveLength(1);
+    expect(adds[0].labels).toContain("qa:needs-review");
+
+    // Ordering check: remove must come before add — if add fires first,
+    // there's a window where plan:reviewing and qa:needs-review coexist,
+    // which the FleetCard classifier handles incorrectly.
+    const removeIdx = labelCalls.findIndex((c) => c.op === "remove");
+    const addIdx = labelCalls.findIndex((c) => c.op === "add");
+    expect(removeIdx).toBeLessThan(addIdx);
+  });
+
   it("flag ON, openPlanReviewBugCount === -1 (bd failure sentinel) → treated as >0 (reg #13)", async () => {
     // Regression pattern #13: the bd query for review:plan bugs fails.
     // readEpicState surfaces -1. The orchestrator MUST treat this as "bugs
