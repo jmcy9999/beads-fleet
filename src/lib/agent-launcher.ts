@@ -80,6 +80,29 @@ export interface LaunchOptions {
    * clobbering each other's state.
    */
   beadId?: string;
+  /**
+   * Bypass the dispatch-fingerprint guard (factory-core-9l7q.1). When
+   * true, skip the no-delta check and dispatch even if the fingerprint
+   * matches the last-recorded tuple for (epicId, waveNumber, agentName).
+   * Set by callers that explicitly want to re-run — audit replays,
+   * manual "force re-review" buttons.
+   */
+  force?: boolean;
+}
+
+export class NoDeltaDispatchError extends Error {
+  constructor(
+    public readonly epicId: string,
+    public readonly agentType: string,
+    public readonly waveNumber: number | undefined,
+    public readonly fingerprintHash: string,
+  ) {
+    const scope = waveNumber !== undefined ? ` wave ${waveNumber}` : "";
+    super(
+      `Dispatch refused (no-delta): ${agentType} against ${epicId}${scope} — state fingerprint ${fingerprintHash} matches last dispatch. Pass force:true to override.`,
+    );
+    this.name = "NoDeltaDispatchError";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2176,6 +2199,44 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     }
   }
 
+  // factory-core-9l7q.1: Dispatch fingerprint guard. Refuse to redispatch
+  // the same agent against the same (epic, wave) when the state hasn't
+  // changed — HEAD is unchanged, no child bead opened/closed, findings
+  // doc unchanged. `force: true` skips the duplicate CHECK but we still
+  // compute and record the fingerprint so subsequent auto-dispatches
+  // compare against the fresh state. Ad-hoc launches without an epic
+  // or agentName produce no fingerprint (can't scope one meaningfully).
+  let dispatchFingerprint: import("./dispatch-fingerprint").Fingerprint | undefined;
+  if (options.epicId && options.agentName) {
+    const { checkFingerprint, shortHash } = await import("./dispatch-fingerprint");
+    const check = await checkFingerprint({
+      epicId: options.epicId,
+      waveNumber: options.waveNumber,
+      agentType: options.agentName,
+      repoPath: options.repoPath,
+    });
+    if (check.duplicate && !options.force) {
+      const hash = shortHash(check.fingerprint.combined);
+      console.log(
+        `[dispatch-guard] no-delta, skipped — ${options.agentName} for ${options.epicId}${
+          options.waveNumber !== undefined ? ` wave ${options.waveNumber}` : ""
+        } at fingerprint ${hash}`,
+      );
+      throw new NoDeltaDispatchError(
+        options.epicId,
+        options.agentName,
+        options.waveNumber,
+        hash,
+      );
+    }
+    if (check.duplicate && options.force) {
+      console.log(
+        `[dispatch-guard] force-bypass — ${options.agentName} for ${options.epicId} at matching fingerprint ${shortHash(check.fingerprint.combined)}`,
+      );
+    }
+    dispatchFingerprint = check.fingerprint;
+  }
+
   await ensureLogDir();
   await fs.mkdir(STATUS_DIR, { recursive: true });
   await fs.mkdir(LAUNCHER_DIR, { recursive: true });
@@ -2357,6 +2418,20 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
 
   activeAgents.set(repoKey, { session, pollInterval, langfuseSpan });
   await persistSession(session);
+
+  // factory-core-9l7q.1: Record the fingerprint so the next dispatch
+  // against this (epic, wave, agent) tuple short-circuits if nothing
+  // changes. Only records when we computed one above — ad-hoc launches
+  // and force:true paths don't populate the guard.
+  if (dispatchFingerprint && options.epicId && options.agentName) {
+    const { recordFingerprint } = await import("./dispatch-fingerprint");
+    await recordFingerprint({
+      epicId: options.epicId,
+      waveNumber: options.waveNumber,
+      agentType: options.agentName,
+      fingerprint: dispatchFingerprint,
+    });
+  }
 
   return session;
 }
