@@ -12,7 +12,24 @@ interface AgentStatusBannerProps {
 
 export function AgentStatusBanner({ session, recentLog, onStop, isStopping }: AgentStatusBannerProps) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
+
+  const tmuxAttachCommand = session.tmuxSessionName
+    ? `tmux attach -t ${session.tmuxSessionName}`
+    : null;
+
+  const copyTmuxCommand = async () => {
+    if (!tmuxAttachCommand) return;
+    try {
+      await navigator.clipboard.writeText(tmuxAttachCommand);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard permission blocked — degrade silently; text is still
+      // visible in the UI for manual copy.
+    }
+  };
 
   const elapsed = Date.now() - new Date(session.startedAt).getTime();
   const minutes = Math.floor(elapsed / 60_000);
@@ -42,8 +59,27 @@ export function AgentStatusBanner({ session, recentLog, onStop, isStopping }: Ag
               <span className="text-amber-400">{session.repoName}</span>
             </p>
             <p className="text-xs text-gray-400 mt-0.5">
-              {session.model} &middot; {elapsedLabel} elapsed{session.tmuxSessionName ? ` · tmux: ${session.tmuxSessionName}` : session.pid ? ` · PID ${session.pid}` : ""}
+              {session.model} &middot; {elapsedLabel} elapsed
+              {!tmuxAttachCommand && session.pid ? ` · PID ${session.pid}` : null}
             </p>
+            {tmuxAttachCommand && (
+              <div className="mt-1 flex items-center gap-2">
+                <code
+                  onClick={copyTmuxCommand}
+                  className="text-[11px] font-mono text-amber-300 bg-surface-0 border border-border-default rounded px-2 py-0.5 cursor-pointer hover:bg-surface-2 hover:border-amber-500/50 transition-colors select-all"
+                  title="Click to copy the tmux attach command"
+                >
+                  {tmuxAttachCommand}
+                </code>
+                <span
+                  className={`text-[10px] transition-opacity ${
+                    copied ? "text-green-400 opacity-100" : "text-gray-500 opacity-0"
+                  }`}
+                >
+                  copied!
+                </span>
+              </div>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
