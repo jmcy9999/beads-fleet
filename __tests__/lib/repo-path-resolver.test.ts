@@ -1,4 +1,11 @@
-import { resolveRepoPath, sanitizeTopicName } from "@/lib/repo-path-resolver";
+import { promises as fs } from "fs";
+import os from "os";
+import path from "path";
+import {
+  resolveRepoPath,
+  sanitizeTopicName,
+  findExistingDocPath,
+} from "@/lib/repo-path-resolver";
 
 const FLEET_CORE_PATH = "/Users/janemckay/dev/fleet/fleet-core";
 const PRODUCT_REPO_BASE = "/Users/janemckay/dev/claude_projects";
@@ -40,6 +47,135 @@ describe("sanitizeTopicName", () => {
 
   it("handles numeric strings with spaces", () => {
     expect(sanitizeTopicName("123 456")).toBe("123-456");
+  });
+
+  // factory-core-k7gy.13: underscores in epic titles (e.g. "beads_web") used
+  // to be stripped entirely, producing "beadsweb-…" which never matched the
+  // on-disk file "beads-web-…". They must now convert to hyphens.
+  it("converts underscores to hyphens", () => {
+    expect(sanitizeTopicName("beads_web concurrency safety")).toBe(
+      "beads-web-concurrency-safety",
+    );
+  });
+
+  it("handles multiple underscores in a single word", () => {
+    expect(sanitizeTopicName("snake_case_word research")).toBe(
+      "snake-case-word-research",
+    );
+  });
+});
+
+// factory-core-k7gy.13: filesystem-aware doc-path resolver. The naive
+// sanitise/truncate slug does not always match what's actually on disk
+// (research docs are often named with fewer or different words). Before
+// handing a derived path to an agent, prefer a file that actually exists.
+describe("findExistingDocPath", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "k7gy13-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns the naive path when it exists", async () => {
+    const naive = path.join(tmpDir, "exact-topic-functional-spec.md");
+    await fs.writeFile(naive, "body", "utf-8");
+
+    const result = await findExistingDocPath({
+      naivePath: naive,
+      searchDir: tmpDir,
+      slug: "exact-topic",
+      suffix: "-functional-spec.md",
+    });
+    expect(result).toBe(naive);
+  });
+
+  // The k7gy.13 scenario: derived slug is longer than what's on disk.
+  // On-disk file uses 3 words of the title; derived uses 5. Fallback
+  // must find the shorter match.
+  it("finds a shorter-slug on-disk file when the derived slug overshoots", async () => {
+    const onDisk = path.join(tmpDir, "beads-web-concurrency-safety-functional-spec.md");
+    await fs.writeFile(onDisk, "body", "utf-8");
+
+    const naive = path.join(
+      tmpDir,
+      "beads-web-concurrency-safety-support-multiple-functional-spec.md",
+    );
+
+    const result = await findExistingDocPath({
+      naivePath: naive,
+      searchDir: tmpDir,
+      slug: "beads-web-concurrency-safety-support-multiple",
+      suffix: "-functional-spec.md",
+    });
+    expect(result).toBe(onDisk);
+  });
+
+  it("falls back to the naive path when no match exists", async () => {
+    const naive = path.join(tmpDir, "nothing-here-functional-spec.md");
+
+    const result = await findExistingDocPath({
+      naivePath: naive,
+      searchDir: tmpDir,
+      slug: "nothing-here",
+      suffix: "-functional-spec.md",
+    });
+    expect(result).toBe(naive);
+  });
+
+  it("prefers the longest-matching prefix when multiple candidates exist", async () => {
+    const short = path.join(tmpDir, "beads-web-functional-spec.md");
+    const longer = path.join(
+      tmpDir,
+      "beads-web-concurrency-safety-functional-spec.md",
+    );
+    const unrelated = path.join(tmpDir, "unrelated-topic-functional-spec.md");
+    await fs.writeFile(short, "short", "utf-8");
+    await fs.writeFile(longer, "longer", "utf-8");
+    await fs.writeFile(unrelated, "unrelated", "utf-8");
+
+    const result = await findExistingDocPath({
+      naivePath: path.join(tmpDir, "beads-web-concurrency-safety-support-multiple-functional-spec.md"),
+      searchDir: tmpDir,
+      slug: "beads-web-concurrency-safety-support-multiple",
+      suffix: "-functional-spec.md",
+    });
+    // The 'longer' candidate shares 3 leading tokens with the slug
+    // (beads-web-concurrency-safety) vs 'short' which shares only 2
+    // (beads-web). Longest-prefix wins.
+    expect(result).toBe(longer);
+  });
+
+  it("does not match files with a different suffix even if slug matches", async () => {
+    const arch = path.join(tmpDir, "beads-web-concurrency-safety-architecture.md");
+    await fs.writeFile(arch, "arch", "utf-8");
+
+    const naive = path.join(
+      tmpDir,
+      "beads-web-concurrency-safety-support-multiple-functional-spec.md",
+    );
+    const result = await findExistingDocPath({
+      naivePath: naive,
+      searchDir: tmpDir,
+      slug: "beads-web-concurrency-safety-support-multiple",
+      suffix: "-functional-spec.md",
+    });
+    // No matching -functional-spec.md — must fall back to naive
+    expect(result).toBe(naive);
+  });
+
+  it("handles a missing searchDir gracefully (returns naive)", async () => {
+    const naive = "/tmp/some-nonexistent-directory-xyz/a-functional-spec.md";
+    const result = await findExistingDocPath({
+      naivePath: naive,
+      searchDir: "/tmp/some-nonexistent-directory-xyz",
+      slug: "a",
+      suffix: "-functional-spec.md",
+    });
+    expect(result).toBe(naive);
   });
 });
 
