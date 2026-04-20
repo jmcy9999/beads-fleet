@@ -56,14 +56,17 @@ describe("readFleetConfig — happy path", () => {
     await withFleetJson(
       JSON.stringify({ features: { plan_review_auto_chain: true } }),
     );
-    expect(readFleetConfig()).toEqual({ plan_review_auto_chain: true });
+    // Check the specific field (rather than the whole shape) so this test
+    // remains stable as FleetConfig grows with new feature flags — e.g.
+    // factory-core-3yqr.1 added `auto_chain_stages`.
+    expect(readFleetConfig().plan_review_auto_chain).toBe(true);
   });
 
   it("returns plan_review_auto_chain=false when fleet.json sets it to false", async () => {
     await withFleetJson(
       JSON.stringify({ features: { plan_review_auto_chain: false } }),
     );
-    expect(readFleetConfig()).toEqual({ plan_review_auto_chain: false });
+    expect(readFleetConfig().plan_review_auto_chain).toBe(false);
   });
 });
 
