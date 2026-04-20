@@ -400,6 +400,82 @@ describe("start-research + skip:research (factory-core-3yqr.2)", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Regression pattern #13 — loadBeadDetail throw path must surface and not
+  // mutate epic state (factory-core-3yqr.6)
+  // ---------------------------------------------------------------------------
+
+  describe("regression pattern #13 — loadBeadDetail throw path", () => {
+    it("returns 500 with the bd error context when loadBeadDetail throws", async () => {
+      mockLoadBeadDetail.mockImplementationOnce(() => {
+        throw new Error("bd show failed: bead not found");
+      });
+      // Silence the expected console.error noise.
+      const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+      const req = makeRequest({
+        epicId: "factory-core-missing",
+        epicTitle: "Missing epic",
+        action: "start-research",
+        currentLabels: ["skip:research", "ship-type:internal"],
+      });
+
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+      const data = await res.json();
+      expect(data.error).toContain("skip:research requires reading the epic description");
+      expect(data.error).toContain("bd show failed: bead not found");
+
+      errSpy.mockRestore();
+    });
+
+    it("does NOT mutate epic labels when loadBeadDetail throws (regression pattern #13 — no silent swallow, no partial state)", async () => {
+      mockLoadBeadDetail.mockImplementationOnce(() => {
+        throw new Error("bd show failed");
+      });
+      jest.spyOn(console, "error").mockImplementation(() => {});
+
+      const req = makeRequest({
+        epicId: "factory-core-missing",
+        epicTitle: "Missing epic",
+        action: "start-research",
+        currentLabels: ["skip:research", "ship-type:internal"],
+      });
+
+      await POST(req);
+
+      expect(mockAddLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+      expect(mockRemoveLabelsStrict).not.toHaveBeenCalled();
+      expect(mockRemoveAllPipeline).not.toHaveBeenCalled();
+      expect(mockUpdateStatus).not.toHaveBeenCalled();
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("logs the bd failure via console.error (audit trail for the 500 path)", async () => {
+      mockLoadBeadDetail.mockImplementationOnce(() => {
+        throw new Error("bd CLI unreachable");
+      });
+      const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+      const req = makeRequest({
+        epicId: "factory-core-dead",
+        epicTitle: "Dead epic",
+        action: "start-research",
+        currentLabels: ["skip:research", "ship-type:internal"],
+      });
+
+      await POST(req);
+
+      const errCalls = errSpy.mock.calls.map((c) => c.map(String).join(" "));
+      const matched = errCalls.find(
+        (msg) => msg.includes("skip:research") && msg.includes("factory-core-dead"),
+      );
+      expect(matched).toBeDefined();
+      errSpy.mockRestore();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // F7 AC bullet 4 — ship-type:venture rejection (ADR-007)
   // ---------------------------------------------------------------------------
 
