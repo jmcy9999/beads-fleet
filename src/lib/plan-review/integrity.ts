@@ -96,6 +96,15 @@ export interface SweepDependencies {
    * can't blow the total cap).
    */
   timeoutMs?: number;
+  /**
+   * Directory relative to which `planManifestPath` is resolved. Defaults to
+   * `process.cwd()`. The `/api/plan-review/integrity` route (k7gy.8) sets
+   * this to the epic's repo path so a reviewer-relative path like
+   * `.beads/plans/<epic>.md` resolves correctly regardless of beads_web's
+   * cwd. Must be an absolute path; `..` segments in `planManifestPath` are
+   * still rejected.
+   */
+  baseDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +274,7 @@ export async function runIntegritySweep(
     throw new InvalidEpicIdError(epicId);
   }
 
-  const resolvedPath = validatePlanPath(planManifestPath);
+  const resolvedPath = validatePlanPath(planManifestPath, deps.baseDir);
 
   const timeoutMs = deps.timeoutMs ?? INTEGRITY_SWEEP_TIMEOUT_MS;
   const listRegisteredRepos =
@@ -398,7 +407,7 @@ function reconcile(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function validatePlanPath(planManifestPath: string): string {
+function validatePlanPath(planManifestPath: string, baseDir?: string): string {
   if (!planManifestPath || typeof planManifestPath !== "string") {
     throw new InvalidPathError(String(planManifestPath));
   }
@@ -415,7 +424,8 @@ function validatePlanPath(planManifestPath: string): string {
     throw new InvalidPathError(planManifestPath);
   }
 
-  return path.join(process.cwd(), normalised);
+  const base = baseDir && path.isAbsolute(baseDir) ? baseDir : process.cwd();
+  return path.join(base, normalised);
 }
 
 /**
