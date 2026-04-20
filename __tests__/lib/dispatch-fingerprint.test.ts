@@ -279,6 +279,88 @@ describe("dispatch-fingerprint", () => {
       expect(build.duplicate).toBe(false);
     });
 
+    // factory-core-9l7q.1 fixup: regression for the 2026-04-20 incident
+    // where Wave 1 of factory-core-3yqr dispatched three parallel per-bead
+    // builders and only one got through — the other two were refused as
+    // 'no-delta duplicates' of the first, because all three shared the
+    // same (epic, wave, agent) fingerprint key. The key must include beadId.
+    it("isolates tuples — same epic, wave, agent, different beadIds do not collide (parallel per-bead builders)", async () => {
+      mockExecScenario({
+        "git rev-parse HEAD": "head-parallel\n",
+        "bd list --parent=factory-core-3yqr": "",
+      });
+
+      const b1 = await checkFingerprint({
+        epicId: "factory-core-3yqr",
+        waveNumber: 1,
+        agentType: "builder",
+        beadId: "factory-core-3yqr.1",
+        repoPath: "/tmp",
+      });
+      expect(b1.duplicate).toBe(false);
+      await recordFingerprint({
+        epicId: "factory-core-3yqr",
+        waveNumber: 1,
+        agentType: "builder",
+        beadId: "factory-core-3yqr.1",
+        fingerprint: b1.fingerprint,
+      });
+
+      // Parallel sibling in the same wave — DIFFERENT bead — must NOT be
+      // refused as a duplicate of 3yqr.1's dispatch.
+      const b2 = await checkFingerprint({
+        epicId: "factory-core-3yqr",
+        waveNumber: 1,
+        agentType: "builder",
+        beadId: "factory-core-3yqr.2",
+        repoPath: "/tmp",
+      });
+      expect(b2.duplicate).toBe(false);
+
+      const b3 = await checkFingerprint({
+        epicId: "factory-core-3yqr",
+        waveNumber: 1,
+        agentType: "builder",
+        beadId: "factory-core-3yqr.3",
+        repoPath: "/tmp",
+      });
+      expect(b3.duplicate).toBe(false);
+    });
+
+    // Belt-and-braces: re-dispatching the SAME bead against the same state
+    // must still be refused — the bead-scoping doesn't weaken the guard,
+    // it just scopes the namespace correctly.
+    it("per-bead guard still refuses re-dispatch of the same (epic, wave, agent, bead) tuple", async () => {
+      mockExecScenario({
+        "git rev-parse HEAD": "head-rerun\n",
+        "bd list --parent=factory-core-3yqr": "",
+      });
+
+      const first = await checkFingerprint({
+        epicId: "factory-core-3yqr",
+        waveNumber: 1,
+        agentType: "builder",
+        beadId: "factory-core-3yqr.1",
+        repoPath: "/tmp",
+      });
+      await recordFingerprint({
+        epicId: "factory-core-3yqr",
+        waveNumber: 1,
+        agentType: "builder",
+        beadId: "factory-core-3yqr.1",
+        fingerprint: first.fingerprint,
+      });
+
+      const second = await checkFingerprint({
+        epicId: "factory-core-3yqr",
+        waveNumber: 1,
+        agentType: "builder",
+        beadId: "factory-core-3yqr.1",
+        repoPath: "/tmp",
+      });
+      expect(second.duplicate).toBe(true);
+    });
+
     it("isolates tuples — same epic and agent, different waves do not collide", async () => {
       mockExecScenario({
         "git rev-parse HEAD": "head-y\n",

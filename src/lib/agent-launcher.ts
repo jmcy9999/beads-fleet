@@ -2257,6 +2257,9 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
       waveNumber: options.waveNumber,
       agentType: options.agentName,
       repoPath: options.repoPath,
+      // factory-core-9l7q.1 fixup: include beadId so parallel per-bead
+      // builders in the same wave don't collide on the fingerprint key.
+      beadId: options.beadId,
     });
     if (check.duplicate && !options.force) {
       const hash = shortHash(check.fingerprint.combined);
@@ -2473,6 +2476,7 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
       epicId: options.epicId,
       waveNumber: options.waveNumber,
       agentType: options.agentName,
+      beadId: options.beadId,
       fingerprint: dispatchFingerprint,
     });
   }

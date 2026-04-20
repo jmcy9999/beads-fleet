@@ -59,8 +59,16 @@ function storageKey(
   epicId: string,
   waveNumber: number | undefined,
   agentType: string,
+  beadId: string | undefined,
 ): string {
-  return `${epicId}::${waveNumber ?? "none"}::${agentType}`;
+  // factory-core-9l7q.1 fixup: include beadId when present. Under z9h.3
+  // parallel per-bead builders, N siblings in the same wave share the
+  // (epic, wave, agent) tuple but have distinct bead IDs. Without the
+  // beadId in the key, the first sibling records a fingerprint and the
+  // second/third get refused as no-delta duplicates of their peer,
+  // even though they represent independent work units. Use "none" for
+  // non-per-bead launches (reviewer, planner, etc.).
+  return `${epicId}::${waveNumber ?? "none"}::${beadId ?? "none"}::${agentType}`;
 }
 
 async function getHead(repoPath: string): Promise<string> {
@@ -182,10 +190,21 @@ export async function checkFingerprint(params: {
   waveNumber?: number;
   agentType: string;
   repoPath: string;
+  /**
+   * factory-core-9l7q.1 fixup: bead-scoped fingerprint key. When set,
+   * the fingerprint tuple includes the bead ID so parallel per-bead
+   * builders in the same wave don't collide.
+   */
+  beadId?: string;
 }): Promise<FingerprintCheckResult> {
   const fingerprint = await computeFingerprint(params);
   const store = await readStore();
-  const key = storageKey(params.epicId, params.waveNumber, params.agentType);
+  const key = storageKey(
+    params.epicId,
+    params.waveNumber,
+    params.agentType,
+    params.beadId,
+  );
   const previous = store[key]?.fingerprint;
   const duplicate = !!previous && previous.combined === fingerprint.combined;
   return { duplicate, fingerprint, previous };
@@ -193,16 +212,22 @@ export async function checkFingerprint(params: {
 
 /**
  * Record a successful dispatch. Overwrites any prior fingerprint for this
- * (epic, wave, agent) tuple.
+ * (epic, wave, agent, bead?) tuple.
  */
 export async function recordFingerprint(params: {
   epicId: string;
   waveNumber?: number;
   agentType: string;
   fingerprint: Fingerprint;
+  beadId?: string;
 }): Promise<void> {
   const store = await readStore();
-  const key = storageKey(params.epicId, params.waveNumber, params.agentType);
+  const key = storageKey(
+    params.epicId,
+    params.waveNumber,
+    params.agentType,
+    params.beadId,
+  );
   store[key] = {
     fingerprint: params.fingerprint,
     lastDispatchedAt: new Date().toISOString(),
@@ -219,9 +244,15 @@ export async function clearFingerprint(params: {
   epicId: string;
   waveNumber?: number;
   agentType: string;
+  beadId?: string;
 }): Promise<void> {
   const store = await readStore();
-  const key = storageKey(params.epicId, params.waveNumber, params.agentType);
+  const key = storageKey(
+    params.epicId,
+    params.waveNumber,
+    params.agentType,
+    params.beadId,
+  );
   delete store[key];
   await writeStore(store);
 }
