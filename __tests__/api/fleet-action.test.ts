@@ -2697,4 +2697,284 @@ describe("POST /api/fleet/action", () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // factory-core-k7gy.5 — plan-review auto-chain actions
+  // -------------------------------------------------------------------------
+
+  describe("review-plan (k7gy.5 F5)", () => {
+    it("applies plan:reviewing + pipeline:plan-review + agent:running and removes plan:pending", async () => {
+      const req = makeRequest({
+        epicId: "epic-rp-1",
+        epicTitle: "Internal: k7gy",
+        action: "review-plan",
+        fromChain: true,
+        currentLabels: ["ship-type:internal", "pipeline:plan-review", "plan:pending"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-rp-1",
+        ["plan:pending"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-rp-1",
+        ["plan:reviewing", "pipeline:plan-review", "agent:running"],
+        expect.any(String),
+      );
+    });
+
+    it("launches reviewer with pipelineStage=plan-review + model=opus", async () => {
+      const req = makeRequest({
+        epicId: "epic-rp-2",
+        epicTitle: "Internal: k7gy",
+        action: "review-plan",
+        fromChain: true,
+        currentLabels: ["ship-type:internal"],
+      });
+      await POST(req);
+
+      expect(mockLaunchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pipelineStage: "plan-review",
+          agentName: "reviewer",
+          model: "opus",
+          maxTurns: 200,
+        }),
+      );
+    });
+
+    it("prompt references the epic title, spec, and Stage 3 reviewer instructions", async () => {
+      const req = makeRequest({
+        epicId: "epic-rp-3",
+        epicTitle: "LensCycle: tracker",
+        action: "review-plan",
+        currentLabels: ["ship-type:ios-app"],
+      });
+      await POST(req);
+
+      const call = mockLaunchAgent.mock.calls.at(-1);
+      const args = call?.[0] as { prompt?: string };
+      expect(args?.prompt).toMatch(/LensCycle: tracker/);
+      expect(args?.prompt).toMatch(/stage: plan/);
+      expect(args?.prompt).toMatch(/reviewer\.md/);
+      // All placeholders must be substituted — no raw {{...}} leaks.
+      expect(args?.prompt).not.toMatch(/\{\{[^}]+\}\}/);
+    });
+
+    it("rolls back plan:reviewing and restores plan:pending on launch failure", async () => {
+      mockLaunchAgent.mockRejectedValueOnce(new Error("launch failed"));
+      const req = makeRequest({
+        epicId: "epic-rp-4",
+        epicTitle: "Internal: k7gy",
+        action: "review-plan",
+        currentLabels: ["ship-type:internal", "plan:pending"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      // Provisional labels added first, then rolled back.
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-rp-4",
+        ["plan:reviewing", "pipeline:plan-review", "agent:running"],
+        expect.any(String),
+      );
+      // Rollback path.
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-rp-4",
+        ["plan:reviewing", "agent:running"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-rp-4",
+        ["plan:pending"],
+        expect.any(String),
+      );
+    });
+  });
+
+  describe("revise-plan-from-review (k7gy.5 F7)", () => {
+    it("applies plan:needs-revision + plan:revise-round-N and removes plan:reviewing", async () => {
+      const req = makeRequest({
+        epicId: "epic-rr-1",
+        epicTitle: "Internal: k7gy",
+        action: "revise-plan-from-review",
+        fromChain: true,
+        currentRound: 1,
+        reviewFilePath: ".beads/plans/epic-rr-1-review.md",
+        currentLabels: ["plan:reviewing"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-rr-1",
+        ["plan:reviewing", "plan:reviewed"],
+        expect.any(String),
+      );
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-rr-1",
+        [
+          "plan:needs-revision",
+          "plan:revise-round-1",
+          "pipeline:plan-review",
+          "agent:running",
+        ],
+        expect.any(String),
+      );
+    });
+
+    it("accepts currentRound 1, 2, 3 and picks the correct round label", async () => {
+      for (const round of [1, 2, 3]) {
+        jest.clearAllMocks();
+        const req = makeRequest({
+          epicId: `epic-rr-${round}`,
+          epicTitle: "Internal: k7gy",
+          action: "revise-plan-from-review",
+          currentRound: round,
+          reviewFilePath: ".beads/plans/x-review.md",
+          currentLabels: ["plan:reviewing"],
+        });
+        const res = await POST(req);
+        expect(res.status).toBe(200);
+        expect(mockAddLabels).toHaveBeenCalledWith(
+          `epic-rr-${round}`,
+          expect.arrayContaining([`plan:revise-round-${round}`]),
+          expect.any(String),
+        );
+      }
+    });
+
+    it("returns 400 when reviewFilePath is missing", async () => {
+      const req = makeRequest({
+        epicId: "epic-rr-bad",
+        epicTitle: "Internal: k7gy",
+        action: "revise-plan-from-review",
+        currentRound: 1,
+        currentLabels: [],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/reviewFilePath/);
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 for currentRound outside 1..3 (boundary: 0, 4, 99)", async () => {
+      for (const bad of [0, 4, 99, -1]) {
+        jest.clearAllMocks();
+        const req = makeRequest({
+          epicId: "epic-rr-bad",
+          epicTitle: "Internal: k7gy",
+          action: "revise-plan-from-review",
+          currentRound: bad,
+          reviewFilePath: ".beads/plans/x-review.md",
+          currentLabels: [],
+        });
+        const res = await POST(req);
+        expect(res.status).toBe(400);
+        expect(mockLaunchAgent).not.toHaveBeenCalled();
+      }
+    });
+
+    it("re-launches planner with --feedback=<path> in the prompt args", async () => {
+      const req = makeRequest({
+        epicId: "epic-rr-prompt",
+        epicTitle: "Internal: k7gy",
+        action: "revise-plan-from-review",
+        currentRound: 2,
+        reviewFilePath: ".beads/plans/epic-rr-prompt-review.md",
+        currentLabels: ["plan:reviewing", "plan:revise-round-1"],
+      });
+      await POST(req);
+      const call = mockLaunchAgent.mock.calls.at(-1);
+      const args = call?.[0] as { prompt?: string; agentName?: string; pipelineStage?: string };
+      expect(args?.agentName).toBe("planner");
+      expect(args?.pipelineStage).toBe("planning");
+      expect(args?.prompt).toMatch(/--feedback=\.beads\/plans\/epic-rr-prompt-review\.md/);
+    });
+
+    it("rolls back on launch failure — plan:needs-revision cleared", async () => {
+      mockLaunchAgent.mockRejectedValueOnce(new Error("boom"));
+      const req = makeRequest({
+        epicId: "epic-rr-fail",
+        epicTitle: "Internal: k7gy",
+        action: "revise-plan-from-review",
+        currentRound: 1,
+        reviewFilePath: ".beads/plans/epic-rr-fail-review.md",
+        currentLabels: ["plan:reviewing"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      // Expect rollback removal.
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-rr-fail",
+        ["plan:needs-revision", "plan:revise-round-1", "agent:running"],
+        expect.any(String),
+      );
+    });
+  });
+
+  describe("approve-and-build fromChain: true (k7gy.5 F6)", () => {
+    it("removes plan:reviewing and NOT plan:pending when fromChain is true", async () => {
+      const req = makeRequest({
+        epicId: "epic-ab-chain",
+        epicTitle: "Internal: k7gy",
+        action: "approve-and-build",
+        fromChain: true,
+        currentLabels: ["plan:reviewing"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      // Chain path strips reviewing + reviewed + needs-revision — not pending.
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-ab-chain",
+        [
+          "pipeline:research-complete",
+          "plan:reviewing",
+          "plan:reviewed",
+          "plan:needs-revision",
+        ],
+        expect.any(String),
+      );
+    });
+
+    it("owner-click path (no fromChain) still removes plan:pending — byte-identical to pre-k7gy", async () => {
+      const req = makeRequest({
+        epicId: "epic-ab-owner",
+        epicTitle: "Internal: k7gy",
+        action: "approve-and-build",
+        currentLabels: ["plan:pending"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-ab-owner",
+        ["pipeline:research-complete", "plan:pending"],
+        expect.any(String),
+      );
+    });
+
+    it("fromChain: false (explicit) behaves identically to absent — owner-click path", async () => {
+      const req = makeRequest({
+        epicId: "epic-ab-false",
+        epicTitle: "Internal: k7gy",
+        action: "approve-and-build",
+        fromChain: false,
+        currentLabels: ["plan:pending"],
+      });
+      await POST(req);
+
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-ab-false",
+        ["pipeline:research-complete", "plan:pending"],
+        expect.any(String),
+      );
+    });
+  });
 });

@@ -64,7 +64,10 @@ type PipelineAction =
   | "run-test-spec"
   | "revise-test-spec"
   | "human-approve"
-  | "human-dismiss";
+  | "human-dismiss"
+  // factory-core-k7gy.5 — plan-review auto-chain actions (F5/F6/F7)
+  | "review-plan"
+  | "revise-plan-from-review";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -99,6 +102,9 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "revise-test-spec",
   "human-approve",
   "human-dismiss",
+  // factory-core-k7gy.5 — plan-review auto-chain actions
+  "review-plan",
+  "revise-plan-from-review",
 ]);
 
 // Resolve fleet-core path: env var > hardcoded fallback
@@ -165,6 +171,10 @@ export async function POST(request: NextRequest) {
     waveNumber,
     targetLabel,
     targetBeadId,
+    // factory-core-k7gy.5 — plan-review auto-chain fields
+    fromChain,
+    reviewFilePath,
+    currentRound,
   } = body;
 
   if (!epicId || typeof epicId !== "string") {
@@ -264,12 +274,16 @@ export async function POST(request: NextRequest) {
           );
         }
 
+        // Closed beads without wave labels (e.g. research tasks created before
+        // the planner ran) are excluded from the consistency check — they don't
+        // need wave assignments to proceed.
+        const relevantChildren = waveStatus.totalChildren - (waveStatus.closedWithoutWaveLabel ?? 0);
         const allHaveWaves =
-          waveStatus.totalChildren > 0 &&
-          waveStatus.childrenWithWaveLabels === waveStatus.totalChildren;
+          relevantChildren > 0 &&
+          waveStatus.childrenWithWaveLabels === relevantChildren;
         const mixedLabelling =
           waveStatus.childrenWithWaveLabels > 0 &&
-          waveStatus.childrenWithWaveLabels < waveStatus.totalChildren;
+          waveStatus.childrenWithWaveLabels < relevantChildren;
 
         if (mixedLabelling) {
           return NextResponse.json(
@@ -794,7 +808,31 @@ export async function POST(request: NextRequest) {
       case "approve-and-build": {
         // Approve the plan and route to test-spec (not development)
         // Test-spec writes test scenarios before the builder starts
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending"], fleetCorePath);
+        //
+        // factory-core-k7gy.5 — `fromChain: true` means the orchestrator is
+        // dispatching after a PASS verdict from the reviewer agent. In that
+        // path the reviewer has already replaced plan:pending with
+        // plan:reviewing, so we clean up plan:reviewing/plan:reviewed instead
+        // of plan:pending. ADR-008 — byte-identical owner-click path preserved
+        // when `fromChain` is absent or explicitly false.
+        if (fromChain === true) {
+          await removeLabelsFromEpic(
+            epicId,
+            [
+              "pipeline:research-complete",
+              "plan:reviewing",
+              "plan:reviewed",
+              "plan:needs-revision",
+            ],
+            fleetCorePath,
+          );
+        } else {
+          await removeLabelsFromEpic(
+            epicId,
+            ["pipeline:research-complete", "plan:pending"],
+            fleetCorePath,
+          );
+        }
         await addLabelsToEpic(epicId, ["plan:approved", "pipeline:test-spec", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -1529,6 +1567,162 @@ export async function POST(request: NextRequest) {
         await dismissHumanItem(targetBeadId as string, beadRepoPath);
         invalidateCache({ type: "epic", epicId });
         return NextResponse.json({ success: true, action, epicId, targetBeadId });
+      }
+
+      // -------------------------------------------------------------------
+      // REVIEW PLAN: Launch the reviewer agent against a drafted plan.
+      // factory-core-k7gy.5 (F5) — called by the orchestrator after planner
+      // exit, or directly by curl for manual dry-runs.
+      //
+      // Labels: plan:pending → plan:reviewing. pipeline:plan-review stays.
+      // Fail-closed (regression #13): if the reviewer launch errors, we roll
+      // back plan:reviewing and restore plan:pending so the owner-click path
+      // is still available.
+      // -------------------------------------------------------------------
+      case "review-plan": {
+        const priorLabels = [...labels];
+        await removeLabelsFromEpic(epicId, ["plan:pending"], fleetCorePath);
+        await addLabelsToEpic(
+          epicId,
+          ["plan:reviewing", "pipeline:plan-review", "agent:running"],
+          fleetCorePath,
+        );
+        invalidateCache({ type: "epic", epicId });
+
+        const {
+          repoPath: reviewRepoPath,
+          specPath: reviewSpecPath,
+          architecturePath: reviewArchPath,
+        } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath,
+        );
+
+        const reviewSpecInfo = reviewSpecPath ? ` Spec: ${reviewSpecPath}.` : "";
+        const reviewArchInfo = reviewArchPath ? ` Architecture: ${reviewArchPath}.` : "";
+        const reviewPrompt = `Review the plan for "${epicTitle}" (epic: ${epicId}, stage: plan, platform: ${shipType}).${reviewSpecInfo}${reviewArchInfo} Product repo: ${reviewRepoPath}. Follow Stage 3 in .claude/agents/reviewer.md.`;
+
+        try {
+          const reviewSession = await launchAgent({
+            repoPath: fleetCorePath,
+            repoName: "fleet-core",
+            prompt: reviewPrompt,
+            model: "opus",
+            maxTurns: 200,
+            allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+            epicId: epicId,
+            epicLabels: priorLabels,
+            pipelineStage: "plan-review",
+            agentName: "reviewer",
+          });
+          return NextResponse.json({ success: true, action, epicId, session: reviewSession });
+        } catch (launchError: unknown) {
+          // Fail-closed rollback — restore plan:pending so the owner-click
+          // path is still reachable and the dashboard doesn't strand at
+          // plan:reviewing without a running agent.
+          await removeLabelsFromEpic(
+            epicId,
+            ["plan:reviewing", "agent:running"],
+            fleetCorePath,
+          );
+          await addLabelsToEpic(epicId, ["plan:pending"], fleetCorePath);
+          invalidateCache({ type: "epic", epicId });
+          const msg = launchError instanceof Error ? launchError.message : "Unknown error";
+          return NextResponse.json(
+            { error: `review-plan launch failed: ${msg}` },
+            { status: 500 },
+          );
+        }
+      }
+
+      // -------------------------------------------------------------------
+      // REVISE PLAN FROM REVIEW: Re-launch the planner with the reviewer's
+      // feedback file. factory-core-k7gy.5 (F7) — called by the orchestrator
+      // when the reviewer exits with open review:plan bugs and currentRound
+      // is within 1..3 (the cap at round 3 is enforced upstream by the
+      // orchestrator).
+      //
+      // Labels: plan:reviewing → plan:needs-revision + plan:revise-round-N
+      // (cumulative per ADR-004). Planner re-launches with --feedback=<path>.
+      // Fail-closed (regression #13): launch errors roll back the labels so
+      // the owner-click override path is still reachable.
+      // -------------------------------------------------------------------
+      case "revise-plan-from-review": {
+        if (typeof reviewFilePath !== "string" || reviewFilePath.trim() === "") {
+          return NextResponse.json(
+            { error: "revise-plan-from-review requires reviewFilePath" },
+            { status: 400 },
+          );
+        }
+        const roundRaw = typeof currentRound === "number" ? currentRound : Number(currentRound);
+        if (!Number.isInteger(roundRaw) || roundRaw < 1 || roundRaw > 3) {
+          return NextResponse.json(
+            { error: `revise-plan-from-review currentRound must be 1, 2, or 3 (got ${currentRound})` },
+            { status: 400 },
+          );
+        }
+        const roundLabel = `plan:revise-round-${roundRaw}`;
+
+        const priorLabels = [...labels];
+        await removeLabelsFromEpic(
+          epicId,
+          ["plan:reviewing", "plan:reviewed"],
+          fleetCorePath,
+        );
+        await addLabelsToEpic(
+          epicId,
+          [
+            "plan:needs-revision",
+            roundLabel,
+            "pipeline:plan-review",
+            "agent:running",
+          ],
+          fleetCorePath,
+        );
+        invalidateCache({ type: "epic", epicId });
+
+        const { repoPath: reviseRepoPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          appName,
+          epicId as string,
+          fleetCorePath,
+        );
+
+        const feedbackArg = ` --feedback=${reviewFilePath}`;
+        const revisePrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${reviseRepoPath}. Fleet-core: ${fleetCorePath}.${feedbackArg}`;
+
+        try {
+          const reviseSession = await launchAgent({
+            repoPath: fleetCorePath,
+            repoName: "fleet-core",
+            prompt: revisePrompt,
+            model: "opus",
+            maxTurns: 200,
+            allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+            epicId: epicId,
+            epicLabels: priorLabels,
+            pipelineStage: "planning",
+            agentName: "planner",
+          });
+          return NextResponse.json({ success: true, action, epicId, session: reviseSession });
+        } catch (launchError: unknown) {
+          // Fail-closed rollback.
+          await removeLabelsFromEpic(
+            epicId,
+            ["plan:needs-revision", roundLabel, "agent:running"],
+            fleetCorePath,
+          );
+          invalidateCache({ type: "epic", epicId });
+          const msg = launchError instanceof Error ? launchError.message : "Unknown error";
+          return NextResponse.json(
+            { error: `revise-plan-from-review launch failed: ${msg}` },
+            { status: 500 },
+          );
+        }
       }
 
       default:
