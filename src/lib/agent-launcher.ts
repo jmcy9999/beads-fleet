@@ -20,6 +20,7 @@ import { promisify } from "util";
 import { getBdPath, getBdEnv } from "./bd-path";
 import { buildOtelEnv, buildLangfuseTraceUrl, isLangfuseConfigured } from "./langfuse-env";
 import { withLock, chainLock, LockTimeoutError } from "./locks";
+import { readFleetConfig } from "./fleet-config";
 
 const execAsync = promisify(exec);
 
@@ -165,8 +166,8 @@ export function clearWaveReviewGuard(epicId: string, wave?: number): void {
  * when start-wave is called from the auto-chain after a bead closes
  * (factory-core-z9h.6 tail-bead launch).
  */
-export function isAgentActive(repoPath: string, beadId?: string): boolean {
-  const key = activeAgentKey(repoPath, beadId);
+export function isAgentActive(repoPath: string, beadId?: string, epicId?: string): boolean {
+  const key = activeAgentKey(repoPath, beadId, epicId);
   return activeAgents.has(key);
 }
 
@@ -642,7 +643,7 @@ async function attemptRecovery(): Promise<void> {
       // factory-core-z9h.3: recover composite key so per-bead parallel
       // builders (same repo, different beadId) don't collapse into one
       // tracked slot.
-      key = activeAgentKey(session.repoPath, session.beadId);
+      key = activeAgentKey(session.repoPath, session.beadId, session.epicId);
     } catch {
       continue; // Path doesn't exist
     }
@@ -823,11 +824,16 @@ export interface WaveStatus {
   totalChildren: number;
   /**
    * Count of children that have a wave:N label (factory-core-z9h.4).
-   * If 0 < childrenWithWaveLabels < totalChildren the labelling is
-   * inconsistent and the caller should reject — we never silently mix
-   * waved and un-waved beads in the same epic.
+   * If 0 < childrenWithWaveLabels < (totalChildren - closedWithoutWaveLabel)
+   * the labelling is inconsistent and the caller should reject.
    */
   childrenWithWaveLabels: number;
+  /**
+   * Count of closed children with no wave:N label. These are pre-existing
+   * beads (e.g. research tasks created before the planner ran) that don't
+   * need wave assignments. Excluded from the consistency check.
+   */
+  closedWithoutWaveLabel: number;
   /**
    * Present when wave state COULD NOT BE DETERMINED because one or more
    * underlying `bd` commands failed (factory-core-z9h.10).
@@ -891,13 +897,14 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
       hasCheckpointRequired,
       totalChildren: 0,
       childrenWithWaveLabels: 0,
+      closedWithoutWaveLabel: 0,
       error: `bd list failed for epic ${epicId} (filter=${filterArgs.slice(1).join(" ")}) — cannot determine wave state`,
     };
   }
 
   const children = parseChildrenFromTree(childrenResult.stdout);
   if (children.length === 0) {
-    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: 0, childrenWithWaveLabels: 0 };
+    return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: 0, childrenWithWaveLabels: 0, closedWithoutWaveLabel: 0 };
   }
 
   // Step 2: Get wave labels from bd show for each child
@@ -905,6 +912,7 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
   // so we must query each child individually to get wave:N labels)
   const waveMap = new Map<number, { total: number; closed: number }>();
   let childrenWithWaveLabels = 0;
+  let closedWithoutWaveLabel = 0;
   for (const child of children) {
     const showResult = execBdSync(["show", child.id], repoPath, 5000);
     if (!showResult.success) {
@@ -940,12 +948,21 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
         hasCheckpointRequired,
         totalChildren: children.length,
         childrenWithWaveLabels: 0,
+        closedWithoutWaveLabel: 0,
         error: `bd show failed for child ${child.id} of epic ${epicId} — cannot determine wave state`,
       };
     }
 
     const waveMatch = showResult.stdout.match(/wave:(\d+)/);
-    if (!waveMatch) continue;
+    if (!waveMatch) {
+      // Closed beads without wave labels are pre-existing work (e.g. research
+      // beads created before the planner ran). They don't need wave assignments
+      // to proceed — exclude them from the consistency check.
+      if (child.isClosed) {
+        closedWithoutWaveLabel += 1;
+      }
+      continue;
+    }
     const waveNum = parseInt(waveMatch[1], 10);
     if (isNaN(waveNum)) continue;
 
@@ -959,7 +976,7 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
   }
 
   if (waveMap.size === 0) {
-    return { hasWaves: false, waves: waveMap, currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: children.length, childrenWithWaveLabels: 0 };
+    return { hasWaves: false, waves: waveMap, currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: children.length, childrenWithWaveLabels: 0, closedWithoutWaveLabel };
   }
 
   // Use waveMap.size (count of distinct waves) for consistency with
@@ -978,7 +995,7 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
   const currentWaveComplete = currentEntry.closed >= currentEntry.total;
   const allWavesComplete = Array.from(waveMap.values()).every((e) => e.closed >= e.total);
 
-  return { hasWaves: true, waves: waveMap, currentWave, totalWaves, currentWaveComplete, allWavesComplete, hasCheckpointRequired, totalChildren: children.length, childrenWithWaveLabels };
+  return { hasWaves: true, waves: waveMap, currentWave, totalWaves, currentWaveComplete, allWavesComplete, hasCheckpointRequired, totalChildren: children.length, childrenWithWaveLabels, closedWithoutWaveLabel };
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,6 +1036,14 @@ export interface EpicStateSnapshot {
    * caller must treat this as "unknown, assume bugs exist" (fail-safe).
    */
   openBugCount: number;
+  /**
+   * Count of open bug beads filtered by the `review:plan` label — the
+   * authoritative PASS/NEEDS REVISION signal for the plan-review stage
+   * (architecture ADR-002, factory-core-k7gy.9). Same `-1` fail-safe contract
+   * as {@link openBugCount}: a bd query failure surfaces as `-1`, which the
+   * plan-review branch treats as "assume bugs exist" (regression pattern #13).
+   */
+  openPlanReviewBugCount: number;
   /** `Date.now()` at the moment the snapshot was read. Useful for logs. */
   capturedAt: number;
 }
@@ -1075,10 +1100,27 @@ export async function readEpicState(
     ? bugResult.stdout.split("\n").filter((line) => lineIsBugType(line)).length
     : -1; // fail-safe sentinel
 
+  // 4) Open `review:plan` bug count — authoritative PASS/NEEDS REVISION
+  //    signal for the plan-review stage (architecture ADR-002,
+  //    factory-core-k7gy.9). Same scope rules as (3), plus AND-filter on
+  //    the `review:plan` label so only reviewer-filed bugs are counted.
+  //    `bd list --label` is "AND: must have ALL" per `bd list --help`.
+  //    Kept inside readEpicState so every plan-review branching decision
+  //    reads from the SAME atomic snapshot — no fresh bd call mid-handler
+  //    (ppx.6 Feature 2 AC, regression pattern #1).
+  const planReviewFilterArgs = isInternal
+    ? ["list", "--status=open", `--parent=${epicId}`, "--label", "review:plan"]
+    : ["list", "--status=open", "--label", `epic:${epicId},review:plan`];
+  const planReviewResult = execBdSync(planReviewFilterArgs, repoPath, 10000);
+  const openPlanReviewBugCount = planReviewResult.success
+    ? planReviewResult.stdout.split("\n").filter((line) => lineIsBugType(line)).length
+    : -1; // fail-safe sentinel — treat as "assume bugs exist" (reg #13)
+
   return {
     labels,
     waveStatus,
     openBugCount,
+    openPlanReviewBugCount,
     capturedAt: Date.now(),
   };
 }
@@ -1342,14 +1384,84 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
   }
 
   // -------------------------------------------------------------------------
-  // planning -> plan:pending: stop for owner review (human gate)
-  // Owner clicks "Approve Plan" or "Revise Plan" from the dashboard.
-  // Do NOT auto-chain to build — the plan must be reviewed first.
+  // planning -> plan-review: auto-launch reviewer agent
+  // (factory-core-k7gy.9 — F5 auto-chain, gated by F9 kill switch)
+  //
+  // When `features.plan_review_auto_chain` is OFF (default during bake-in):
+  //   return false. EXIT_LABELS.planning = ["plan:pending"] applies, the
+  //   pre-k7gy owner-click path (Approve & Test / Revise Plan) continues to
+  //   work unchanged. This is the safe default per ADR-003.
+  //
+  // When the flag is ON:
+  //   acquire chainLock(epicId), POST `review-plan` to the fleet action
+  //   route. The route transitions plan:pending → plan:reviewing and
+  //   launches the reviewer agent with pipelineStage="plan-review". Success
+  //   → return true (chain handled; NEXT_STAGE is skipped). Non-2xx → return
+  //   false (fail-closed per F5 AC3 + regression pattern #13 — the route
+  //   rolls back plan:reviewing and restores plan:pending, so the
+  //   owner-click path is still reachable).
+  //
+  // Kept at the top of handleChainAction (outside dispatchChainAction) so
+  // flag-off exits short-circuit without touching the lock or snapshot.
   // -------------------------------------------------------------------------
   if (stage === "planning") {
-    // plan:pending is added by the EXIT_LABELS map.
-    // No auto-chain — return false so the normal exit handler applies EXIT_LABELS.
-    return false;
+    const { plan_review_auto_chain } = readFleetConfig();
+    if (!plan_review_auto_chain) {
+      // Flag off — preserve pre-k7gy behaviour: EXIT_LABELS applies
+      // plan:pending, owner clicks from the dashboard.
+      return false;
+    }
+    if (!session.epicId) {
+      // Flag on but session has no epicId: cannot form a chainLock key.
+      // Fail-safe: return false so the owner-click path takes over.
+      console.warn(
+        "[handleChainAction] planning auto-chain: flag on but session has no epicId — skipping",
+      );
+      return false;
+    }
+    const planningEpicId = session.epicId;
+    try {
+      return await withLock(chainLock(planningEpicId), 500, async () => {
+        const res = await fetch("http://localhost:3000/api/fleet/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "review-plan",
+            epicId: session.epicId,
+            epicTitle: session.repoName,
+            currentLabels: session.epicLabels,
+            fromChain: true,
+          }),
+        });
+        if (!res.ok) {
+          // Fail-closed (F5 AC3, regression pattern #13). The route itself
+          // rolled back labels; our job is to tell the exit handler not to
+          // pretend the chain advanced so NEXT_STAGE is skipped AND the
+          // owner-click path stays reachable.
+          console.warn(
+            `[handleChainAction] review-plan dispatch failed: HTTP ${res.status} — ` +
+              `leaving epic ${planningEpicId} at plan:pending`,
+          );
+          return false;
+        }
+        return true;
+      });
+    } catch (err) {
+      if (err instanceof LockTimeoutError) {
+        // Another planner exit for the same epic is already dispatching —
+        // let it do the work. F5 AC5: chainLock prevents double-launch.
+        console.warn(
+          `[handleChainAction] planning chain lock timeout for epic ${planningEpicId} ` +
+            `(${err.timeoutMs}ms) — skipping`,
+        );
+        return false;
+      }
+      console.error(
+        `[handleChainAction] planning auto-chain failed for epic ${planningEpicId}:`,
+        err,
+      );
+      return false;
+    }
   }
 
   // factory-core-ppx.6: every remaining stage needs an epicId to look up
@@ -1751,7 +1863,172 @@ async function dispatchChainAction(
     }
   }
 
+  // -------------------------------------------------------------------------
+  // plan-review -> test-spec (PASS) or revise-plan-from-review (NEEDS
+  // REVISION with cap) or qa:needs-review (cap reached)
+  // (factory-core-k7gy.9 — F6 PASS path, F7 revise-with-cap path, F9 kill
+  // switch)
+  //
+  // Gated by `features.plan_review_auto_chain`. When OFF, return false —
+  // the reviewer ran but we do NOT auto-advance; owner picks up (F6/F7
+  // kill-switch ACs). When ON, branch on the `review:plan`-filtered open
+  // bug count from the snapshot (ADR-002: bug count is the ONLY verdict
+  // signal; the VERDICT line in the review file is audit-only).
+  //
+  // Decision table:
+  //   openPlanReviewBugCount === 0
+  //      → PASS. Dispatch `approve-and-build` with `fromChain: true`.
+  //        The route transitions plan:reviewing → plan:approved +
+  //        pipeline:test-spec and launches the test-spec agent (ADR-008).
+  //
+  //   openPlanReviewBugCount > 0  (or -1 fail-safe sentinel)
+  //      → NEEDS REVISION. Read the highest `plan:revise-round-N` label
+  //        present (ADR-004: cumulative, no decrement). If N < 3, dispatch
+  //        `revise-plan-from-review` with `currentRound: N+1`. If N === 3,
+  //        DO NOT re-launch — add `qa:needs-review` (human gate) and stop.
+  //
+  // The `-1` sentinel (bd failure on the plan-review bug count query) is
+  // treated as "> 0" (reg pattern #13 — fail-closed: never silently PASS).
+  //
+  // The entire decision runs inside the chain lock (acquired in
+  // handleChainAction) so two concurrent reviewer exits cannot both
+  // dispatch. Label mutations (addLabelsToEpic below) acquire epicLock —
+  // a DIFFERENT key from chainLock (ppx ADR-002) — so no deadlock.
+  // -------------------------------------------------------------------------
+  if (stage === "plan-review") {
+    const { plan_review_auto_chain } = readFleetConfig();
+    if (!plan_review_auto_chain) {
+      // Kill switch: the reviewer ran but we do not auto-advance. The
+      // owner sees the epic at plan:reviewing with agent:running cleared
+      // and can click Approve & Test or Revise Plan manually.
+      return false;
+    }
+
+    const { openPlanReviewBugCount } = snapshot;
+    // Fail-safe: `-1` means the bd query for review:plan bugs failed. Treat
+    // as "assume bugs exist" so we never silently PASS a plan we couldn't
+    // inspect (regression pattern #13).
+    const hasBugs = openPlanReviewBugCount === -1 || openPlanReviewBugCount > 0;
+
+    if (!hasBugs) {
+      // PASS path (F6 AC1). Dispatch approve-and-build with fromChain:true.
+      // The route strips plan:reviewing/plan:reviewed/plan:needs-revision
+      // and applies plan:approved + pipeline:test-spec (ADR-008).
+      try {
+        const res = await fetch("http://localhost:3000/api/fleet/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "approve-and-build",
+            epicId: session.epicId,
+            epicTitle: session.repoName,
+            currentLabels: session.epicLabels,
+            fromChain: true,
+          }),
+        });
+        if (!res.ok) {
+          // Fail-closed. The route handles its own label rollback; we
+          // just avoid advancing NEXT_STAGE.
+          console.warn(
+            `[handleChainAction] approve-and-build(fromChain) failed: HTTP ${res.status} — ` +
+              `epic ${session.epicId} remains at plan:reviewing`,
+          );
+          return false;
+        }
+        return true; // Chain handled (plan-review PASS → test-spec)
+      } catch (err) {
+        console.error(
+          `[handleChainAction] approve-and-build(fromChain) threw for epic ${session.epicId}:`,
+          err,
+        );
+        return false;
+      }
+    }
+
+    // NEEDS REVISION path (F7). Derive the current revise round from the
+    // highest `plan:revise-round-N` label present in the snapshot (ADR-004
+    // cumulative labels, no decrement). Snapshot labels were read atomically
+    // with the bug count so both reflect the same epic state.
+    const currentRound = highestReviseRound(snapshot.labels);
+
+    if (currentRound >= 3) {
+      // Cap reached (F7 AC3). DO NOT re-launch the planner — this would be
+      // round 4 which would burn tokens indefinitely on a pathological plan.
+      // Add qa:needs-review so Jane is pulled in; return true so NEXT_STAGE
+      // is skipped and the epic stays visible under plan-review with the
+      // human-gate indicator active.
+      try {
+        const { addLabelsToEpic } = await import("./pipeline-labels");
+        await addLabelsToEpic(session.epicId!, ["qa:needs-review"]);
+        console.log(
+          `[handleChainAction] plan-review revise cap reached for epic ${session.epicId} ` +
+            `(round ${currentRound}) — applied qa:needs-review, stopping auto-chain`,
+        );
+      } catch (err) {
+        console.error(
+          `[handleChainAction] failed to apply qa:needs-review on cap for epic ${session.epicId}:`,
+          err,
+        );
+        return false; // Fail-closed: don't swallow the error silently
+      }
+      return true;
+    }
+
+    // Under the cap — dispatch another revision round (F7 AC1/AC2).
+    const nextRound = currentRound + 1;
+    const reviewFilePath = `${session.repoPath}/.beads/plans/${session.epicId}-review.md`;
+
+    try {
+      const res = await fetch("http://localhost:3000/api/fleet/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "revise-plan-from-review",
+          epicId: session.epicId,
+          epicTitle: session.repoName,
+          currentLabels: session.epicLabels,
+          reviewFilePath,
+          currentRound: nextRound,
+        }),
+      });
+      if (!res.ok) {
+        console.warn(
+          `[handleChainAction] revise-plan-from-review failed: HTTP ${res.status} — ` +
+            `epic ${session.epicId} stays at plan:reviewing (round ${nextRound} not entered)`,
+        );
+        return false;
+      }
+      return true; // Chain handled (plan-review NEEDS REVISION → re-plan)
+    } catch (err) {
+      console.error(
+        `[handleChainAction] revise-plan-from-review threw for epic ${session.epicId}:`,
+        err,
+      );
+      return false;
+    }
+  }
+
   return false;
+}
+
+/**
+ * Return the highest `plan:revise-round-N` integer present in the label set,
+ * or 0 if no round label is present. Per ADR-004, round labels are cumulative
+ * (round-2 implies round-1 also stays set), so the highest integer is the
+ * current round count. The orchestrator branches to cap at N >= 3 and to
+ * dispatch with `currentRound: N+1` otherwise.
+ *
+ * Exported for factory-core-k7gy.9 tests.
+ */
+export function highestReviseRound(labels: string[]): number {
+  let highest = 0;
+  for (const label of labels) {
+    const match = label.match(/^plan:revise-round-(\d+)$/);
+    if (!match) continue;
+    const n = parseInt(match[1], 10);
+    if (Number.isFinite(n) && n > highest) highest = n;
+  }
+  return highest;
 }
 
 // ---------------------------------------------------------------------------
@@ -1876,13 +2153,14 @@ async function ensureLogDir(): Promise<void> {
  * follows the z9h.12 `sessionFileFor` precedent (same motivation: prevent
  * future regression of the composite-key invariant).
  */
-export function activeAgentKey(repoPath: string, beadId?: string): string {
+export function activeAgentKey(repoPath: string, beadId?: string, epicId?: string): string {
   const real = realpathSync(repoPath);
-  return beadId ? `${real}::${beadId}` : real;
+  const scope = beadId ?? epicId;
+  return scope ? `${real}::${scope}` : real;
 }
 
 export async function launchAgent(options: LaunchOptions): Promise<AgentSession> {
-  const repoKey = activeAgentKey(options.repoPath, options.beadId);
+  const repoKey = activeAgentKey(options.repoPath, options.beadId, options.epicId);
   const existing = activeAgents.get(repoKey);
   if (existing) {
     const stillRunning = existing.session.tmuxSessionName
