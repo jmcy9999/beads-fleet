@@ -1431,6 +1431,41 @@ export async function listOpenWaveBeads(
 const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
 
 /**
+ * factory-core-lfcf.3: emit a `stage-dispatched` event to pair with the
+ * `agent-exited` event that triggered this handleChainAction invocation.
+ * The reconciler (lfcf.4) detects missed dispatches by looking for exits
+ * with no matching dispatch inside the pairing window. Best-effort —
+ * appendEvent already swallows its own errors, and we wrap in try/catch
+ * to catch the dynamic-import path itself.
+ */
+async function emitStageDispatched(
+  session: AgentSession,
+  toAction: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    const { appendEvent } = await import("./event-log");
+    await appendEvent(FLEET_CORE_PATH, {
+      type: "stage-dispatched",
+      epicId: session.epicId!,
+      stage: session.pipelineStage,
+      correlationId: session.tmuxSessionName,
+      payload: {
+        toAction,
+        waveNumber: session.waveNumber,
+        beadId: session.beadId,
+        ...extra,
+      },
+    });
+  } catch (err) {
+    console.error(
+      `[lfcf.3] emitStageDispatched(${toAction}) threw:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
  * Returns true if the chain action handled the stage transition (so NEXT_STAGE
  * should be skipped), or false if normal NEXT_STAGE logic should proceed.
  */
@@ -1838,6 +1873,9 @@ async function dispatchChainAction(
                 `review-wave dispatch failed: HTTP ${res.status}`,
               );
             }
+            await emitStageDispatched(session, "review-wave", {
+              waveNumber: waveStatus.currentWave,
+            });
           } catch (err) {
             clearWaveReviewGuard(session.epicId!, waveStatus.currentWave);
             throw err; // Surface to outer catch — logs and returns false.
@@ -1863,6 +1901,10 @@ async function dispatchChainAction(
               waveNumber: waveStatus.currentWave,
             }),
           });
+          await emitStageDispatched(session, "start-wave", {
+            waveNumber: waveStatus.currentWave,
+            trigger: "bead-close-relaunch",
+          });
           return true; // Chain handled (bead close -> launch next deferred bead)
         }
         // Wave-session agent (pre-z9h.3 or legacy fallback) exited without
@@ -1884,6 +1926,9 @@ async function dispatchChainAction(
           epicTitle: session.repoName,
           currentLabels: session.epicLabels,
         }),
+      });
+      await emitStageDispatched(session, "send-for-qa", {
+        trigger: "legacy-no-waves",
       });
       return true; // Chain handled (development -> qa, legacy no-wave-labels only)
     } catch (err) {
@@ -1939,6 +1984,10 @@ async function dispatchChainAction(
             waveNumber: reviewedWave,
           }),
         });
+        await emitStageDispatched(session, "start-wave", {
+          waveNumber: reviewedWave,
+          trigger: "review-bugs-refix",
+        });
         return true; // Chain handled (review -> fix wave)
       }
 
@@ -1971,6 +2020,10 @@ async function dispatchChainAction(
             waveNumber: nextWave,
           }),
         });
+        await emitStageDispatched(session, "start-wave", {
+          waveNumber: nextWave,
+          trigger: "review-pass-next-wave",
+        });
         return true; // Chain handled (review -> next wave)
       }
 
@@ -1989,6 +2042,10 @@ async function dispatchChainAction(
           epicTitle: session.repoName,
           currentLabels: session.epicLabels,
         }),
+      });
+      await emitStageDispatched(session, "run-smoke-test", {
+        reviewedWave,
+        trigger: "final-wave-review-pass",
       });
       return true; // Chain handled (final wave review -> smoke-test)
     } catch (err) {
@@ -2019,6 +2076,9 @@ async function dispatchChainAction(
             epicTitle: session.repoName,
             currentLabels: session.epicLabels,
           }),
+        });
+        await emitStageDispatched(session, "qa-fix-and-retest", {
+          trigger: "polish-bugs",
         });
         return true; // Chain handled (polish -> fix loop)
       }
@@ -2054,6 +2114,9 @@ async function dispatchChainAction(
           currentLabels: session.epicLabels,
         }),
       });
+      await emitStageDispatched(session, "send-for-qa", {
+        trigger: "polish-pass-next-qa",
+      });
       return true; // Chain handled (polish PASS -> next QA round)
     } catch (err) {
       console.error("Failed to handle ux-polish chain:", err);
@@ -2083,6 +2146,9 @@ async function dispatchChainAction(
             currentLabels: session.epicLabels,
           }),
         });
+        await emitStageDispatched(session, "qa-fix-and-retest", {
+          trigger: "smoke-test-bugs",
+        });
         return true; // Chain handled (smoke-test -> fix loop)
       }
       // No bugs — advance to QA.
@@ -2095,6 +2161,9 @@ async function dispatchChainAction(
           epicTitle: session.repoName,
           currentLabels: session.epicLabels,
         }),
+      });
+      await emitStageDispatched(session, "send-for-qa", {
+        trigger: "smoke-test-pass",
       });
       return true; // Chain handled (smoke-test PASS -> qa)
     } catch (err) {
@@ -2160,6 +2229,10 @@ async function dispatchChainAction(
             currentLabels: session.epicLabels,
           }),
         });
+        await emitStageDispatched(session, "qa-fix-and-retest", {
+          trigger: "qa-bugs",
+          qaRound: currentRound,
+        });
         return true; // Handled -- bugs found, looping back through dev -> QA
       }
       // No bugs under this epic -- QA passed!
@@ -2216,6 +2289,10 @@ async function dispatchChainAction(
             currentLabels: session.epicLabels,
           }),
         });
+        await emitStageDispatched(session, "run-polish", {
+          trigger: "qa-pass-has-polish",
+          shipType: stShip,
+        });
         console.log(`QA passed for ${session.epicId} — advanced to ux-polish (${stShip})`);
       } else {
         // factory-core-zszt.4: smoke-test freshness gate. For iOS/macOS the
@@ -2259,6 +2336,9 @@ async function dispatchChainAction(
           epicTitle: session.repoName,
           currentLabels: session.epicLabels,
         }),
+      });
+      await emitStageDispatched(session, "send-for-qa", {
+        trigger: "qa-fixes-complete",
       });
       return true; // Chain handled the transition (qa-fixes -> qa)
     } catch (err) {
@@ -2473,6 +2553,34 @@ async function handleAgentExit(
   exitCode: number | null,
   langfuseSpan: any, // eslint-disable-line @typescript-eslint/no-explicit-any
 ): Promise<void> {
+  // factory-core-lfcf.3: emit agent-exited event to the pipeline event log
+  // BEFORE any label transitions or chain-action dispatch. This anchors the
+  // reconciler's "did a transition follow this exit?" checks to the moment
+  // the work actually finished, not to whatever happens next. appendEvent
+  // swallows errors (see event-log.ts failure contract) so this never
+  // affects the rest of handleAgentExit.
+  if (session.epicId) {
+    try {
+      const { appendEvent } = await import("./event-log");
+      await appendEvent(FLEET_CORE_PATH, {
+        type: "agent-exited",
+        epicId: session.epicId,
+        stage: session.pipelineStage,
+        correlationId: session.tmuxSessionName,
+        payload: {
+          exitCode,
+          waveNumber: session.waveNumber,
+          beadId: session.beadId,
+        },
+      });
+    } catch (err) {
+      console.error(
+        "[lfcf.3] appendEvent(agent-exited) threw (should not be possible):",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   // Complete Langfuse lifecycle trace BEFORE pipeline transitions (factory-core-75e)
   // Per ADR-003: independent try/catch — Langfuse errors must not affect pipeline logic
   if (langfuseSpan) {
