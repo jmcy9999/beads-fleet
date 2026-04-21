@@ -14,6 +14,7 @@ import { useFleetAgentStatus, useAgentStop } from "@/hooks/useAgent";
 import { usePipelineAction } from "@/hooks/usePipelineAction";
 import { useAttentionItems } from "@/hooks/useAttentionItems";
 import { AttentionBadge } from "@/components/fleet/AttentionBadge";
+import { ReconcilerStatusCard } from "@/components/fleet/ReconcilerStatusCard";
 
 export default function FleetPage() {
   const { data, isLoading, error, refetch } = useIssues();
@@ -108,6 +109,15 @@ export default function FleetPage() {
             )}
           </div>
         )}
+      </div>
+
+      {/* factory-core-lfcf.5: reconciler status card. Status-only — no
+          actions. Shows reconciler health + recent self-healing actions.
+          Per zero-human-touchpoints directive, the reconciler is meant
+          to be invisible; this card is the minimum-acceptable view of
+          its liveness so Jane can glance and confirm it's running. */}
+      <div className="mb-3">
+        <ReconcilerStatusCard />
       </div>
 
       {/* Agent status banners — factory-core-d5b.7: one per running agent.
