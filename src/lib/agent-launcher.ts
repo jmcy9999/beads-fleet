@@ -2022,6 +2022,27 @@ async function dispatchChainAction(
         });
         return true; // Chain handled (polish -> fix loop)
       }
+      // factory-core-zszt.2: wave-completeness gate. ux-polish completing
+      // does not override the invariant that every wave was built. If the
+      // epic reached polish via an 8sz5 drop while wave beads remained
+      // open, divert to start-wave for the lowest open wave.
+      {
+        const { enforceWaveCompletenessOrDispatch } = await import(
+          "./wave-completeness"
+        );
+        const gate = await enforceWaveCompletenessOrDispatch({
+          epicId: session.epicId!,
+          epicTitle: session.repoName,
+          epicLabels: session.epicLabels ?? [],
+          waveStatus: snapshot.waveStatus,
+          intendedTransition: "polish-pass -> send-for-qa",
+          rollbackRemoveLabels: ["pipeline:ux-polish"],
+        });
+        if (gate.intercepted) {
+          return true; // Chain handled: re-dispatched start-wave, staying at dev
+        }
+      }
+
       // No bugs — advance to next QA round.
       await fetch("http://localhost:3000/api/fleet/action", {
         method: "POST",
@@ -2142,6 +2163,32 @@ async function dispatchChainAction(
         return true; // Handled -- bugs found, looping back through dev -> QA
       }
       // No bugs under this epic -- QA passed!
+      // factory-core-zszt.2: wave-completeness gate. Before advancing past
+      // development-adjacent stages, verify every planned wave was built.
+      // An upstream drop (8sz5-class) or manual CTA could have advanced this
+      // epic to pipeline:qa with open wave beads; if so, divert to
+      // start-wave for the lowest open wave instead of advancing to
+      // polish/submission-prep.
+      {
+        const { enforceWaveCompletenessOrDispatch } = await import(
+          "./wave-completeness"
+        );
+        const gate = await enforceWaveCompletenessOrDispatch({
+          epicId: session.epicId!,
+          epicTitle: session.repoName,
+          epicLabels: session.epicLabels ?? [],
+          waveStatus: snapshot.waveStatus,
+          intendedTransition: "qa-pass -> polish/submission-prep",
+          rollbackRemoveLabels: [
+            "pipeline:qa",
+            "qa:needs-review",
+          ],
+        });
+        if (gate.intercepted) {
+          return true; // Chain handled: re-dispatched start-wave, staying at dev
+        }
+      }
+
       // factory-core-rgqd F2: wire ux-polish into the auto-chain. For
       // ship types with a polish agent (iOS, macOS) advance to polish,
       // which will launch the simulator and screenshot every screen.
