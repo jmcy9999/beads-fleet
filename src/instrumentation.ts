@@ -1,45 +1,34 @@
 // =============================================================================
-// Next.js Instrumentation Hook — OTEL SDK Initialization
+// Next.js Instrumentation Hook — Langfuse OTEL
 // =============================================================================
 //
-// Called by Next.js on server start when experimental.instrumentationHook is
-// enabled in next.config.mjs. Initializes the OpenTelemetry SDK with
-// LangfuseSpanProcessor so server-side spans are forwarded to Langfuse Cloud.
-//
-// Guards:
-// - Only initializes when Langfuse credentials are present
-// - Only initializes in Node.js runtime (not Edge)
-// - Logs initialization status for debugging
-//
-// ADR-001: OTEL SDK init via instrumentation.ts (factory-core-75e)
+// Calls initLangfuse() from src/lib/langfuse.ts on server start.
+// Uses the lightweight approach: NodeTracerProvider + LangfuseSpanProcessor.
+// No @opentelemetry/sdk-node (which pulls in gRPC and breaks webpack).
 // =============================================================================
 
 export async function register() {
-  // Only run in Node.js runtime (not Edge)
   if (process.env.NEXT_RUNTIME === "edge") {
     return;
   }
 
-  const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
-  const secretKey = process.env.LANGFUSE_SECRET_KEY;
-
-  if (!publicKey || !publicKey.trim() || !secretKey || !secretKey.trim()) {
-    console.log("[instrumentation] Langfuse credentials not configured — OTEL SDK not initialized");
-    return;
+  try {
+    const { initLangfuse } = await import("./lib/langfuse");
+    initLangfuse();
+  } catch (err) {
+    console.error("[instrumentation] Failed to initialize Langfuse:", err);
   }
 
+  // factory-core-lfcf.2: start the reconciler loop on server boot so
+  // dropped auto-chain transitions get caught structurally rather than
+  // depending on operator intervention. Rules register themselves via
+  // initReconciler (placeholder in lfcf.2; real rules from lfcf.4+).
   try {
-    const { NodeSDK } = await import("@opentelemetry/sdk-node");
-    const { LangfuseSpanProcessor } = await import("@langfuse/otel");
-
-    const sdk = new NodeSDK({
-      spanProcessors: [new LangfuseSpanProcessor()],
-    });
-
-    sdk.start();
-    console.log("[instrumentation] OTEL SDK initialized with LangfuseSpanProcessor");
+    const { initReconciler } = await import("./lib/reconciler");
+    const repoPath =
+      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core";
+    initReconciler(repoPath);
   } catch (err) {
-    // Graceful degradation: log error but don't prevent server start
-    console.error("[instrumentation] Failed to initialize OTEL SDK:", err);
+    console.error("[instrumentation] Failed to initialize reconciler:", err);
   }
 }
