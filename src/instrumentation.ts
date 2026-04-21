@@ -23,43 +23,11 @@ export async function register() {
   // dropped auto-chain transitions get caught structurally rather than
   // depending on operator intervention. Rules register themselves via
   // initReconciler (placeholder in lfcf.2; real rules from lfcf.4+).
-  try {
-    const { initReconciler } = await import("./lib/reconciler");
-    const { buildMissedWaveReviewDispatchRule } = await import(
-      "./lib/reconciler-rules/missed-wave-review-dispatch"
-    );
-    // agent-launcher.ts uses child_process + bd CLI — must NEVER be
-    // imported from a module that could be bundled client-side. We
-    // import it here in instrumentation.ts (server-only by Next.js
-    // contract) to keep the reconciler module itself pure.
-    const { readEpicState } = await import("./lib/agent-launcher");
-
-    const repoPath =
-      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core";
-    const rec = initReconciler(repoPath);
-    rec.registerRule(
-      buildMissedWaveReviewDispatchRule({
-        readEpicSnapshot: async (epicId) => {
-          const snap = await readEpicState(epicId, repoPath);
-          return {
-            waveStatus: {
-              hasWaves: snap.waveStatus.hasWaves,
-              currentWave: snap.waveStatus.currentWave,
-              allWavesComplete: snap.waveStatus.allWavesComplete,
-              error: snap.waveStatus.error,
-            },
-            openBugCount: snap.openBugCount,
-            labels: snap.labels,
-            // Fallback: use epicId as title when we don't have a
-            // human-readable title handy. OK for reconciler dispatches —
-            // it's logged, not shown to users.
-            title: epicId,
-          };
-        },
-      }),
-    );
-    rec.start();
-  } catch (err) {
-    console.error("[instrumentation] Failed to initialize reconciler:", err);
-  }
+  // factory-core-lfcf: reconciler init is NOT done here.
+  // instrumentation.ts gets webpack-compiled for both node and edge
+  // targets, which causes child_process (via agent-launcher.ts) to fail
+  // the edge bundle. Instead, the reconciler is lazy-initialized on the
+  // first call to ensureReconcilerRunning() from a route handler —
+  // route handlers are unambiguously Node-runtime in Next.js.
+  // See src/lib/reconciler-bootstrap.ts.
 }

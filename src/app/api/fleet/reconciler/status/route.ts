@@ -10,8 +10,17 @@
 
 import { NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+
 export async function GET() {
   try {
+    // Lazy-bootstrap on first request so a status-card render kicks the
+    // reconciler into life even if no pipeline action has fired yet.
+    const { ensureReconcilerRunning } = await import(
+      "@/lib/reconciler-bootstrap"
+    );
+    ensureReconcilerRunning();
+
     const { getGlobalReconciler } = await import("@/lib/reconciler");
     const rec = getGlobalReconciler();
     if (!rec) {
