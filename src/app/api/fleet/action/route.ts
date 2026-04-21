@@ -69,7 +69,9 @@ type PipelineAction =
   | "human-dismiss"
   // factory-core-k7gy.5 — plan-review auto-chain actions (F5/F6/F7)
   | "review-plan"
-  | "revise-plan-from-review";
+  | "revise-plan-from-review"
+  // factory-core-zsjv.4 — coherence agent escalation
+  | "run-coherence-agent";
 
 const VALID_ACTIONS = new Set<PipelineAction>([
   "start-research",
@@ -109,6 +111,8 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   // factory-core-k7gy.5 — plan-review auto-chain actions
   "review-plan",
   "revise-plan-from-review",
+  // factory-core-zsjv.4 — coherence agent escalation
+  "run-coherence-agent",
 ]);
 
 // Resolve fleet-core path: env var > hardcoded fallback
@@ -1454,6 +1458,67 @@ export async function POST(request: NextRequest) {
         });
 
         return NextResponse.json({ success: true, action, epicId, session: stSession });
+      }
+
+      // -------------------------------------------------------------------
+      // RUN COHERENCE AGENT: factory-core-zsjv.4 — dispatch coherence.md
+      // agent on an incoherent epic. Called by the coherence-escalation
+      // reconciler rule when rule-level mechanical recovery isn't
+      // appropriate (e.g. repeated-QA-round patterns require judgment).
+      //
+      // The coherence agent reads state, forms a diagnosis, dispatches
+      // ONE action from its finite vocabulary, and exits. This action
+      // handler just builds the prompt + launches — the agent does the
+      // actual work.
+      // -------------------------------------------------------------------
+      case "run-coherence-agent": {
+        // Read current epic state so the agent has a compact summary
+        // alongside the raw tools it'll use to dig deeper.
+        const actualLabels = await getEpicLabels(
+          epicId as string,
+          fleetCorePath,
+        );
+
+        // Extract anomaly class + any context from request body. Not
+        // strictly required (agent can infer from state), but including
+        // when available sharpens the diagnosis prompt.
+        const anomalyClass =
+          typeof (body as Record<string, unknown>)?.anomalyClass === "string"
+            ? ((body as Record<string, unknown>).anomalyClass as string)
+            : "unspecified";
+
+        const cohPrompt = `You are the Coherence agent. Diagnose why epic ${epicId} is in an incoherent state and dispatch ONE action from your finite vocabulary.\n\nContext:\n- epicId: ${epicId}\n- epicTitle: ${epicTitle}\n- anomalyClass: ${anomalyClass}\n- currentLabels: ${JSON.stringify(actualLabels)}\n- shipType: ${shipType}\n- fleetCorePath: ${fleetCorePath}\n\nFollow .claude/agents/coherence.md exactly. Append the required [COHERENCE] / [ACTION] / [REASONING] note to the epic before dispatching. Exit immediately after dispatch.`;
+
+        // agent:running label so the dashboard reflects the live
+        // coherence session. We do NOT change pipeline:* — the coherence
+        // agent operates at the meta-layer and should not disturb the
+        // epic's pipeline stage.
+        await addLabelsToEpic(
+          epicId as string,
+          ["agent:running"],
+          fleetCorePath,
+        );
+        invalidateCache({ type: "epic", epicId });
+
+        const cohSession = await launchAgent({
+          repoPath: fleetCorePath,
+          repoName: "fleet-core",
+          prompt: cohPrompt,
+          model: "opus",
+          maxTurns: 60,
+          allowedTools: "Bash,Read,Glob,Grep",
+          epicId: epicId as string,
+          epicLabels: actualLabels,
+          pipelineStage: undefined, // coherence is meta, not a pipeline stage
+          agentName: "coherence",
+        });
+
+        return NextResponse.json({
+          success: true,
+          action,
+          epicId,
+          session: cohSession,
+        });
       }
 
       case "send-for-qa": {

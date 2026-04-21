@@ -21,7 +21,11 @@ import { buildMissedWaveReviewDispatchRule } from "./reconciler-rules/missed-wav
 import { buildStuckInStageRule } from "./reconciler-rules/stuck-in-stage";
 import { buildWaveBeadMismatchRule } from "./reconciler-rules/wave-bead-mismatch";
 import { buildRepeatedQaRoundRule } from "./reconciler-rules/repeated-qa-round";
+import { buildCoherenceEscalationRule } from "./reconciler-rules/coherence-escalation";
 import { readEpicState } from "./agent-launcher";
+import { appendEvent, readEvents } from "./event-log";
+import { execSync } from "child_process";
+import { getBdPath, getBdEnv } from "./bd-path";
 
 let bootstrapped = false;
 
@@ -164,8 +168,33 @@ export function ensureReconcilerRunning(): void {
       }),
     );
 
+    // factory-core-zsjv.4 — coherence escalation rule: dispatches the
+    // coherence agent for epics flagged review:needs-human.
+    rec.registerRule(
+      buildCoherenceEscalationRule({
+        readEpicSnapshot: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          return {
+            hasNeedsHuman: snap.labels.includes("review:needs-human"),
+            labels: snap.labels,
+            title: epicId,
+          };
+        },
+      }),
+    );
+
     rec.start();
     console.log("[reconciler-bootstrap] reconciler started from route handler");
+
+    // factory-core-zsjv (Jane 2026-04-21): seed the event log with
+    // "epic-observed" events for every currently-open pipeline:* epic.
+    // Without this, rules only see epics referenced in events from the
+    // last 60 min — anything stuck BEFORE the reconciler started is
+    // invisible. The synthetic events are dated 20 min ago so stall
+    // detection (15 min threshold) catches them on the first tick.
+    // Dedupe: check the log for a synthetic event for the same epic
+    // within the last 24 h before appending a new one.
+    void seedOpenEpicsFromBd(repoPath);
   } catch (err) {
     // Reset the flag so a subsequent call can try again — don't
     // permanently mark the bootstrap as done if it actually failed.
@@ -185,4 +214,126 @@ export function __resetReconcilerBootstrapForTests(): void {
   bootstrapped = false;
   const rec = getGlobalReconciler();
   if (rec) rec.stop();
+}
+
+/**
+ * factory-core-zsjv (Jane 2026-04-21): seed the event log with synthetic
+ * events for every open pipeline:* epic so existing stuck epics (jba,
+ * jtjn, any future pre-reconciler stalls) are visible to rules without
+ * having to wait for a fresh agent exit.
+ *
+ * Called AFTER the reconciler starts; best-effort, swallows errors so a
+ * bd failure here doesn't affect the reconciler's normal operation.
+ *
+ * Dedupe: each epic's seed event is stamped with correlationId
+ * "reconciler-seed-<epicId>". Before emitting, we check the event log
+ * for an identical correlationId within the last 24 h; if found, skip.
+ */
+async function seedOpenEpicsFromBd(repoPath: string): Promise<void> {
+  try {
+    const bd = getBdPath();
+    const env = getBdEnv();
+
+    // bd list tree output doesn't include labels. We have to (a) list all
+    // open epics, (b) `bd show` each one to read its labels. Slower but
+    // correct. Runs once at boot so the O(N) cost is acceptable.
+    const listOut = execSync(`${bd} list --status=open --type=epic`, {
+      cwd: repoPath,
+      encoding: "utf-8",
+      env,
+      timeout: 20_000,
+    });
+
+    const epicIdRegex = /factory-core-[a-z0-9]+/g;
+    const seen = new Set<string>();
+    for (const line of listOut.split("\n")) {
+      const matches = line.match(epicIdRegex);
+      if (!matches) continue;
+      for (const id of matches) seen.add(id);
+    }
+    // Also include in_progress epics (bd list --status=open includes them,
+    // but be defensive against future bd CLI changes).
+    try {
+      const progOut = execSync(
+        `${bd} list --status=in_progress --type=epic`,
+        { cwd: repoPath, encoding: "utf-8", env, timeout: 10_000 },
+      );
+      for (const line of progOut.split("\n")) {
+        const matches = line.match(epicIdRegex);
+        if (!matches) continue;
+        for (const id of matches) seen.add(id);
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    if (seen.size === 0) {
+      console.log("[reconciler-bootstrap] no open pipeline:* epics to seed");
+      return;
+    }
+
+    // Read recent events once for dedupe.
+    const twentyFourHoursAgo = new Date(
+      Date.now() - 24 * 60 * 60_000,
+    ).toISOString();
+    const recentEvents = await readEvents(repoPath, {
+      since: twentyFourHoursAgo,
+      type: "agent-exited",
+    });
+    const alreadySeeded = new Set<string>();
+    for (const e of recentEvents) {
+      if (e.correlationId?.startsWith("reconciler-seed-")) {
+        alreadySeeded.add(e.correlationId);
+      }
+    }
+
+    const twentyMinAgo = new Date(Date.now() - 20 * 60_000).toISOString();
+    let emitted = 0;
+    for (const epicId of seen) {
+      const correlationId = `reconciler-seed-${epicId}`;
+      if (alreadySeeded.has(correlationId)) continue;
+
+      // Read the epic to confirm it has a pipeline:* label and grab the
+      // current stage. Skip terminal states (live, completed, bad-idea).
+      let showOut = "";
+      try {
+        showOut = execSync(`${bd} show ${epicId}`, {
+          cwd: repoPath,
+          encoding: "utf-8",
+          env,
+          timeout: 10_000,
+        });
+      } catch {
+        continue;
+      }
+      const pipelineMatch = showOut.match(/pipeline:([a-z-]+)/);
+      if (!pipelineMatch) continue;
+      const stage = pipelineMatch[1];
+      if (["live", "completed", "bad-idea"].includes(stage)) continue;
+      // agent-running → actually working; let the agent emit its own
+      // exit event when it finishes.
+      if (showOut.includes("agent:running")) continue;
+
+      await appendEvent(repoPath, {
+        type: "agent-exited",
+        epicId,
+        stage,
+        correlationId,
+        timestamp: twentyMinAgo,
+        payload: { exitCode: 0, synthetic: true, reason: "reconciler-boot-seed" },
+      });
+      emitted += 1;
+    }
+
+    if (emitted > 0) {
+      console.log(
+        `[reconciler-bootstrap] seeded ${emitted} open pipeline:* epics for rule discovery`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      "[reconciler-bootstrap] seed-open-epics failed (non-fatal):",
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
