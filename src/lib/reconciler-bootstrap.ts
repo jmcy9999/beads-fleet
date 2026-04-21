@@ -20,6 +20,7 @@ import { initReconciler, getGlobalReconciler } from "./reconciler";
 import { buildMissedWaveReviewDispatchRule } from "./reconciler-rules/missed-wave-review-dispatch";
 import { buildStuckInStageRule } from "./reconciler-rules/stuck-in-stage";
 import { buildWaveBeadMismatchRule } from "./reconciler-rules/wave-bead-mismatch";
+import { buildRepeatedQaRoundRule } from "./reconciler-rules/repeated-qa-round";
 import { readEpicState } from "./agent-launcher";
 
 let bootstrapped = false;
@@ -119,6 +120,43 @@ export function ensureReconcilerRunning(): void {
             allWavesComplete: snap.waveStatus.allWavesComplete,
             hasWaves: snap.waveStatus.hasWaves,
             waveStatusError: snap.waveStatus.error,
+            labels: snap.labels,
+            title: epicId,
+          };
+        },
+      }),
+    );
+
+    // factory-core-zsjv.3: repeated-QA-round detector — catches QA
+    // loops that aren't converging after 5 rounds. Flags the epic for
+    // human attention (v1 threshold flag; v2 zsjv.4 escalates to the
+    // coherence agent for LLM-judgment).
+    rec.registerRule(
+      buildRepeatedQaRoundRule({
+        readEpicSnapshot: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          const pipelineLabel = snap.labels.find((l) =>
+            l.startsWith("pipeline:"),
+          );
+          const currentStage = pipelineLabel
+            ? pipelineLabel.replace("pipeline:", "")
+            : null;
+          // Highest qa:round-N label — "highest" so we detect the latest
+          // round even if earlier round labels are also present.
+          let highestQaRound = 0;
+          for (const l of snap.labels) {
+            const m = l.match(/^qa:round-(\d+)$/);
+            if (m) {
+              const n = parseInt(m[1], 10);
+              if (!Number.isNaN(n) && n > highestQaRound) highestQaRound = n;
+            }
+          }
+          const hasNeedsHuman = snap.labels.includes("review:needs-human");
+          return {
+            currentStage,
+            highestQaRound,
+            openBugCount: snap.openBugCount,
+            hasNeedsHuman,
             labels: snap.labels,
             title: epicId,
           };
