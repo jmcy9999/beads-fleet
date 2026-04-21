@@ -154,10 +154,10 @@ function deriveAppName(epicTitle: string, epicId: string): string {
 }
 
 /**
- * factory-core-rgqd F8 — convert owner feedback on any send-back-style
- * action into a new bug bead under the epic. Previously feedback was
- * baked into the agent prompt as free-text and lost after the session
- * ended. Now it becomes a structured, traceable, closeable artefact.
+ * factory-core-rgqd F8 + factory-core-zszt.3 — convert owner feedback on any
+ * send-back-style action into a new bug bead under the epic. Previously
+ * feedback was baked into the agent prompt as free-text and lost after the
+ * session ended. Now it becomes a structured, traceable, closeable artefact.
  *
  * Returns the bead ID on success, or null if creation failed (non-fatal —
  * callers should still dispatch the agent; the feedback lives in the
@@ -211,6 +211,57 @@ async function createFeedbackBead(params: {
     );
     return null;
   }
+}
+
+/**
+ * factory-core-zszt.3 — shared shape for every send-back path that takes
+ * free-text owner feedback and re-dispatches an agent. Pairs the prompt
+ * string (for the agent's immediate context) with the feedback-bead
+ * contract (for durable acceptance). If feedback is absent or trivial
+ * (<30 chars), no bead is created and the caller's prompt gets only the
+ * plain feedback string.
+ *
+ * Returns:
+ *   feedbackStr      — legacy prompt snippet: ' Jane's feedback: "<text>".'
+ *   feedbackBeadStr  — contract snippet naming the bead id and acceptance
+ *                      requirement (empty when no bead was created)
+ *   feedbackBeadId   — the bead id if one was created, else null
+ */
+async function materialiseFeedback(params: {
+  feedback: unknown;
+  stage: string;
+  epicId: string;
+  shipType: string;
+  fleetCorePath: string;
+}): Promise<{
+  feedbackStr: string;
+  feedbackBeadStr: string;
+  feedbackBeadId: string | null;
+}> {
+  const { feedback, stage, epicId, shipType, fleetCorePath } = params;
+  const hasFeedback = typeof feedback === "string" && feedback.trim().length > 0;
+  if (!hasFeedback) {
+    return { feedbackStr: "", feedbackBeadStr: "", feedbackBeadId: null };
+  }
+  const feedbackText = feedback as string;
+  const feedbackStr = ` Jane's feedback: "${feedbackText}".`;
+  if (feedbackText.trim().length < 30) {
+    // Non-trivial threshold keeps micro-feedback ("typo in AC") from
+    // polluting the epic's bead list while still preserving the text in
+    // the prompt. Same threshold used by the original F8 path.
+    return { feedbackStr, feedbackBeadStr: "", feedbackBeadId: null };
+  }
+  const feedbackBeadId = await createFeedbackBead({
+    epicId,
+    feedback: feedbackText,
+    stage,
+    shipType,
+    fleetCorePath,
+  });
+  const feedbackBeadStr = feedbackBeadId
+    ? ` A feedback bug bead ${feedbackBeadId} has been filed under this epic with the full feedback as its description and acceptance criteria — you MUST close that bead as part of your fix. Do not simply read the feedback and move on; the bead is the contract.`
+    : "";
+  return { feedbackStr, feedbackBeadStr, feedbackBeadId };
 }
 
 /**
@@ -643,12 +694,19 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:research", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
-        const feedbackStr = typeof feedback === "string" && feedback.trim()
-          ? ` Jane's feedback: "${feedback}".`
-          : "";
+        // factory-core-zszt.3: materialise non-trivial feedback into a
+        // structured bug bead under the epic so the researcher has a
+        // closeable contract, not just free text in a prompt.
+        const { feedbackStr, feedbackBeadStr } = await materialiseFeedback({
+          feedback,
+          stage: "research",
+          epicId,
+          shipType,
+          fleetCorePath,
+        });
 
         const { researchPath: prevResearchPath } = resolveRepoPath(shipType, epicTitle as string, appName, epicId as string, fleetCorePath);
-        const moreResearchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}. Previous research at ${prevResearchPath}.${feedbackStr}`;
+        const moreResearchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}. Previous research at ${prevResearchPath}.${feedbackStr}${feedbackBeadStr}`;
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -737,11 +795,17 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const rsFeedbackStr = typeof feedback === "string" && feedback.trim()
-          ? ` Jane's feedback: "${feedback}".`
-          : "";
+        // factory-core-zszt.3
+        const { feedbackStr: rsFeedbackStr, feedbackBeadStr: rsFeedbackBeadStr } =
+          await materialiseFeedback({
+            feedback,
+            stage: "product-spec",
+            epicId,
+            shipType,
+            fleetCorePath,
+          });
 
-        const rsPrompt = `Revise functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${rsResearchPath}. Fleet-core: ${fleetCorePath}.${rsFeedbackStr}`;
+        const rsPrompt = `Revise functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${rsResearchPath}. Fleet-core: ${fleetCorePath}.${rsFeedbackStr}${rsFeedbackBeadStr}`;
 
         const rsSession = await launchAgent({
           repoPath: rsRepoPath,
@@ -775,11 +839,17 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const raFeedbackStr = typeof feedback === "string" && feedback.trim()
-          ? ` Jane's feedback: "${feedback}".`
-          : "";
+        // factory-core-zszt.3
+        const { feedbackStr: raFeedbackStr, feedbackBeadStr: raFeedbackBeadStr } =
+          await materialiseFeedback({
+            feedback,
+            stage: "architecture",
+            epicId,
+            shipType,
+            fleetCorePath,
+          });
 
-        const raPrompt = `Revise architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${raSpecPath}. Research report: ${raResearchPath}. Fleet-core: ${fleetCorePath}.${raFeedbackStr}`;
+        const raPrompt = `Revise architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${raSpecPath}. Research report: ${raResearchPath}. Fleet-core: ${fleetCorePath}.${raFeedbackStr}${raFeedbackBeadStr}`;
 
         const raSession = await launchAgent({
           repoPath: raRepoPath,
@@ -848,11 +918,17 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const rtsFeedbackStr = typeof feedback === "string" && feedback.trim()
-          ? ` Jane's feedback: "${feedback}".`
-          : "";
+        // factory-core-zszt.3
+        const { feedbackStr: rtsFeedbackStr, feedbackBeadStr: rtsFeedbackBeadStr } =
+          await materialiseFeedback({
+            feedback,
+            stage: "test-spec",
+            epicId,
+            shipType,
+            fleetCorePath,
+          });
 
-        const rtsPrompt = `Revise test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${rtsSpecPath}. Architecture: ${rtsArchPath}. Research: ${rtsResearchPath}. Product repo: ${rtsRepoPath}. Fleet-core: ${fleetCorePath}.${rtsFeedbackStr}`;
+        const rtsPrompt = `Revise test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${rtsSpecPath}. Architecture: ${rtsArchPath}. Research: ${rtsResearchPath}. Product repo: ${rtsRepoPath}. Fleet-core: ${fleetCorePath}.${rtsFeedbackStr}${rtsFeedbackBeadStr}`;
 
         const rtsSession = await launchAgent({
           repoPath: fleetCorePath,
@@ -1137,11 +1213,17 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const feedbackStr3 = typeof feedback === "string" && feedback.trim()
-          ? ` Jane's feedback: "${feedback}".`
-          : "";
+        // factory-core-zszt.3
+        const { feedbackStr: feedbackStr3, feedbackBeadStr: feedbackBeadStr3 } =
+          await materialiseFeedback({
+            feedback,
+            stage: "plan-review",
+            epicId,
+            shipType,
+            fleetCorePath,
+          });
 
-        const revisePlanPrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr3}`;
+        const revisePlanPrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr3}${feedbackBeadStr3}`;
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -1209,14 +1291,20 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const feedbackStr4 = typeof feedback === "string" && feedback.trim()
-          ? ` Jane's feedback: "${feedback}".`
-          : "";
+        // factory-core-zszt.3
+        const { feedbackStr: feedbackStr4, feedbackBeadStr: feedbackBeadStr4 } =
+          await materialiseFeedback({
+            feedback,
+            stage: "submission-prep",
+            epicId,
+            shipType,
+            fleetCorePath,
+          });
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
           repoName: "fleet-core",
-          prompt: `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr4}`,
+          prompt: `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr4}${feedbackBeadStr4}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -1484,11 +1572,19 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const feedbackStrResume = typeof feedback === "string" && feedback.trim()
-          ? ` Jane's feedback: "${feedback}".`
-          : "";
+        // factory-core-zszt.3: qa-fix-and-retest is the QA bug-fix loop.
+        // Stage tag is "qa" (we don't know the round here without extra bd
+        // reads; the bead's own notes + labels capture the round).
+        const { feedbackStr: feedbackStrResume, feedbackBeadStr: feedbackBeadStrResume } =
+          await materialiseFeedback({
+            feedback,
+            stage: "qa",
+            epicId,
+            shipType,
+            fleetCorePath,
+          });
 
-        const resumePrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${rbRepoPath}. Research report: ${rbResearchPath}. Build plan: ${rbPlanPath}. Fix all open bugs and complete remaining tasks.${feedbackStrResume}`;
+        const resumePrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${rbRepoPath}. Research report: ${rbResearchPath}. Build plan: ${rbPlanPath}. Fix all open bugs and complete remaining tasks.${feedbackStrResume}${feedbackBeadStrResume}`;
 
         const resumeSession = await launchAgent({
           repoPath: rbRepoPath,
