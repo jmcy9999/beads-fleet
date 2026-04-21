@@ -59,6 +59,8 @@ type PipelineAction =
   | "send-for-polish"
   | "run-pm"
   | "run-architect"
+  | "run-smoke-test"
+  | "run-polish"
   | "revise-spec"
   | "revise-architecture"
   | "run-test-spec"
@@ -96,6 +98,8 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "send-for-polish",
   "run-pm",
   "run-architect",
+  "run-smoke-test",
+  "run-polish",
   "revise-spec",
   "revise-architecture",
   "run-test-spec",
@@ -147,6 +151,66 @@ function deriveAppName(epicTitle: string, epicId: string): string {
     return words.slice(0, 2).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join("");
   }
   return words[0] ?? epicId;
+}
+
+/**
+ * factory-core-rgqd F8 — convert owner feedback on any send-back-style
+ * action into a new bug bead under the epic. Previously feedback was
+ * baked into the agent prompt as free-text and lost after the session
+ * ended. Now it becomes a structured, traceable, closeable artefact.
+ *
+ * Returns the bead ID on success, or null if creation failed (non-fatal —
+ * callers should still dispatch the agent; the feedback lives in the
+ * prompt as before).
+ */
+async function createFeedbackBead(params: {
+  epicId: string;
+  feedback: string;
+  stage: string; // e.g., "qa-round-1", "ux-polish", "submission-prep"
+  shipType: string;
+  fleetCorePath: string;
+}): Promise<string | null> {
+  const { epicId, feedback, stage, shipType, fleetCorePath } = params;
+  const trimmed = feedback.trim();
+  if (!trimmed || trimmed.length < 30) return null; // skip trivial feedback
+
+  // Derive a short title from the first line, truncated to 60 chars
+  const firstLine = trimmed.split("\n")[0].slice(0, 60);
+  const title = `send-back(${stage}): ${firstLine}`;
+
+  try {
+    const { execSync } = await import("child_process");
+    const { getBdPath, getBdEnv } = await import("@/lib/bd-path");
+    const bd = getBdPath();
+    const env = getBdEnv();
+    // Use --parent to nest under the epic
+    const output = execSync(
+      `${bd} create --title=${JSON.stringify(title)} --type=bug --priority=1 --parent=${epicId} --description=${JSON.stringify(trimmed)}`,
+      { cwd: fleetCorePath, encoding: "utf-8", env, timeout: 10000 },
+    );
+    // bd create output contains "Created issue: <id> — ..."
+    const match = output.match(/Created issue:\s*(\S+)/);
+    const beadId = match ? match[1] : null;
+    if (!beadId) {
+      console.warn("[createFeedbackBead] could not parse bead id from bd output");
+      return null;
+    }
+    // Label it with stage + ship type + feedback origin
+    try {
+      execSync(`${bd} label add ${beadId} -- review:feedback from-send-back stage:${stage} ship-type:${shipType}`, {
+        cwd: fleetCorePath, encoding: "utf-8", env, timeout: 10000,
+      });
+    } catch (err) {
+      console.warn("[createFeedbackBead] label add failed:", err instanceof Error ? err.message : err);
+    }
+    return beadId;
+  } catch (err) {
+    console.warn(
+      "[createFeedbackBead] bd create failed — feedback will only appear in the agent prompt",
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
 }
 
 /**
@@ -854,6 +918,15 @@ export async function POST(request: NextRequest) {
         // Remove ALL pipeline:* labels to prevent orphans (factory-core-hnv.24)
         // Previously only removed submission-prep/deploying/qa, missing ux-polish etc.
         const sendBackLabels = await getEpicLabels(epicId as string, fleetCorePath);
+
+        // factory-core-rgqd F8: capture the stage we're sending back FROM
+        // so the feedback bead is properly tagged. Do this before label
+        // mutation strips the pipeline:* labels we need for tagging.
+        const originStageLabel = sendBackLabels.find((l) => l.startsWith("pipeline:"));
+        const originStage = originStageLabel
+          ? originStageLabel.replace("pipeline:", "")
+          : "unknown";
+
         await removeAllPipelineLabels(epicId as string, sendBackLabels, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
@@ -866,11 +939,28 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
+        // factory-core-rgqd F8: materialise non-trivial feedback as a bug
+        // bead so the builder has a concrete, closeable artefact to resolve
+        // — not just free-text lost after the session ends.
+        let feedbackBeadId: string | null = null;
+        if (typeof feedback === "string" && feedback.trim().length >= 30) {
+          feedbackBeadId = await createFeedbackBead({
+            epicId: epicId as string,
+            feedback,
+            stage: originStage,
+            shipType,
+            fleetCorePath,
+          });
+        }
+
         const feedbackStr2 = typeof feedback === "string" && feedback.trim()
           ? ` Jane's feedback: "${feedback}".`
           : "";
+        const feedbackBeadStr = feedbackBeadId
+          ? ` A feedback bug bead ${feedbackBeadId} has been filed under this epic with the full feedback as its description and acceptance criteria — you MUST close that bead as part of your fix. Do not simply read the feedback and move on; the bead is the contract.`
+          : "";
 
-        const sendBackPrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}.${feedbackStr2}`;
+        const sendBackPrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}.${feedbackStr2}${feedbackBeadStr}`;
 
         const session = await launchAgent({
           repoPath: repoPath,
@@ -1142,6 +1232,119 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       // SEND FOR QA: Development Complete -> QA Verification
       // -------------------------------------------------------------------
+      // -------------------------------------------------------------------
+      // RUN POLISH: QA-round-N -> UX-polish (iOS / macOS only)
+      // factory-core-rgqd F2 — wires the existing ux-polish agent into the
+      // auto-chain. After QA passes with no bugs and ship type has a polish
+      // agent, boot simulator, install, screenshot every screen in light and
+      // dark mode. Files bugs or passes to next QA round.
+      // -------------------------------------------------------------------
+      case "run-polish": {
+        const actualLabels = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, actualLabels, fleetCorePath);
+        await addLabelsToEpic(epicId, ["pipeline:ux-polish", "agent:running"], fleetCorePath);
+        invalidateCache({ type: "epic", epicId });
+
+        const polishAppName = extractAppName(epicTitle as string) ?? appName;
+        const { repoPath, repoName, planPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          polishAppName,
+          epicId as string,
+          fleetCorePath,
+        );
+
+        const polishShipKey = shipType.replace("-app", "");
+        const polishAgentName = (polishShipKey === "ios" || polishShipKey === "macos")
+          ? `platforms/${polishShipKey}/polish`
+          : null;
+
+        if (!polishAgentName) {
+          // Defensive — handleChainAction should only call us for ship types
+          // with a polish agent. But if it does misfire, skip through to
+          // submission-prep rather than throwing.
+          await removeLabelsFromEpic(epicId, ["pipeline:ux-polish", "agent:running"], fleetCorePath);
+          await addLabelsToEpic(epicId, ["pipeline:submission-prep", "qa:needs-review"], fleetCorePath);
+          invalidateCache({ type: "epic", epicId });
+          return NextResponse.json({ success: true, action, epicId, dispatched: "skipped-no-polish-agent", shipType });
+        }
+
+        const polishPrompt = `Run UX polish for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Build plan: ${planPath}. Follow .claude/agents/platforms/${polishShipKey}/polish.md. Launch the simulator, take screenshots of every screen in light and dark mode via tools/platforms/ios/snapship.sh where available, and file bug beads for any visual / runtime issues.`;
+
+        const polishSession = await launchAgent({
+          repoPath: repoPath,
+          repoName: repoName,
+          prompt: polishPrompt,
+          model: "opus",
+          maxTurns: 150,
+          allowedTools: "Bash,Read,Write,Glob,Grep,Task",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "ux-polish",
+          agentName: polishAgentName,
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: polishSession });
+      }
+
+      // -------------------------------------------------------------------
+      // RUN SMOKE-TEST: Development -> Smoke-test (iOS / macOS only)
+      // factory-core-rgqd F1 — runs the runtime smoke test after wave
+      // completion, BEFORE build-review/QA. Catches the "compiles but
+      // crashes on launch" class of failure that BreathCycle exposed.
+      // Ship types without a smoke-test skip straight to build-review.
+      // -------------------------------------------------------------------
+      case "run-smoke-test": {
+        const actualLabels = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, actualLabels, fleetCorePath);
+        await addLabelsToEpic(epicId, ["pipeline:smoke-test", "agent:running"], fleetCorePath);
+        invalidateCache({ type: "epic", epicId });
+
+        const smokeAppName = extractAppName(epicTitle as string) ?? appName;
+        const { repoPath, repoName, planPath } = resolveRepoPath(
+          shipType,
+          epicTitle as string,
+          smokeAppName,
+          epicId as string,
+          fleetCorePath,
+        );
+
+        // Only iOS has a smoke-test agent today. Follow-on work will add
+        // macos / web / python variants. For other ship types this action
+        // is a no-op passthrough — the caller should skip straight to
+        // build-review (auto-chain handles that branch, see handleChainAction).
+        const stShipKey = shipType.replace("-app", "");
+        const smokeAgentName = stShipKey === "ios"
+          ? "platforms/ios/smoke-test"
+          : null;
+
+        if (!smokeAgentName) {
+          // No smoke-test for this ship type — immediately advance labels
+          // back so the caller's auto-chain can dispatch build-review.
+          await removeLabelsFromEpic(epicId, ["pipeline:smoke-test", "agent:running"], fleetCorePath);
+          await addLabelsToEpic(epicId, ["pipeline:build-review"], fleetCorePath);
+          invalidateCache({ type: "epic", epicId });
+          return NextResponse.json({ success: true, action, epicId, dispatched: "skipped-no-smoke-agent", shipType });
+        }
+
+        const stPrompt = `Run the iOS smoke test for epic ${epicId} (${epicTitle}). Product repo: ${repoPath}. Scheme: ${smokeAppName}. Build plan: ${planPath}. Follow .claude/agents/platforms/ios/smoke-test.md. Invoke tools/platforms/ios/smoke-test.sh. On FAIL file a bug under the epic; on PASS exit cleanly.`;
+
+        const stSession = await launchAgent({
+          repoPath: repoPath,
+          repoName: repoName,
+          prompt: stPrompt,
+          model: "sonnet",
+          maxTurns: 30,
+          allowedTools: "Bash,Read,Glob,Grep",
+          epicId: epicId,
+          epicLabels: labels,
+          pipelineStage: "smoke-test",
+          agentName: smokeAgentName,
+        });
+
+        return NextResponse.json({ success: true, action, epicId, session: stSession });
+      }
+
       case "send-for-qa": {
         // Read actual labels from the epic (not stale request body labels)
         // to correctly determine QA round (factory-core-hnv.19)

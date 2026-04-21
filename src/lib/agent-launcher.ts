@@ -1952,8 +1952,55 @@ async function dispatchChainAction(
         return true; // Chain handled (review -> next wave)
       }
 
-      // Final wave passed — chain to QA. Clear guard for the reviewed wave (z9h.6 P2).
+      // Final wave passed — factory-core-rgqd F1: insert smoke-test BEFORE
+      // send-for-qa so runtime failures are caught before any QA time is spent.
+      // For ship types without a smoke-test, the run-smoke-test action
+      // auto-advances to build-review (a no-op passthrough for non-iOS).
+      // Clear guard for the reviewed wave (z9h.6 P2).
       clearWaveReviewGuard(session.epicId!, reviewedWave);
+      await fetch("http://localhost:3000/api/fleet/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "run-smoke-test",
+          epicId: session.epicId,
+          epicTitle: session.repoName,
+          currentLabels: session.epicLabels,
+        }),
+      });
+      return true; // Chain handled (final wave review -> smoke-test)
+    } catch (err) {
+      console.error("Failed to chain after wave review:", err);
+      return false;
+    }
+  }
+
+  if (stage === "ux-polish") {
+    // factory-core-rgqd F2: ux-polish exit chain.
+    // - Bugs filed by polish → qa-fix-and-retest (bug-fix loop).
+    // - No bugs → qa-round-(current+1) for re-verification, OR if QA has
+    //   already run two rounds bracketing polish, advance to submission-prep.
+    try {
+      const { openBugCount } = snapshot;
+      if (openBugCount === -1) {
+        console.error("ux-polish chain: bd list failed — staying put (fail-safe)");
+        return true;
+      }
+      const hasBugs = openBugCount > 0;
+      if (hasBugs) {
+        await fetch("http://localhost:3000/api/fleet/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "qa-fix-and-retest",
+            epicId: session.epicId,
+            epicTitle: session.repoName,
+            currentLabels: session.epicLabels,
+          }),
+        });
+        return true; // Chain handled (polish -> fix loop)
+      }
+      // No bugs — advance to next QA round.
       await fetch("http://localhost:3000/api/fleet/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1964,9 +2011,51 @@ async function dispatchChainAction(
           currentLabels: session.epicLabels,
         }),
       });
-      return true; // Chain handled (final wave review -> qa)
+      return true; // Chain handled (polish PASS -> next QA round)
     } catch (err) {
-      console.error("Failed to chain after wave review:", err);
+      console.error("Failed to handle ux-polish chain:", err);
+      return false;
+    }
+  }
+
+  if (stage === "smoke-test") {
+    // factory-core-rgqd F1: smoke-test exit chain.
+    // - If bugs filed (from-smoke-test / review:smoke-test), back to dev.
+    // - If no bugs, advance to send-for-qa.
+    try {
+      const { openBugCount } = snapshot;
+      if (openBugCount === -1) {
+        console.error("smoke-test chain: bd list failed — staying put (fail-safe)");
+        return true;
+      }
+      const hasBugs = openBugCount > 0;
+      if (hasBugs) {
+        await fetch("http://localhost:3000/api/fleet/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "qa-fix-and-retest",
+            epicId: session.epicId,
+            epicTitle: session.repoName,
+            currentLabels: session.epicLabels,
+          }),
+        });
+        return true; // Chain handled (smoke-test -> fix loop)
+      }
+      // No bugs — advance to QA.
+      await fetch("http://localhost:3000/api/fleet/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "send-for-qa",
+          epicId: session.epicId,
+          epicTitle: session.repoName,
+          currentLabels: session.epicLabels,
+        }),
+      });
+      return true; // Chain handled (smoke-test PASS -> qa)
+    } catch (err) {
+      console.error("Failed to handle smoke-test chain:", err);
       return false;
     }
   }
@@ -2031,14 +2120,39 @@ async function dispatchChainAction(
         return true; // Handled -- bugs found, looping back through dev -> QA
       }
       // No bugs under this epic -- QA passed!
-      // Advance pipeline explicitly (don't rely on NEXT_STAGE which only maps to submission-prep)
-      // factory-core-hnv.16: was returning false, falling through to NEXT_STAGE which
-      // didn't always fire correctly. Now handles the transition directly.
+      // factory-core-rgqd F2: wire ux-polish into the auto-chain. For
+      // ship types with a polish agent (iOS, macOS) advance to polish,
+      // which will launch the simulator and screenshot every screen.
+      // For other ship types, advance directly to submission-prep as before.
+      const shipTypeLabel = (session.epicLabels ?? []).find((l) =>
+        l.startsWith("ship-type:"),
+      );
+      const stShip = shipTypeLabel
+        ? shipTypeLabel.replace("ship-type:", "")
+        : "";
+      const hasPolish = stShip === "ios-app" || stShip === "macos-app";
+
       const { addLabelsToEpic: addQALabels, removeLabelsFromEpic: removeQALabels } = await import("./pipeline-labels");
       await removeQALabels(session.epicId!, ["pipeline:qa"]);
-      await addQALabels(session.epicId!, ["pipeline:submission-prep", "qa:needs-review"]);
-      console.log(`QA passed for ${session.epicId} — advanced to submission-prep`);
-      return true; // Handled — don't fall through to NEXT_STAGE
+
+      if (hasPolish) {
+        await addQALabels(session.epicId!, ["pipeline:ux-polish", "agent:running"]);
+        await fetch("http://localhost:3000/api/fleet/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "run-polish",
+            epicId: session.epicId,
+            epicTitle: session.repoName,
+            currentLabels: session.epicLabels,
+          }),
+        });
+        console.log(`QA passed for ${session.epicId} — advanced to ux-polish (${stShip})`);
+      } else {
+        await addQALabels(session.epicId!, ["pipeline:submission-prep", "qa:needs-review"]);
+        console.log(`QA passed for ${session.epicId} — advanced to submission-prep (no polish for ${stShip})`);
+      }
+      return true; // Handled
     } catch (err) {
       console.error("Failed to handle QA chain:", err);
       // FAIL-SAFE: stay at QA if we can't determine bug status.
