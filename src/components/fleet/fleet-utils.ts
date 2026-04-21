@@ -602,17 +602,22 @@ export function appHasWave(app: FleetApp, wave: number): boolean {
 /**
  * Categories of attention an epic (or one of its children) can flag.
  *
- * - "verification-needed": checkpoint:human-verify on the epic
- * - "decision-required":   checkpoint:decision on the epic
- * - "human-action":        checkpoint:human-action on the epic
- * - "qa-review":           qa:needs-review on the epic (QA reached max rounds)
- * - "human-flagged":       a child bead carries the "human" label (set by `bd human`)
+ * - "verification-needed":    checkpoint:human-verify on the epic
+ * - "decision-required":      checkpoint:decision on the epic
+ * - "human-action":           checkpoint:human-action on the epic
+ * - "qa-review":              qa:needs-review on the epic (QA reached max rounds)
+ * - "coherence-escalation":   review:needs-human on the epic (factory-core-zsjv
+ *                              — the coherence agent or a reconciler rule flagged
+ *                              this epic for owner judgment after it couldn't
+ *                              resolve the stuck state automatically)
+ * - "human-flagged":          a child bead carries the "human" label (set by `bd human`)
  */
 export type AttentionType =
   | "verification-needed"
   | "decision-required"
   | "human-action"
   | "qa-review"
+  | "coherence-escalation"
   | "human-flagged";
 
 /** A response action available on an attention item (e.g. Approve / Dismiss). */
@@ -679,6 +684,12 @@ export const ATTENTION_CONFIG: Record<
     reason: "QA Review Needed",
     actions: [{ name: "human-dismiss", label: "Dismiss" }],
   },
+  "coherence-escalation": {
+    sourceLabel: "review:needs-human",
+    reason:
+      "Coherence agent flagged — automated recovery exhausted, needs your judgment",
+    actions: [{ name: "human-dismiss", label: "Dismiss" }],
+  },
   "human-flagged": {
     reason: "Flagged for Human Decision",
     actions: [{ name: "human-dismiss", label: "Dismiss" }],
@@ -691,6 +702,7 @@ const EPIC_LABEL_ATTENTION_TYPES: AttentionType[] = [
   "decision-required",
   "human-action",
   "qa-review",
+  "coherence-escalation",
 ];
 
 /**
