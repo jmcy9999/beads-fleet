@@ -312,11 +312,9 @@ async function launchPmAgent(params: {
     descriptionOverride,
   } = params;
 
-  await removeLabelsFromEpic(
-    epicId,
-    ["pipeline:research-complete"],
-    fleetCorePath,
-  );
+  // zsjv.4 fix: clear ALL pipeline:* labels first to prevent doubles.
+  const pmLabelsNow = await getEpicLabels(epicId, fleetCorePath);
+  await removeAllPipelineLabels(epicId, pmLabelsNow, fleetCorePath);
   await addLabelsToEpic(
     epicId,
     ["pipeline:product-spec", "agent:running"],
@@ -694,7 +692,11 @@ export async function POST(request: NextRequest) {
       // MORE RESEARCH: Research Complete -> In Research (loop)
       // -------------------------------------------------------------------
       case "more-research": {
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "plan:pending", "plan:approved"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels before adding the new
+        // one so the epic never ends up with multiple simultaneously.
+        const mrLabels = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, mrLabels, fleetCorePath);
+        await removeLabelsFromEpic(epicId, ["plan:pending", "plan:approved"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:research", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -752,7 +754,9 @@ export async function POST(request: NextRequest) {
       // (factory-core-lxc.5)
       // -------------------------------------------------------------------
       case "run-architect": {
-        await removeLabelsFromEpic(epicId, ["pipeline:product-spec"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels first.
+        const raLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, raLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:architecture", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -876,7 +880,9 @@ export async function POST(request: NextRequest) {
       // (factory-core-a7qf.10)
       // -------------------------------------------------------------------
       case "run-test-spec": {
-        await removeLabelsFromEpic(epicId, ["pipeline:plan-review"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels first.
+        const rtsLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, rtsLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:test-spec", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -1152,11 +1158,17 @@ export async function POST(request: NextRequest) {
         // plan:reviewing, so we clean up plan:reviewing/plan:reviewed instead
         // of plan:pending. ADR-008 — byte-identical owner-click path preserved
         // when `fromChain` is absent or explicitly false.
+        //
+        // zsjv.4 fix (2026-04-21): clear ALL pipeline:* labels first. The
+        // previous implementation only removed pipeline:research-complete,
+        // which left pipeline:plan-review behind for fromChain=true path —
+        // epic ended up with both pipeline:plan-review AND pipeline:test-spec.
+        const aabLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, aabLabelsNow, fleetCorePath);
         if (fromChain === true) {
           await removeLabelsFromEpic(
             epicId,
             [
-              "pipeline:research-complete",
               "plan:reviewing",
               "plan:reviewed",
               "plan:needs-revision",
@@ -1166,7 +1178,7 @@ export async function POST(request: NextRequest) {
         } else {
           await removeLabelsFromEpic(
             epicId,
-            ["pipeline:research-complete", "plan:pending"],
+            ["plan:pending"],
             fleetCorePath,
           );
         }
@@ -1249,6 +1261,9 @@ export async function POST(request: NextRequest) {
       // SKIP TO PLAN: Candidates -> Planning (no research, straight to plan)
       // -------------------------------------------------------------------
       case "skip-to-plan": {
+        // zsjv.4 fix: clear any existing pipeline:* labels first.
+        const stpLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, stpLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], fleetCorePath);
         await updateEpicStatus(epicId, "in_progress", fleetCorePath);
         invalidateCache({ type: "epic", epicId });
@@ -1283,7 +1298,9 @@ export async function POST(request: NextRequest) {
       // REVISE PLAN FROM LAUNCH: Submission Prep -> Planning (with feedback)
       // -------------------------------------------------------------------
       case "revise-plan-from-launch": {
-        await removeLabelsFromEpic(epicId, ["pipeline:submission-prep"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels.
+        const rpflLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, rpflLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -1617,7 +1634,9 @@ export async function POST(request: NextRequest) {
       // MARK READY TO DEPLOY: Building -> Deploying (venture only, label swap)
       // -------------------------------------------------------------------
       case "mark-ready-to-deploy": {
-        await removeLabelsFromEpic(epicId, ["pipeline:development"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels first.
+        const mrtdLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, mrtdLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:deploying"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
         return NextResponse.json({ success: true, action, epicId });
@@ -1627,7 +1646,9 @@ export async function POST(request: NextRequest) {
       // MARK VENTURE LIVE: Deploying -> Live (venture only, label swap)
       // -------------------------------------------------------------------
       case "mark-venture-live": {
-        await removeLabelsFromEpic(epicId, ["pipeline:deploying"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels first.
+        const mvlLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, mvlLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:live"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
         return NextResponse.json({ success: true, action, epicId });
@@ -1637,7 +1658,9 @@ export async function POST(request: NextRequest) {
       // MARK VENTURE COMPLETE: Live -> Completed (venture only, close epic)
       // -------------------------------------------------------------------
       case "mark-venture-complete": {
-        await removeLabelsFromEpic(epicId, ["pipeline:live"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels first.
+        const mvcLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, mvcLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:completed"], fleetCorePath);
         await closeEpic(epicId, "Venture complete", fleetCorePath);
         invalidateCache({ type: "epic", epicId });
@@ -1954,7 +1977,9 @@ export async function POST(request: NextRequest) {
       // (factory-core-hnv.10)
       // -------------------------------------------------------------------
       case "send-for-review": {
-        await removeLabelsFromEpic(epicId, ["pipeline:development"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels first.
+        const sfrLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, sfrLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:build-review", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -2013,7 +2038,9 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ success: true, action, epicId, skipped: true, reason: "Non-UI ship type -- no polish needed" });
         }
 
-        await removeLabelsFromEpic(epicId, ["pipeline:qa"], fleetCorePath);
+        // zsjv.4 fix: clear ALL pipeline:* labels first.
+        const sfpLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, sfpLabelsNow, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:ux-polish", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -2135,6 +2162,12 @@ export async function POST(request: NextRequest) {
       // -------------------------------------------------------------------
       case "review-plan": {
         const priorLabels = [...labels];
+        // zsjv.4 fix: clear ALL pipeline:* labels first. Previously only
+        // plan:pending was removed, so an epic at pipeline:product-spec
+        // that received a stray review-plan dispatch ended up with both
+        // pipeline:product-spec AND pipeline:plan-review (observed on rfu).
+        const rpLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, rpLabelsNow, fleetCorePath);
         await removeLabelsFromEpic(epicId, ["plan:pending"], fleetCorePath);
         await addLabelsToEpic(
           epicId,
