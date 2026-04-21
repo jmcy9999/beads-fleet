@@ -21,6 +21,14 @@ export async function GET() {
     );
     ensureReconcilerRunning();
 
+    // factory-core-6wrk.1: fire-and-forget plan cache prewarm. The
+    // dashboard's reconciler card is typically the FIRST request on a
+    // /fleet page load, so kicking off the prewarm here gives the
+    // subsequent wave-status / issues fetches a warm cache to hit.
+    // Non-blocking: we don't await; the function returns immediately.
+    const { ensurePlanPrewarmed } = await import("@/lib/plan-prewarm");
+    void ensurePlanPrewarmed();
+
     const { getGlobalReconciler } = await import("@/lib/reconciler");
     const rec = getGlobalReconciler();
     if (!rec) {
