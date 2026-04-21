@@ -19,6 +19,7 @@
 import { initReconciler, getGlobalReconciler } from "./reconciler";
 import { buildMissedWaveReviewDispatchRule } from "./reconciler-rules/missed-wave-review-dispatch";
 import { buildStuckInStageRule } from "./reconciler-rules/stuck-in-stage";
+import { buildWaveBeadMismatchRule } from "./reconciler-rules/wave-bead-mismatch";
 import { readEpicState } from "./agent-launcher";
 
 let bootstrapped = false;
@@ -82,6 +83,44 @@ export function ensureReconcilerRunning(): void {
             labels: snap.labels,
             title: epicId,
             currentWave,
+          };
+        },
+      }),
+    );
+
+    // factory-core-zsjv.2: wave-bead-mismatch detector — catches epics
+    // that advanced past development while wave beads remained open.
+    // Rolls the epic back to pipeline:development + re-dispatches
+    // start-wave for the lowest open wave.
+    rec.registerRule(
+      buildWaveBeadMismatchRule({
+        readEpicSnapshot: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          const pipelineLabel = snap.labels.find((l) =>
+            l.startsWith("pipeline:"),
+          );
+          const currentStage = pipelineLabel
+            ? pipelineLabel.replace("pipeline:", "")
+            : null;
+          // Derive lowestOpenWave from the waveStatus map.
+          let lowestOpenWave: number | undefined;
+          if (snap.waveStatus.hasWaves && !snap.waveStatus.allWavesComplete) {
+            for (const [n, entry] of snap.waveStatus.waves) {
+              if (entry.closed < entry.total) {
+                if (lowestOpenWave === undefined || n < lowestOpenWave) {
+                  lowestOpenWave = n;
+                }
+              }
+            }
+          }
+          return {
+            currentStage,
+            lowestOpenWave,
+            allWavesComplete: snap.waveStatus.allWavesComplete,
+            hasWaves: snap.waveStatus.hasWaves,
+            waveStatusError: snap.waveStatus.error,
+            labels: snap.labels,
+            title: epicId,
           };
         },
       }),
