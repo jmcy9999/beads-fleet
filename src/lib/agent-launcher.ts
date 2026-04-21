@@ -659,8 +659,30 @@ function startPollLoop(
       await clearPersistedSession(session.repoPath, session.waveNumber, session.beadId);
       await handleAgentExit(session, 0, agent.langfuseSpan);
     } catch (err) {
-      console.error("[flush-exit] Sequence failed:", err);
+      // factory-core-zszt.1 (fixes 8sz5): previously this catch block only
+      // cleared flushingTmuxSessions, leaving the auto-chain permanently
+      // dropped. We only get here AFTER detectAgentDone returned true —
+      // end_turn was already seen, so the agent's work is complete. A
+      // transient tmux error during /exit transmission is a comms-layer
+      // failure, not a work-layer failure. Treat as exit code 0 so
+      // EXIT_LABELS apply and handleChainAction fires, and clean up the
+      // tracking state so the epic is not stuck "agent:running".
+      console.error(
+        "[flush-exit] Sequence failed; advancing chain as end_turn was already confirmed:",
+        err,
+      );
       flushingTmuxSessions.delete(tmuxSession);
+      activeAgents.delete(repoKey);
+      try {
+        await clearPersistedSession(
+          session.repoPath,
+          session.waveNumber,
+          session.beadId,
+        );
+      } catch (clearErr) {
+        console.error("[flush-exit] clearPersistedSession also failed:", clearErr);
+      }
+      await handleAgentExit(session, 0, agent.langfuseSpan);
     }
   }, 5000);
 }
