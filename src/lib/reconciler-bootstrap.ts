@@ -27,19 +27,25 @@ import { appendEvent, readEvents } from "./event-log";
 import { execSync } from "child_process";
 import { getBdPath, getBdEnv } from "./bd-path";
 
-let bootstrapped = false;
-
 /**
  * Idempotent bootstrap. Call freely from any route handler or server
  * component — subsequent calls after the first return immediately.
  * Swallows errors by design; the reconciler is defence-in-depth, not a
  * hard requirement, and a failed bootstrap must not break the route
  * that triggered it.
+ *
+ * zsjv hotfix 2026-04-21: the "already bootstrapped" check lives on
+ * the global reconciler singleton (from reconciler.ts) rather than a
+ * module-local `bootstrapped` flag. Next.js dev hot-reloads can reset
+ * module-local state, causing redundant re-initialisations — each one
+ * stopping the prior reconciler's interval but NOT its in-flight tick
+ * (which is awaiting a long fetch). Result: ticks from 2+ reconciler
+ * instances interleave, all writing action-taken events, idempotency
+ * fails. Anchoring the guard to the singleton that reconciler.ts
+ * maintains means the check survives hot reloads of THIS module.
  */
 export function ensureReconcilerRunning(): void {
-  if (bootstrapped) return;
-  bootstrapped = true;
-
+  if (getGlobalReconciler()) return;
   try {
     const repoPath =
       process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core";
@@ -196,13 +202,13 @@ export function ensureReconcilerRunning(): void {
     // within the last 24 h before appending a new one.
     void seedOpenEpicsFromBd(repoPath);
   } catch (err) {
-    // Reset the flag so a subsequent call can try again — don't
-    // permanently mark the bootstrap as done if it actually failed.
-    bootstrapped = false;
     console.error(
       "[reconciler-bootstrap] init failed — will retry on next call:",
       err instanceof Error ? err.message : err,
     );
+    // The global reconciler may or may not be set depending on where
+    // init failed. getGlobalReconciler() is the source of truth — if
+    // it's still null, the next ensureReconcilerRunning() call retries.
   }
 }
 
@@ -211,7 +217,6 @@ export function ensureReconcilerRunning(): void {
  * so subsequent test cases start clean.
  */
 export function __resetReconcilerBootstrapForTests(): void {
-  bootstrapped = false;
   const rec = getGlobalReconciler();
   if (rec) rec.stop();
 }

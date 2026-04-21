@@ -128,6 +128,13 @@ export class Reconciler {
   private actionsDispatchedLastTick = 0;
   private ruleStats = new Map<string, RuleStats>();
   private recentActions: ReconcilerStatus["recentActions"] = [];
+  // zsjv hotfix 2026-04-21: prevent overlapping ticks. If a tick runs
+  // longer than tickIntervalMs (normal when fetches hit the 15s
+  // timeout), setInterval fires the next tick before the previous one
+  // finishes — both read the same frozen events snapshot, both pass
+  // idempotency, both dispatch. Multiple dispatches per 10s interval.
+  // This flag serialises tick execution; overlapping fires become no-ops.
+  private tickInProgress = false;
 
   constructor(options: {
     repoPath: string;
@@ -174,6 +181,21 @@ export class Reconciler {
    * deterministically without relying on setInterval timing.
    */
   async tick(now: Date = new Date()): Promise<void> {
+    // zsjv hotfix: skip if a previous tick is still running. Protects
+    // against setInterval overlap when a tick runs longer than the
+    // interval (common when fetches time out at 15s on a 10s tick).
+    if (this.tickInProgress) {
+      return;
+    }
+    this.tickInProgress = true;
+    try {
+      await this._tickInternal(now);
+    } finally {
+      this.tickInProgress = false;
+    }
+  }
+
+  private async _tickInternal(now: Date): Promise<void> {
     const since = new Date(now.getTime() - this.lookbackMs).toISOString();
     this.lastTickAt = now.toISOString();
 
@@ -307,11 +329,27 @@ export class Reconciler {
 // ---------------------------------------------------------------------------
 // Module-level singleton + startup helpers
 // ---------------------------------------------------------------------------
+//
+// zsjv hotfix 2026-04-21: Next.js dev mode creates separate module
+// instances per compiled route chunk. A module-local `let` does NOT
+// persist across those instances — each route sees its own `null`
+// singleton and re-initialises the reconciler. Result: 3+ concurrent
+// reconciler instances writing to the same event log, causing
+// apparent idempotency failures.
+//
+// Fix: stash the singleton on `globalThis`. globalThis is shared
+// process-wide regardless of how many module instances exist.
 
-let globalReconciler: Reconciler | null = null;
+interface GlobalWithReconciler {
+  __beadsWebReconciler?: Reconciler | null;
+}
+
+function getGlobal(): GlobalWithReconciler {
+  return globalThis as unknown as GlobalWithReconciler;
+}
 
 export function getGlobalReconciler(): Reconciler | null {
-  return globalReconciler;
+  return getGlobal().__beadsWebReconciler ?? null;
 }
 
 /**
@@ -326,14 +364,15 @@ export function getGlobalReconciler(): Reconciler | null {
  * safely live inside a module that might be bundled client-side).
  */
 export function initReconciler(repoPath: string): Reconciler {
-  if (globalReconciler) {
-    globalReconciler.stop();
+  const g = getGlobal();
+  if (g.__beadsWebReconciler) {
+    g.__beadsWebReconciler.stop();
   }
-  globalReconciler = new Reconciler({ repoPath });
+  g.__beadsWebReconciler = new Reconciler({ repoPath });
   console.log(
-    `[reconciler] initialized with repoPath=${repoPath}, tickIntervalMs=${globalReconciler["tickIntervalMs"]}`,
+    `[reconciler] initialized with repoPath=${repoPath}, tickIntervalMs=${g.__beadsWebReconciler["tickIntervalMs"]}`,
   );
-  return globalReconciler;
+  return g.__beadsWebReconciler;
 }
 
 /**
@@ -341,9 +380,10 @@ export function initReconciler(repoPath: string): Reconciler {
  * tests that spin up their own reconciler after needing a clean slate.
  */
 export function __resetGlobalReconcilerForTests(): void {
-  if (globalReconciler) {
-    globalReconciler.stop();
-    globalReconciler = null;
+  const g = getGlobal();
+  if (g.__beadsWebReconciler) {
+    g.__beadsWebReconciler.stop();
+    g.__beadsWebReconciler = null;
   }
 }
 
