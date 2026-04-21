@@ -27,7 +27,7 @@ export async function register() {
     const { initReconciler } = await import("./lib/reconciler");
     const repoPath =
       process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core";
-    initReconciler(repoPath);
+    await initReconciler(repoPath);
   } catch (err) {
     console.error("[instrumentation] Failed to initialize reconciler:", err);
   }
