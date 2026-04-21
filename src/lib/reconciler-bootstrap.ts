@@ -29,6 +29,46 @@ import { execSync } from "child_process";
 import { getBdPath, getBdEnv } from "./bd-path";
 
 /**
+ * factory-core-6wrk.1 fix: look up an epic's real title from `bd show`.
+ * Reconciler rules previously fell back to passing epicId as title when
+ * they didn't have it cached, which broke run-polish / run-smoke-test /
+ * any action that uses extractAppName(title) to resolve the product
+ * repo path (e.g. /Users/janemckay/dev/claude_projects/<AppName>).
+ * With the real title ("StudyCycle: Study cycle planner for iOS") the
+ * extractor returns "StudyCycle" and the path resolves.
+ *
+ * Best-effort — returns epicId if bd show fails or title can't be parsed.
+ * Never throws.
+ */
+function readEpicTitle(epicId: string, repoPath: string): string {
+  try {
+    const bd = getBdPath();
+    const env = getBdEnv();
+    const out = execSync(`${bd} show ${epicId}`, {
+      cwd: repoPath,
+      encoding: "utf-8",
+      env,
+      timeout: 10_000,
+    });
+    // Header line format:
+    //   ◐ factory-core-jba [EPIC] · StudyCycle: Study cycle planner for iOS   [● P1 · IN_PROGRESS]
+    const headerLine = out.split("\n")[0] ?? "";
+    // Split on ·; title is between the "[EPIC]" segment and the final status bracket.
+    const parts = headerLine.split("·");
+    if (parts.length >= 2) {
+      const middle = parts[1].trim();
+      // Strip trailing "  [...]" status segment
+      const bracketIdx = middle.lastIndexOf("[");
+      const title = (bracketIdx > 0 ? middle.slice(0, bracketIdx) : middle).trim();
+      if (title.length > 0) return title;
+    }
+  } catch {
+    /* fall through to fallback */
+  }
+  return epicId;
+}
+
+/**
  * Idempotent bootstrap. Call freely from any route handler or server
  * component — subsequent calls after the first return immediately.
  * Swallows errors by design; the reconciler is defence-in-depth, not a
@@ -67,7 +107,7 @@ export function ensureReconcilerRunning(): void {
             },
             openBugCount: snap.openBugCount,
             labels: snap.labels,
-            title: epicId,
+            title: readEpicTitle(epicId, repoPath),
           };
         },
       }),
@@ -93,7 +133,7 @@ export function ensureReconcilerRunning(): void {
             currentStage,
             hasAgentRunning,
             labels: snap.labels,
-            title: epicId,
+            title: readEpicTitle(epicId, repoPath),
             currentWave,
           };
         },
@@ -132,7 +172,7 @@ export function ensureReconcilerRunning(): void {
             hasWaves: snap.waveStatus.hasWaves,
             waveStatusError: snap.waveStatus.error,
             labels: snap.labels,
-            title: epicId,
+            title: readEpicTitle(epicId, repoPath),
           };
         },
       }),
@@ -169,7 +209,7 @@ export function ensureReconcilerRunning(): void {
             openBugCount: snap.openBugCount,
             hasNeedsHuman,
             labels: snap.labels,
-            title: epicId,
+            title: readEpicTitle(epicId, repoPath),
           };
         },
       }),
@@ -184,7 +224,7 @@ export function ensureReconcilerRunning(): void {
           return {
             hasNeedsHuman: snap.labels.includes("review:needs-human"),
             labels: snap.labels,
-            title: epicId,
+            title: readEpicTitle(epicId, repoPath),
           };
         },
       }),
@@ -207,7 +247,7 @@ export function ensureReconcilerRunning(): void {
           return {
             currentStage,
             labels: snap.labels,
-            title: epicId,
+            title: readEpicTitle(epicId, repoPath),
           };
         },
       }),
