@@ -22,6 +22,7 @@ import { buildStuckInStageRule } from "./reconciler-rules/stuck-in-stage";
 import { buildWaveBeadMismatchRule } from "./reconciler-rules/wave-bead-mismatch";
 import { buildRepeatedQaRoundRule } from "./reconciler-rules/repeated-qa-round";
 import { buildCoherenceEscalationRule } from "./reconciler-rules/coherence-escalation";
+import { buildRepeatDispatchEscalationRule } from "./reconciler-rules/repeat-dispatch-escalation";
 import { readEpicState } from "./agent-launcher";
 import { appendEvent, readEvents } from "./event-log";
 import { execSync } from "child_process";
@@ -182,6 +183,29 @@ export function ensureReconcilerRunning(): void {
           const snap = await readEpicState(epicId, repoPath);
           return {
             hasNeedsHuman: snap.labels.includes("review:needs-human"),
+            labels: snap.labels,
+            title: epicId,
+          };
+        },
+      }),
+    );
+
+    // factory-core-zsjv.6 — repeat-dispatch-escalation: when the same
+    // (epic, stage) has been the target of stuck-in-stage recoveries
+    // 3+ times in the last hour, mechanical re-dispatch isn't unsticking
+    // the epic. Dispatch the coherence agent to diagnose.
+    rec.registerRule(
+      buildRepeatDispatchEscalationRule({
+        readEpicSnapshot: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          const pipelineLabel = snap.labels.find((l) =>
+            l.startsWith("pipeline:"),
+          );
+          const currentStage = pipelineLabel
+            ? pipelineLabel.replace("pipeline:", "")
+            : null;
+          return {
+            currentStage,
             labels: snap.labels,
             title: epicId,
           };

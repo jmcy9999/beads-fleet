@@ -1504,7 +1504,18 @@ export async function POST(request: NextRequest) {
             ? ((body as Record<string, unknown>).anomalyClass as string)
             : "unspecified";
 
-        const cohPrompt = `You are the Coherence agent. Diagnose why epic ${epicId} is in an incoherent state and dispatch ONE action from your finite vocabulary.\n\nContext:\n- epicId: ${epicId}\n- epicTitle: ${epicTitle}\n- anomalyClass: ${anomalyClass}\n- currentLabels: ${JSON.stringify(actualLabels)}\n- shipType: ${shipType}\n- fleetCorePath: ${fleetCorePath}\n\nFollow .claude/agents/coherence.md exactly. Append the required [COHERENCE] / [ACTION] / [REASONING] note to the epic before dispatching. Exit immediately after dispatch.`;
+        // zsjv.6: optional coherenceContext — structured payload from
+        // escalation rules (e.g. repeat-dispatch-escalation includes
+        // stuckStage + attemptCount + recentActions). When present,
+        // serialise into the prompt so the agent doesn't need to
+        // re-derive it from bd queries + event log.
+        const coherenceContext = (body as Record<string, unknown>)
+          ?.coherenceContext;
+        const contextBlock = coherenceContext
+          ? `\n- coherenceContext: ${JSON.stringify(coherenceContext)}`
+          : "";
+
+        const cohPrompt = `You are the Coherence agent. Diagnose why epic ${epicId} is in an incoherent state and dispatch ONE action from your finite vocabulary.\n\nContext:\n- epicId: ${epicId}\n- epicTitle: ${epicTitle}\n- anomalyClass: ${anomalyClass}\n- currentLabels: ${JSON.stringify(actualLabels)}\n- shipType: ${shipType}\n- fleetCorePath: ${fleetCorePath}${contextBlock}\n\nFollow .claude/agents/coherence.md exactly. Append the required [COHERENCE] / [ACTION] / [REASONING] note to the epic before dispatching. Exit immediately after dispatch.`;
 
         // agent:running label so the dashboard reflects the live
         // coherence session. We do NOT change pipeline:* — the coherence
