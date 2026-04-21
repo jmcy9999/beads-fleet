@@ -297,6 +297,40 @@ export function ensureReconcilerRunning(): void {
     // all other rules from engaging).
     rec.registerRule(
       buildLivenessCheckRule({
+        listAgentRunningEpicIds: async () => {
+          // Query bd for all open/in_progress epics with agent:running.
+          // --limit 0 bypasses bd's default 50-row truncation (which
+          // silently hid stale labels beyond the first page). --status
+          // filters out long-closed epics whose label hygiene doesn't
+          // matter anymore.
+          try {
+            const bd = getBdPath();
+            const env = getBdEnv();
+            const ids = new Set<string>();
+            for (const status of ["open", "in_progress"]) {
+              const out = execSync(
+                `${bd} list --status=${status} --label agent:running --limit 0`,
+                {
+                  cwd: repoPath,
+                  encoding: "utf-8",
+                  env,
+                  timeout: 15_000,
+                },
+              );
+              for (const line of out.split("\n")) {
+                const m = line.match(/factory-core-[a-z0-9]+/g);
+                if (m) m.forEach((id) => ids.add(id));
+              }
+            }
+            return [...ids];
+          } catch (err) {
+            console.error(
+              "[liveness-check] listAgentRunningEpicIds failed:",
+              err instanceof Error ? err.message : err,
+            );
+            return [];
+          }
+        },
         readEpicSnapshot: async (epicId: string) => {
           const snap = await readEpicState(epicId, repoPath);
           const hasAgentRunning = snap.labels.includes("agent:running");
@@ -501,9 +535,13 @@ async function seedOpenEpicsFromBd(repoPath: string): Promise<void> {
       if (!pipelineMatch) continue;
       const stage = pipelineMatch[1];
       if (["live", "completed", "bad-idea"].includes(stage)) continue;
-      // agent-running → actually working; let the agent emit its own
-      // exit event when it finishes.
-      if (showOut.includes("agent:running")) continue;
+      // factory-core-vy74.1: previously we skipped epics with
+      // agent:running, assuming those were actually working. But those
+      // are EXACTLY the ones liveness-check needs to see as candidates
+      // — if the label is stale, every other rule is locked out. Seed
+      // them too. stuck-in-stage will still correctly skip live agents
+      // via its own hasAgentRunning guard when the snapshot shows the
+      // tmux session exists.
 
       await appendEvent(repoPath, {
         type: "agent-exited",

@@ -51,6 +51,14 @@ export interface EpicSnapshot {
 export interface LivenessCheckRuleOptions {
   /** Injected bd reader. Null = bd failure → skip. */
   readEpicSnapshot: (epicId: string) => Promise<EpicSnapshot | null>;
+  /**
+   * Injected discovery source: returns every epic currently holding the
+   * `agent:running` label per bd. Replaces event-discovery because this
+   * rule is specifically about "bd label out of sync with reality" —
+   * bd must be the source of truth for candidates, not the event log.
+   * Returns an empty array on bd failure (fail-safe skip).
+   */
+  listAgentRunningEpicIds: () => Promise<string[]>;
   /** Injected label mutator. */
   clearAgentRunning: (epicId: string) => Promise<void>;
   /** Injected event appender. Defaults to appendEvent in production. */
@@ -71,15 +79,15 @@ export function buildLivenessCheckRule(
   return {
     name: LIVENESS_CHECK_RULE_NAME,
 
-    async matches(events, now) {
-      // Collect candidate epic ids from recent events. Same discovery
-      // pattern as stuck-in-stage — avoids a global bd sweep on every
-      // tick; the bootstrap seed + periodic re-seed keep the horizon
-      // populated.
-      const epicIds = new Set<string>();
-      for (const e of events) {
-        if (e.epicId) epicIds.add(e.epicId);
-      }
+    async matches(_events, now) {
+      // Unlike every other rule, liveness-check does NOT use
+      // event-based discovery. It's literally about "bd label out of
+      // sync with reality" — so bd is the authoritative source of
+      // candidates. Missing this and relying on events causes epics
+      // with STALE agent:running (never seeded because the old seed
+      // events aged out) to stay invisible — exactly the bug this
+      // rule exists to fix.
+      const epicIds = new Set<string>(await opts.listAgentRunningEpicIds());
 
       const matches: ReconcilerMatch[] = [];
       const windowStart = Math.floor(now.getTime() / bucketMs) * bucketMs;

@@ -48,6 +48,7 @@ describe("liveness-check rule", () => {
 
   function buildRule(snapshotFn: () => Promise<EpicSnapshot | null>) {
     return buildLivenessCheckRule({
+      listAgentRunningEpicIds: async () => ["factory-core-e1"],
       readEpicSnapshot: snapshotFn,
       clearAgentRunning: async (epicId) => {
         clearCalls.push(epicId);
@@ -139,6 +140,7 @@ describe("liveness-check rule", () => {
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildLivenessCheckRule({
+        listAgentRunningEpicIds: async () => ["factory-core-e1"],
         readEpicSnapshot: async () =>
           snap({ hasAgentRunning: true, tmuxSessionAlive: false }),
         clearAgentRunning: async () => {},
@@ -170,13 +172,34 @@ describe("liveness-check rule", () => {
     expect(synthetic[0].epicId).toBe("factory-core-e1");
   });
 
+  test("discovers candidates from bd (not event log) — finds epics not in events", async () => {
+    // Key test for the vy74.1 hotfix: epics with stale agent:running
+    // but NO entries in the event log must still be caught.
+    const repo = await makeRepo();
+    // Event log contains NO agent-exited events for factory-core-stale
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(
+      buildLivenessCheckRule({
+        listAgentRunningEpicIds: async () => ["factory-core-stale"],
+        readEpicSnapshot: async () =>
+          snap({ hasAgentRunning: true, tmuxSessionAlive: false }),
+        clearAgentRunning: async (epicId) => {
+          clearCalls.push(epicId);
+        },
+        appendSyntheticExit: async () => {},
+      }),
+    );
+    await rec.tick();
+    expect(clearCalls).toEqual(["factory-core-stale"]);
+  });
+
   test("respects custom bucket size for idempotency", async () => {
     const repo = await makeRepo();
-    await seedAgentExitedEvent(repo, "factory-core-e1");
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildLivenessCheckRule({
         bucketMs: 1_000, // 1s buckets
+        listAgentRunningEpicIds: async () => ["factory-core-e1"],
         readEpicSnapshot: async () =>
           snap({ hasAgentRunning: true, tmuxSessionAlive: false }),
         clearAgentRunning: async (epicId) => {
