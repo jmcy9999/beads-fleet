@@ -299,14 +299,18 @@ export function getGlobalReconciler(): Reconciler | null {
  * Called from instrumentation.ts on beads_web server startup. Idempotent:
  * calling multiple times has no effect. Hot-reload safe: if the module
  * reloads (dev mode), the old reconciler is stopped first.
+ *
+ * NOTE: rule registration is NOT done here. The caller is responsible for
+ * registering rules BEFORE calling start — this keeps reconciler.ts
+ * completely independent of the rules and their dependencies (which may
+ * pull in agent-launcher.ts / child_process / bd CLI and therefore can't
+ * safely live inside a module that might be bundled client-side).
  */
-export async function initReconciler(repoPath: string): Promise<Reconciler> {
+export function initReconciler(repoPath: string): Reconciler {
   if (globalReconciler) {
     globalReconciler.stop();
   }
   globalReconciler = new Reconciler({ repoPath });
-  await registerProductionRules(globalReconciler, repoPath);
-  globalReconciler.start();
   console.log(
     `[reconciler] initialized with repoPath=${repoPath}, tickIntervalMs=${globalReconciler["tickIntervalMs"]}`,
   );
@@ -324,44 +328,3 @@ export function __resetGlobalReconcilerForTests(): void {
   }
 }
 
-/**
- * Register the production rule set. Extracted so tests can construct a
- * reconciler without the production bindings (tests pass their own stubs
- * to the rule factories directly).
- *
- * factory-core-lfcf.4: missed-wave-review-dispatch recovery — first real
- * rule. Wires to readEpicState from agent-launcher so the rule can read
- * wave status / bug count / labels via the same helper the synchronous
- * chain handler uses.
- */
-async function registerProductionRules(
-  rec: Reconciler,
-  repoPath: string,
-): Promise<void> {
-  const { buildMissedWaveReviewDispatchRule } = await import(
-    "./reconciler-rules/missed-wave-review-dispatch"
-  );
-  const { readEpicState } = await import("./agent-launcher");
-
-  rec.registerRule(
-    buildMissedWaveReviewDispatchRule({
-      readEpicSnapshot: async (epicId) => {
-        const snap = await readEpicState(epicId, repoPath);
-        return {
-          waveStatus: {
-            hasWaves: snap.waveStatus.hasWaves,
-            currentWave: snap.waveStatus.currentWave,
-            allWavesComplete: snap.waveStatus.allWavesComplete,
-            error: snap.waveStatus.error,
-          },
-          openBugCount: snap.openBugCount,
-          labels: snap.labels,
-          // Fallback: use epicId as title when we don't have the
-          // human-readable title. Acceptable for reconciler dispatches
-          // (it's logged, not shown to users).
-          title: epicId,
-        };
-      },
-    }),
-  );
-}
