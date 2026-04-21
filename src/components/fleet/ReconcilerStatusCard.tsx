@@ -128,14 +128,35 @@ export function ReconcilerStatusCard() {
 
       {expanded && status && (
         <ul className="mt-2 space-y-1 text-[11px]">
-          {status.recentActions.slice(0, 10).map((a) => (
-            <li key={a.idempotencyKey} className="truncate text-gray-300">
-              <span className="text-gray-500">{formatRelative(a.at)}</span>{" "}
-              <span className="text-cyan-400">{a.ruleName}</span>{" "}
-              <span className="text-gray-400">→</span>{" "}
-              <span>{a.epicId}</span>
-            </li>
-          ))}
+          {status.recentActions.slice(0, 10).map((a) => {
+            // factory-core-zsjv.5: visually distinguish coherence-driven
+            // escalations from mechanical rule recoveries. Coherence rule
+            // firings are tagged with rule names like "coherence-*".
+            const isCoherence = a.ruleName.startsWith("coherence-");
+            return (
+              <li
+                key={a.idempotencyKey}
+                className={`truncate ${isCoherence ? "text-amber-300" : "text-gray-300"}`}
+              >
+                <span className="text-gray-500">{formatRelative(a.at)}</span>{" "}
+                {isCoherence && (
+                  <span
+                    className="mr-1 rounded bg-amber-900/40 px-1 text-[10px] font-semibold text-amber-200"
+                    title="Coherence-driven escalation — Shipyard dispatched the coherence agent to diagnose this epic"
+                  >
+                    COHERENCE
+                  </span>
+                )}
+                <span
+                  className={isCoherence ? "text-amber-400" : "text-cyan-400"}
+                >
+                  {a.ruleName}
+                </span>{" "}
+                <span className="text-gray-400">→</span>{" "}
+                <span>{a.epicId}</span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
