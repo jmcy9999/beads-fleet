@@ -23,10 +23,48 @@ import { buildWaveBeadMismatchRule } from "./reconciler-rules/wave-bead-mismatch
 import { buildRepeatedQaRoundRule } from "./reconciler-rules/repeated-qa-round";
 import { buildCoherenceEscalationRule } from "./reconciler-rules/coherence-escalation";
 import { buildRepeatDispatchEscalationRule } from "./reconciler-rules/repeat-dispatch-escalation";
+import { buildLivenessCheckRule } from "./reconciler-rules/liveness-check";
 import { readEpicState } from "./agent-launcher";
+import { removeLabelsFromEpic } from "./pipeline-labels";
 import { appendEvent, readEvents } from "./event-log";
 import { execSync } from "child_process";
 import { getBdPath, getBdEnv } from "./bd-path";
+
+/**
+ * factory-core-vy74.1: cached tmux session list for a single reconciler
+ * tick. liveness-check queries tmux for every candidate epic — would be
+ * wasteful to shell-out N times. We cache the list per-tick using a
+ * stale-after-Nms timestamp on globalThis.
+ */
+interface TmuxCacheEntry {
+  sessions: Set<string>;
+  fetchedAtMs: number;
+}
+const TMUX_CACHE_TTL_MS = 5_000;
+
+function listTmuxSessionsCached(): Set<string> {
+  const g = globalThis as unknown as { __beadsWebTmuxCache?: TmuxCacheEntry };
+  const now = Date.now();
+  if (g.__beadsWebTmuxCache && now - g.__beadsWebTmuxCache.fetchedAtMs < TMUX_CACHE_TTL_MS) {
+    return g.__beadsWebTmuxCache.sessions;
+  }
+  const sessions = new Set<string>();
+  try {
+    const out = execSync("tmux list-sessions -F '#{session_name}'", {
+      encoding: "utf-8",
+      env: process.env,
+      timeout: 5_000,
+    });
+    for (const line of out.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed) sessions.add(trimmed);
+    }
+  } catch {
+    // tmux not running, or no sessions → empty set is correct
+  }
+  g.__beadsWebTmuxCache = { sessions, fetchedAtMs: now };
+  return sessions;
+}
 
 /**
  * factory-core-6wrk.1 fix: look up an epic's real title from `bd show`.
@@ -253,6 +291,58 @@ export function ensureReconcilerRunning(): void {
       }),
     );
 
+    // factory-core-vy74.1 — liveness-check rule: clear stale
+    // agent:running labels when no matching tmux session exists. Closes
+    // the label-leak gap (5+ epics observed with stale labels blocking
+    // all other rules from engaging).
+    rec.registerRule(
+      buildLivenessCheckRule({
+        readEpicSnapshot: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          const hasAgentRunning = snap.labels.includes("agent:running");
+          // Tmux session naming convention: shipyard-<epicId>-<stage>
+          // (+ optional -wave<N> + -<beadId>). Match any session whose
+          // name starts with "shipyard-<epicId>-".
+          const sessions = listTmuxSessionsCached();
+          const sessionPrefix = `shipyard-${epicId}-`;
+          let tmuxSessionAlive = false;
+          for (const s of sessions) {
+            if (s.startsWith(sessionPrefix)) {
+              tmuxSessionAlive = true;
+              break;
+            }
+          }
+          const pipelineLabel = snap.labels.find((l) =>
+            l.startsWith("pipeline:"),
+          );
+          const currentStage = pipelineLabel
+            ? pipelineLabel.replace("pipeline:", "")
+            : null;
+          return {
+            hasAgentRunning,
+            tmuxSessionAlive,
+            currentStage,
+          };
+        },
+        clearAgentRunning: async (epicId: string) => {
+          await removeLabelsFromEpic(epicId, ["agent:running"], repoPath);
+        },
+        appendSyntheticExit: async ({ epicId, stage, reason }) => {
+          await appendEvent(repoPath, {
+            type: "agent-exited",
+            epicId,
+            stage: stage ?? undefined,
+            correlationId: `liveness-check-${epicId}`,
+            payload: {
+              exitCode: null,
+              synthetic: true,
+              reason,
+            },
+          });
+        },
+      }),
+    );
+
     rec.start();
     console.log("[reconciler-bootstrap] reconciler started from route handler");
 
@@ -260,11 +350,34 @@ export function ensureReconcilerRunning(): void {
     // "epic-observed" events for every currently-open pipeline:* epic.
     // Without this, rules only see epics referenced in events from the
     // last 60 min — anything stuck BEFORE the reconciler started is
-    // invisible. The synthetic events are dated 20 min ago so stall
-    // detection (15 min threshold) catches them on the first tick.
-    // Dedupe: check the log for a synthetic event for the same epic
-    // within the last 24 h before appending a new one.
+    // invisible.
+    //
+    // factory-core-vy74.2 (Jane 2026-04-21): the seed now re-runs every
+    // 15 min so fresh epics (created post-boot) and epics whose state
+    // recently changed (e.g. vy74.1 liveness-check cleared their stale
+    // agent:running) become visible to rules within a window.
+    // Dedupe via correlationId "reconciler-seed-<id>" within 24h is
+    // already in place, so re-runs are cheap and idempotent.
     void seedOpenEpicsFromBd(repoPath);
+    const RESEED_INTERVAL_MS = 15 * 60_000;
+    const reseedInterval = setInterval(() => {
+      void seedOpenEpicsFromBd(repoPath).catch((err) => {
+        console.error(
+          "[reconciler-bootstrap] periodic reseed failed:",
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }, RESEED_INTERVAL_MS);
+    // Pin the interval on globalThis so hot-reloads + __resetReconciler-
+    // BootstrapForTests can stop it cleanly. Without this, restarts
+    // would leak intervals indefinitely.
+    const gReseed = globalThis as unknown as {
+      __beadsWebReseedInterval?: NodeJS.Timeout | null;
+    };
+    if (gReseed.__beadsWebReseedInterval) {
+      clearInterval(gReseed.__beadsWebReseedInterval);
+    }
+    gReseed.__beadsWebReseedInterval = reseedInterval;
   } catch (err) {
     console.error(
       "[reconciler-bootstrap] init failed — will retry on next call:",
@@ -283,6 +396,15 @@ export function ensureReconcilerRunning(): void {
 export function __resetReconcilerBootstrapForTests(): void {
   const rec = getGlobalReconciler();
   if (rec) rec.stop();
+  const g = globalThis as unknown as {
+    __beadsWebReseedInterval?: NodeJS.Timeout | null;
+    __beadsWebTmuxCache?: TmuxCacheEntry | null;
+  };
+  if (g.__beadsWebReseedInterval) {
+    clearInterval(g.__beadsWebReseedInterval);
+    g.__beadsWebReseedInterval = null;
+  }
+  g.__beadsWebTmuxCache = null;
 }
 
 /**
