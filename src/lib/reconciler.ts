@@ -95,9 +95,13 @@ export interface ReconcilerStatus {
 /**
  * How far back the reconciler looks for events on each tick. Must be
  * comfortably longer than the longest "transition should have happened
- * by now" deadline any rule cares about. MVP: 10 minutes.
+ * by now" deadline any rule cares about. zsjv.1 (stuck-in-stage) needs
+ * to see events 15-60 min old; lfcf.4 (missed-wave-review) only needs
+ * 10 min. We set the default to the longest rule need. Reads are cheap
+ * (append-only JSONL, line-oriented parse) so a wider window doesn't
+ * cost much per tick.
  */
-export const DEFAULT_LOOKBACK_MS = 10 * 60 * 1000;
+export const DEFAULT_LOOKBACK_MS = 60 * 60 * 1000;
 
 /**
  * How far back to look when checking idempotency. Should match (or

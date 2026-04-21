@@ -18,6 +18,7 @@
 
 import { initReconciler, getGlobalReconciler } from "./reconciler";
 import { buildMissedWaveReviewDispatchRule } from "./reconciler-rules/missed-wave-review-dispatch";
+import { buildStuckInStageRule } from "./reconciler-rules/stuck-in-stage";
 import { readEpicState } from "./agent-launcher";
 
 let bootstrapped = false;
@@ -54,6 +55,33 @@ export function ensureReconcilerRunning(): void {
             openBugCount: snap.openBugCount,
             labels: snap.labels,
             title: epicId,
+          };
+        },
+      }),
+    );
+
+    // factory-core-zsjv.1: stuck-in-stage detector — generalises the
+    // missed-wave-review recovery pattern to every pipeline stage.
+    rec.registerRule(
+      buildStuckInStageRule({
+        readEpicSnapshot: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          const pipelineLabel = snap.labels.find((l) =>
+            l.startsWith("pipeline:"),
+          );
+          const currentStage = pipelineLabel
+            ? pipelineLabel.replace("pipeline:", "")
+            : null;
+          const hasAgentRunning = snap.labels.includes("agent:running");
+          const currentWave = snap.waveStatus.hasWaves
+            ? snap.waveStatus.currentWave
+            : undefined;
+          return {
+            currentStage,
+            hasAgentRunning,
+            labels: snap.labels,
+            title: epicId,
+            currentWave,
           };
         },
       }),
