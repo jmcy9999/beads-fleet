@@ -194,6 +194,99 @@ describe("Reconciler", () => {
     rec.stop();
   });
 
+  test("factory-core-3akh.1: concurrency cap defers excess dispatches without consuming idempotency", async () => {
+    const repo = await makeRepo();
+    const rec = new Reconciler({ repoPath: repo, maxConcurrentDispatches: 2 });
+    const acted: string[] = [];
+    rec.registerRule({
+      name: "gen",
+      matches: async () => [
+        { idempotencyKey: "k1", epicId: "e1" },
+        { idempotencyKey: "k2", epicId: "e2" },
+        { idempotencyKey: "k3", epicId: "e3" },
+        { idempotencyKey: "k4", epicId: "e4" },
+      ],
+      act: async (m) => {
+        acted.push(m.idempotencyKey);
+      },
+    });
+    await rec.tick();
+    // Cap = 2 → only first two fire this tick
+    expect(acted).toEqual(["k1", "k2"]);
+    // Verify action-taken was only emitted for the two that fired,
+    // NOT for the deferred k3 and k4 (idempotency bucket intact).
+    const taken = await readEvents(repo, { type: "reconciler-action-taken" });
+    const keys = taken.map(
+      (e) => (e.payload as { idempotencyKey?: string }).idempotencyKey,
+    );
+    expect(keys.sort()).toEqual(["k1", "k2"]);
+  });
+
+  test("factory-core-3akh.1: deferred matches fire on next tick", async () => {
+    const repo = await makeRepo();
+    const rec = new Reconciler({ repoPath: repo, maxConcurrentDispatches: 2 });
+    const acted: string[] = [];
+    rec.registerRule({
+      name: "gen",
+      matches: async () => {
+        const remaining = ["k1", "k2", "k3", "k4"].filter(
+          (k) => !acted.includes(k),
+        );
+        return remaining.map((k) => ({ idempotencyKey: k, epicId: k }));
+      },
+      act: async (m) => {
+        acted.push(m.idempotencyKey);
+      },
+    });
+    await rec.tick();
+    expect(acted).toEqual(["k1", "k2"]);
+    await rec.tick();
+    expect(acted).toEqual(["k1", "k2", "k3", "k4"]);
+  });
+
+  test("factory-core-3akh.2: minTickIntervalMs throttles rule execution", async () => {
+    const repo = await makeRepo();
+    const rec = new Reconciler({ repoPath: repo });
+    let matchCalls = 0;
+    rec.registerRule({
+      name: "throttled",
+      minTickIntervalMs: 30_000,
+      matches: async () => {
+        matchCalls += 1;
+        return [];
+      },
+      act: async () => {},
+    });
+    const t0 = new Date("2026-04-21T10:00:00.000Z");
+    const t1 = new Date("2026-04-21T10:00:10.000Z"); // +10s — throttled
+    const t2 = new Date("2026-04-21T10:00:20.000Z"); // +20s — throttled
+    const t3 = new Date("2026-04-21T10:00:30.000Z"); // +30s — runs again
+    await rec.tick(t0);
+    await rec.tick(t1);
+    await rec.tick(t2);
+    await rec.tick(t3);
+    expect(matchCalls).toBe(2); // t0 + t3
+  });
+
+  test("factory-core-3akh.2: rule without minTickIntervalMs runs every tick", async () => {
+    const repo = await makeRepo();
+    const rec = new Reconciler({ repoPath: repo });
+    let matchCalls = 0;
+    rec.registerRule({
+      name: "unthrottled",
+      // no minTickIntervalMs — default behaviour
+      matches: async () => {
+        matchCalls += 1;
+        return [];
+      },
+      act: async () => {},
+    });
+    await rec.tick();
+    await rec.tick();
+    await rec.tick();
+    expect(matchCalls).toBe(3);
+  });
+
   test("idempotency horizon: ancient action-taken does NOT block current match", async () => {
     const repo = await makeRepo();
     // Pre-populate an action-taken event from 2 hours ago (beyond 1h horizon).

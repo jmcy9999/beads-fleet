@@ -59,6 +59,18 @@ export interface ReconcilerRule {
   /** Unique rule name — appears in logs and action-taken events. */
   name: string;
   /**
+   * Optional throttle: minimum milliseconds between two consecutive
+   * executions of this rule. When set, the reconciler skips the rule
+   * on a tick if less than minTickIntervalMs has elapsed since the
+   * last run. Undefined = run every tick (default).
+   *
+   * Use for rules that watch slow-moving state (repeated-qa-round,
+   * liveness-check, coherence-escalation) so they don't waste bd
+   * calls on every 10s tick. Fast-reacting rules (stuck-in-stage,
+   * missed-wave-review-dispatch) should leave this undefined.
+   */
+  minTickIntervalMs?: number;
+  /**
    * Pure(-ish) function: given recent events and the current time, return
    * matches that describe what to do. May read external state for
    * context, but MUST NOT mutate.
@@ -110,9 +122,29 @@ export const DEFAULT_LOOKBACK_MS = 60 * 60 * 1000;
  */
 export const DEFAULT_IDEMPOTENCY_HORIZON_MS = 60 * 60 * 1000;
 
+/**
+ * factory-core-3akh.1: max concurrent reconciler dispatches. When the
+ * reconciler detects many matches simultaneously, firing them all at
+ * once saturates the bd subprocess pool + Dolt connections, causing
+ * load spikes and API timeouts. Cap defers excess dispatches to the
+ * next tick (idempotency key is NOT consumed for deferred matches, so
+ * they re-appear and fire once capacity is free).
+ *
+ * Default 3 — empirically chosen: lets the reconciler keep up with
+ * typical stall recovery rates without crushing bd under load.
+ * Overridable via RECONCILER_MAX_CONCURRENT env var.
+ */
+export const DEFAULT_MAX_CONCURRENT_DISPATCHES = 3;
+
 interface RuleStats {
   lastMatchedAt?: string;
   totalActionsDispatched: number;
+  /**
+   * factory-core-3akh.2: per-rule throttle bookkeeping. The reconciler
+   * uses this to enforce minTickIntervalMs — a rule's matches() runs
+   * only if (now - lastRunAtMs) >= minTickIntervalMs.
+   */
+  lastRunAtMs?: number;
 }
 
 export class Reconciler {
@@ -122,6 +154,10 @@ export class Reconciler {
   private tickIntervalMs: number;
   private lookbackMs: number;
   private idempotencyHorizonMs: number;
+  /** factory-core-3akh.1: concurrent dispatch cap. */
+  private maxConcurrentDispatches: number;
+  /** factory-core-3akh.1: in-flight dispatch count (live during tick). */
+  private inFlightDispatches = 0;
 
   private lastTickAt?: string;
   private eventsProcessedLastTick = 0;
@@ -141,12 +177,23 @@ export class Reconciler {
     tickIntervalMs?: number;
     lookbackMs?: number;
     idempotencyHorizonMs?: number;
+    maxConcurrentDispatches?: number;
   }) {
     this.repoPath = options.repoPath;
     this.tickIntervalMs = options.tickIntervalMs ?? 10_000;
     this.lookbackMs = options.lookbackMs ?? DEFAULT_LOOKBACK_MS;
     this.idempotencyHorizonMs =
       options.idempotencyHorizonMs ?? DEFAULT_IDEMPOTENCY_HORIZON_MS;
+    // factory-core-3akh.1: constructor > env > compile-time default.
+    const envCap = parseInt(
+      process.env.RECONCILER_MAX_CONCURRENT ?? "",
+      10,
+    );
+    this.maxConcurrentDispatches =
+      options.maxConcurrentDispatches ??
+      (Number.isFinite(envCap) && envCap > 0
+        ? envCap
+        : DEFAULT_MAX_CONCURRENT_DISPATCHES);
   }
 
   registerRule(rule: ReconcilerRule): void {
@@ -214,8 +261,27 @@ export class Reconciler {
 
     this.eventsProcessedLastTick = events.length;
     this.actionsDispatchedLastTick = 0;
+    // factory-core-3akh.1: reset in-flight counter per tick. act() is
+    // awaited sequentially in the current loop, so counter is 0 at tick
+    // start and climbs as dispatches fire. When cap is hit, remaining
+    // matches defer to next tick (idempotency bucket not consumed).
+    this.inFlightDispatches = 0;
 
     for (const rule of this.rules) {
+      // factory-core-3akh.2: per-rule throttle. Skip the rule if it ran
+      // more recently than minTickIntervalMs ago. Saves bd calls inside
+      // matches() — which is the hot path that generates load.
+      if (rule.minTickIntervalMs !== undefined) {
+        const stats = this.ruleStats.get(rule.name);
+        const lastRunAtMs = stats?.lastRunAtMs;
+        if (
+          lastRunAtMs !== undefined &&
+          now.getTime() - lastRunAtMs < rule.minTickIntervalMs
+        ) {
+          continue;
+        }
+      }
+
       let matches: ReconcilerMatch[] = [];
       try {
         matches = await rule.matches(events, now);
@@ -225,6 +291,15 @@ export class Reconciler {
           err instanceof Error ? err.message : err,
         );
         continue;
+      }
+
+      // Record that we ran this rule's matches — lastRunAtMs drives the
+      // per-rule throttle above.
+      {
+        const stats =
+          this.ruleStats.get(rule.name) ?? { totalActionsDispatched: 0 };
+        stats.lastRunAtMs = now.getTime();
+        this.ruleStats.set(rule.name, stats);
       }
 
       for (const match of matches) {
@@ -250,6 +325,18 @@ export class Reconciler {
         if (alreadyActed) {
           continue; // short-circuit — this action was already taken
         }
+
+        // factory-core-3akh.1: concurrency cap. If we're already at
+        // max in-flight dispatches for this tick, skip WITHOUT
+        // consuming the idempotency bucket. The match re-appears on
+        // the next tick and fires when capacity is free.
+        if (this.inFlightDispatches >= this.maxConcurrentDispatches) {
+          console.log(
+            `[reconciler] concurrency cap (${this.maxConcurrentDispatches}) reached — deferring ${rule.name}::${match.idempotencyKey} to next tick`,
+          );
+          continue;
+        }
+        this.inFlightDispatches += 1;
 
         // factory-core-zsjv hotfix 2026-04-21: ALWAYS emit action-taken
         // regardless of act() success/failure. Previously a throwing

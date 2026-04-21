@@ -17,6 +17,18 @@
  */
 
 import { initReconciler, getGlobalReconciler } from "./reconciler";
+import type { ReconcilerRule } from "./reconciler";
+
+/**
+ * factory-core-3akh.2 helper: attach a minTickIntervalMs throttle to a
+ * rule built via the normal buildXxxRule factories (which don't expose
+ * the setting). Kept here so the rule factories stay minimal and the
+ * bootstrap configures timing policy in one place.
+ */
+function throttled(rule: ReconcilerRule, minTickIntervalMs: number): ReconcilerRule {
+  rule.minTickIntervalMs = minTickIntervalMs;
+  return rule;
+}
 import { buildMissedWaveReviewDispatchRule } from "./reconciler-rules/missed-wave-review-dispatch";
 import { buildStuckInStageRule } from "./reconciler-rules/stuck-in-stage";
 import { buildWaveBeadMismatchRule } from "./reconciler-rules/wave-bead-mismatch";
@@ -221,7 +233,7 @@ export function ensureReconcilerRunning(): void {
     // human attention (v1 threshold flag; v2 zsjv.4 escalates to the
     // coherence agent for LLM-judgment).
     rec.registerRule(
-      buildRepeatedQaRoundRule({
+      throttled(buildRepeatedQaRoundRule({
         readEpicSnapshot: async (epicId: string) => {
           const snap = await readEpicState(epicId, repoPath);
           const pipelineLabel = snap.labels.find((l) =>
@@ -250,13 +262,14 @@ export function ensureReconcilerRunning(): void {
             title: readEpicTitle(epicId, repoPath),
           };
         },
-      }),
+      }), 5 * 60_000), // factory-core-3akh.2: QA rounds take hours, poll every 5m
     );
 
     // factory-core-zsjv.4 — coherence escalation rule: dispatches the
     // coherence agent for epics flagged review:needs-human.
+    // factory-core-3akh.2: escalation feels fine at 1-min granularity.
     rec.registerRule(
-      buildCoherenceEscalationRule({
+      throttled(buildCoherenceEscalationRule({
         readEpicSnapshot: async (epicId: string) => {
           const snap = await readEpicState(epicId, repoPath);
           return {
@@ -265,15 +278,17 @@ export function ensureReconcilerRunning(): void {
             title: readEpicTitle(epicId, repoPath),
           };
         },
-      }),
+      }), 60_000), // factory-core-3akh.2: escalation at 1-min granularity
     );
 
     // factory-core-zsjv.6 — repeat-dispatch-escalation: when the same
     // (epic, stage) has been the target of stuck-in-stage recoveries
     // 3+ times in the last hour, mechanical re-dispatch isn't unsticking
     // the epic. Dispatch the coherence agent to diagnose.
+    // factory-core-3akh.2: pattern matures over 15-min buckets; 1-min
+    // poll is plenty.
     rec.registerRule(
-      buildRepeatDispatchEscalationRule({
+      throttled(buildRepeatDispatchEscalationRule({
         readEpicSnapshot: async (epicId: string) => {
           const snap = await readEpicState(epicId, repoPath);
           const pipelineLabel = snap.labels.find((l) =>
@@ -288,15 +303,16 @@ export function ensureReconcilerRunning(): void {
             title: readEpicTitle(epicId, repoPath),
           };
         },
-      }),
+      }), 60_000), // factory-core-3akh.2: 1-min poll for pattern-maturation rule
     );
 
     // factory-core-vy74.1 — liveness-check rule: clear stale
     // agent:running labels when no matching tmux session exists. Closes
     // the label-leak gap (5+ epics observed with stale labels blocking
     // all other rules from engaging).
+    // factory-core-3akh.2: label leaks are slow-moving; 1-min poll fine.
     rec.registerRule(
-      buildLivenessCheckRule({
+      throttled(buildLivenessCheckRule({
         listAgentRunningEpicIds: async () => {
           // Query bd for all open/in_progress epics with agent:running.
           // --limit 0 bypasses bd's default 50-row truncation (which
@@ -374,7 +390,7 @@ export function ensureReconcilerRunning(): void {
             },
           });
         },
-      }),
+      }), 60_000), // factory-core-3akh.2: label leaks don't need 10s reactivity
     );
 
     rec.start();
