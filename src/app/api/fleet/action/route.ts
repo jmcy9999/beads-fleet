@@ -1351,6 +1351,29 @@ export async function POST(request: NextRequest) {
           // Defensive — handleChainAction should only call us for ship types
           // with a polish agent. But if it does misfire, skip through to
           // submission-prep rather than throwing.
+          // factory-core-zszt.4: even in this defensive branch, enforce the
+          // smoke-test freshness gate for iOS/macOS epics. If we got here
+          // with shipType=ios-app but no polish agent, something is
+          // misconfigured — better to stay at ux-polish and surface the
+          // issue than silently submit without runtime verification.
+          const { checkSmokeTestFreshness } = await import(
+            "@/lib/smoke-test-freshness"
+          );
+          const freshness = await checkSmokeTestFreshness(shipType, repoPath);
+          if (!freshness.ok) {
+            console.error(
+              `[smoke-test-freshness] blocking polish-fallback -> submission-prep for ${epicId}: ${freshness.reason}`,
+            );
+            return NextResponse.json({
+              success: false,
+              action,
+              epicId,
+              dispatched: "blocked-smoke-test-stale-or-failed",
+              shipType,
+              reason: freshness.reason,
+              smokeTestClass: freshness.class,
+            }, { status: 409 });
+          }
           await removeLabelsFromEpic(epicId, ["pipeline:ux-polish", "agent:running"], fleetCorePath);
           await addLabelsToEpic(epicId, ["pipeline:submission-prep", "qa:needs-review"], fleetCorePath);
           invalidateCache({ type: "epic", epicId });

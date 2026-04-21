@@ -2218,6 +2218,25 @@ async function dispatchChainAction(
         });
         console.log(`QA passed for ${session.epicId} — advanced to ux-polish (${stShip})`);
       } else {
+        // factory-core-zszt.4: smoke-test freshness gate. For iOS/macOS the
+        // normal path is polish (above); this else-branch fires for other
+        // ship types and is a no-op for the gate. Kept here for defence in
+        // depth so that if hasPolish becomes false for ios-app (e.g. agent
+        // file removed) the epic cannot silently submit with no smoke test.
+        const { checkSmokeTestFreshness } = await import(
+          "./smoke-test-freshness"
+        );
+        const freshness = await checkSmokeTestFreshness(stShip, session.repoPath);
+        if (!freshness.ok) {
+          console.error(
+            `[smoke-test-freshness] blocking QA -> submission-prep for ${session.epicId}: ${freshness.reason}`,
+          );
+          // Stay at pipeline:qa until a fresh smoke-test is available.
+          // The coherence agent (factory-core-zsjv, post-lfcf) will pick
+          // this up and re-dispatch run-smoke-test automatically. Until
+          // then the epic sits here visibly rather than silently advancing.
+          return true;
+        }
         await addQALabels(session.epicId!, ["pipeline:submission-prep", "qa:needs-review"]);
         console.log(`QA passed for ${session.epicId} — advanced to submission-prep (no polish for ${stShip})`);
       }
