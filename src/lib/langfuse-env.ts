@@ -69,8 +69,16 @@ export function buildOtelEnv(context: OtelContext = {}): Record<string, string> 
   if (context.epicId) attrs.push(`session.id=${context.epicId}`);
 
   const env: Record<string, string> = {
+    // Enable the langfuse_hook.py Claude Code hook (reads transcript, sends turns to Langfuse)
+    TRACE_TO_LANGFUSE: "true",
+    CC_LANGFUSE_DEBUG: "true",
+    // Native Claude Code OTEL telemetry
     CLAUDE_CODE_ENABLE_TELEMETRY: "1",
-    OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
+    CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: "1",
+    OTEL_TRACES_EXPORTER: "otlp",
+    OTEL_METRICS_EXPORTER: "otlp",
+    OTEL_LOGS_EXPORTER: "otlp",
+    OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
     OTEL_EXPORTER_OTLP_ENDPOINT: `${baseUrl}/api/public/otel`,
     OTEL_EXPORTER_OTLP_HEADERS: `Authorization=Basic ${authString}`,
   };

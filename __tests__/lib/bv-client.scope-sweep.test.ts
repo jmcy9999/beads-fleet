@@ -113,6 +113,9 @@ function resolve(...parts: string[]): string {
 const DECLARED_ROUTE_HANDLERS = [
   "src/app/api/fleet/action/route.ts",
   "src/app/api/agent/route.ts",
+  "src/app/api/issues/[id]/action/route.ts",
+  "src/app/api/issues/[id]/comments/route.ts",
+  "src/app/api/issues/route.ts",
 ];
 
 describe("factory-core-ppx.8 — cache scope sweep guard", () => {
@@ -235,23 +238,14 @@ describe("factory-core-ppx.8 — cache scope sweep guard", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Internal Guardrail 3 — informational cross-tree grep.
+  // Internal Guardrail 3 — full cross-tree assertion.
   //
-  // The test scenarios doc specifies: "grep tools/, __tests__/, standards/,
-  // docs/ for bare calls — every caller must be accounted for (either
-  // scoped, or flagged as intentional global)".
-  //
-  // This test collects bare calls outside the declared route handlers and
-  // emits them via `console.warn` rather than failing the build — the bead's
-  // blast radius is ONLY the two route handlers, so additional callers are
-  // follow-up work, not regressions introduced by this bead. When a future
-  // bead expands the sweep, the reporter here becomes an assertion.
+  // ppx.11 expanded the sweep to all route handlers in src/. This test now
+  // fails (not warns) if any bare invalidateCache() call exists anywhere in
+  // src/ outside bv-client.ts (which declares the function).
   // ---------------------------------------------------------------------------
 
-  it("reports bare invalidateCache() calls outside the declared scope (informational)", () => {
-    // Use a synchronous directory walk rooted at `src/` — we deliberately
-    // skip node_modules and .next. We don't use the Glob agent tool here
-    // because jest runs should be self-contained.
+  it("zero bare invalidateCache() calls anywhere in src/", () => {
     const fs = require("fs") as typeof import("fs");
 
     function walk(dir: string): string[] {
@@ -276,32 +270,33 @@ describe("factory-core-ppx.8 — cache scope sweep guard", () => {
     }
 
     const srcFiles = walk(resolve("src"));
-    const declaredSet = new Set(
-      DECLARED_ROUTE_HANDLERS.map((p) => resolve(p)),
-    );
-    const undeclaredOffenders: BareCall[] = [];
+    const allOffenders: BareCall[] = [];
 
     for (const f of srcFiles) {
       // Skip bv-client itself — it declares the function signature and
       // legitimately mentions `invalidateCache()` in JSDoc.
       if (f.endsWith("src/lib/bv-client.ts")) continue;
-      if (declaredSet.has(f)) continue;
-      undeclaredOffenders.push(...findBareCalls(f));
+      allOffenders.push(...findBareCalls(f));
     }
 
-    if (undeclaredOffenders.length > 0) {
-      // Informational only — the bead's manifest does not authorise edits
-      // outside the declared scope. A follow-up bead tracks these callers.
-      const detail = undeclaredOffenders
+    if (allOffenders.length > 0) {
+      const detail = allOffenders
         .map((c) => `  ${path.relative(REPO_ROOT, c.file)}:${c.line}  ${c.context}`)
         .join("\n");
-      console.warn(
-        `[ppx.8] Informational: ${undeclaredOffenders.length} bare invalidateCache() call(s) found outside declared scope. Track in a follow-up bead:\n${detail}`,
+      throw new Error(
+        [
+          `Found ${allOffenders.length} bare invalidateCache() call(s) in src/.`,
+          "Every call must pass a CacheScope:",
+          '  - invalidateCache({ type: "epic", epicId }) for epic-scoped mutations',
+          '  - invalidateCache({ type: "repo", repoPath }) for repo-scoped mutations',
+          '  - invalidateCache({ type: "global" }) for explicit global invalidation',
+          "",
+          "Offending call sites:",
+          detail,
+        ].join("\n"),
       );
     }
 
-    // Assertion: this test ALWAYS passes — it's a report, not a gate. The
-    // declared-scope assertions above are the real regression gate.
-    expect(true).toBe(true);
+    expect(allOffenders).toHaveLength(0);
   });
 });

@@ -195,7 +195,7 @@ export async function POST(request: NextRequest) {
       env: getBdEnv(),
     });
 
-    invalidateCache();
+    invalidateCache({ type: "repo", repoPath: targetPath });
 
     // Try to extract the issue ID from bd output (e.g. "Created issue: fleet-core-abc")
     const idMatch = stdout.match(/([a-zA-Z0-9_-]+-[a-zA-Z0-9]+)/);

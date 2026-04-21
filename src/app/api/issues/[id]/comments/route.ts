@@ -143,7 +143,7 @@ export async function POST(
       env: getBdEnv(),
     });
 
-    invalidateCache();
+    invalidateCache({ type: "repo", repoPath: projectPath });
 
     return NextResponse.json({ success: true, issueId });
   } catch (error: unknown) {

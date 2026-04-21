@@ -17,3 +17,9 @@ src/hooks/useMonetization.ts
 .dolt/
 *.db
 .beads-credential-key
+
+# Pre-Dolt beads backup snapshot (one-off, not active)
+.beads-backup-pre-dolt/
+
+# Local env backups
+.env.local.bak-*

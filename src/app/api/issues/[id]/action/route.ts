@@ -119,7 +119,7 @@ export async function POST(
     });
 
     // Bust server-side cache so subsequent reads reflect the change
-    invalidateCache();
+    invalidateCache({ type: "repo", repoPath: projectPath });
 
     return NextResponse.json({ success: true, action, issueId });
   } catch (error: unknown) {
