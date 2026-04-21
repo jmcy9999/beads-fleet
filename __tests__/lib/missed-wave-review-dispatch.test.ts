@@ -304,7 +304,10 @@ describe("missed-wave-review-dispatch rule", () => {
     });
   });
 
-  test("fail-safe: snapshot read failure throws, no action-taken event emitted", async () => {
+  test("fail-safe: snapshot read failure throws, action-taken emitted WITH error payload", async () => {
+    // zsjv hotfix 2026-04-21: reconciler now always emits action-taken
+    // even on act() throw, so idempotency is consumed (prevents hammer
+    // loop on permanent failures). Error visible in payload.
     const repo = await makeRepo();
     const now = new Date("2026-04-21T10:00:00.000Z");
     const exitAt = new Date(now.getTime() - 65_000).toISOString();
@@ -335,7 +338,13 @@ describe("missed-wave-review-dispatch rule", () => {
     const actionTaken = await readEvents(repo, {
       type: "reconciler-action-taken",
     });
-    expect(actionTaken).toEqual([]);
+    expect(actionTaken).toHaveLength(1);
+    const payload = actionTaken[0].payload as {
+      success?: boolean;
+      error?: string;
+    };
+    expect(payload.success).toBe(false);
+    expect(payload.error).toMatch(/bd failed/);
   });
 
   test("only matches build-review exits (not other stages)", async () => {

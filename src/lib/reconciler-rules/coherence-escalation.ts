@@ -102,17 +102,26 @@ export function buildCoherenceEscalationRule(
         `[zsjv.4] dispatching coherence agent for ${match.epicId} (review:needs-human present, no prior coherence dispatch)`,
       );
 
-      const res = await fetch(actionUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "run-coherence-agent",
-          epicId: match.epicId,
-          epicTitle: snap.title,
-          currentLabels: snap.labels,
-          anomalyClass: "review-needs-human",
-        }),
-      });
+      // zsjv hotfix 2026-04-21: fetch timeout.
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), 15_000);
+      let res: Response;
+      try {
+        res = await fetch(actionUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "run-coherence-agent",
+            epicId: match.epicId,
+            epicTitle: snap.title,
+            currentLabels: snap.labels,
+            anomalyClass: "review-needs-human",
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
 
       if (!res.ok) {
         const text = await res.text().catch(() => "<unreadable>");

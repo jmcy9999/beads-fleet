@@ -212,11 +212,22 @@ export function buildStuckInStageRule(
         body.waveNumber = context.currentWave;
       }
 
-      const res = await fetch(actionUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      // zsjv hotfix 2026-04-21: fetch timeout (15s). The action endpoint
+      // can hang if an upstream lock is held; without a timeout, act()
+      // never returns and the reconciler tick stays wedged.
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), 15_000);
+      let res: Response;
+      try {
+        res = await fetch(actionUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
 
       if (!res.ok) {
         const text = await res.text().catch(() => "<unreadable>");

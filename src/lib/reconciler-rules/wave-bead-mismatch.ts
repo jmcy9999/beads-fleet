@@ -146,17 +146,26 @@ export function buildWaveBeadMismatchRule(
         );
       }
 
-      const res = await fetch(actionUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "start-wave",
-          epicId: match.epicId,
-          epicTitle: snap.title,
-          currentLabels: snap.labels,
-          waveNumber: context.dispatchWave,
-        }),
-      });
+      // zsjv hotfix 2026-04-21: fetch timeout.
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), 15_000);
+      let res: Response;
+      try {
+        res = await fetch(actionUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "start-wave",
+            epicId: match.epicId,
+            epicTitle: snap.title,
+            currentLabels: snap.labels,
+            waveNumber: context.dispatchWave,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
 
       if (!res.ok) {
         const text = await res.text().catch(() => "<unreadable>");

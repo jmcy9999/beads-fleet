@@ -185,11 +185,21 @@ export function buildMissedWaveReviewDispatchRule(
       };
       if (waveNumber !== undefined) body.waveNumber = waveNumber;
 
-      const res = await fetch(actionUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      // zsjv hotfix 2026-04-21: fetch timeout — action endpoint can
+      // hang under lock contention; without a cap, act() hangs forever.
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), 15_000);
+      let res: Response;
+      try {
+        res = await fetch(actionUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
 
       if (!res.ok) {
         const text = await res.text().catch(() => "<unreadable>");

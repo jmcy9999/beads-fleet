@@ -229,44 +229,59 @@ export class Reconciler {
           continue; // short-circuit — this action was already taken
         }
 
+        // factory-core-zsjv hotfix 2026-04-21: ALWAYS emit action-taken
+        // regardless of act() success/failure. Previously a throwing
+        // act() left the idempotency bucket unconsumed, so a permanent
+        // failure (missing param, 4xx from action endpoint) would hammer
+        // the same dispatch every tick for the entire idempotency
+        // horizon. Now: bucket is consumed whether the dispatch
+        // succeeded or not; transient failures still get retried when
+        // the idempotency bucket naturally rotates (15 min for
+        // stuck-in-stage, 1 hour for rule-scoped buckets).
+        let actError: string | undefined;
         try {
           await rule.act(match);
           this.actionsDispatchedLastTick += 1;
-          const stats =
-            this.ruleStats.get(rule.name) ?? { totalActionsDispatched: 0 };
-          stats.totalActionsDispatched += 1;
-          stats.lastMatchedAt = now.toISOString();
-          this.ruleStats.set(rule.name, stats);
-
-          const actionRecord = {
-            at: now.toISOString(),
-            ruleName: rule.name,
-            epicId: match.epicId,
-            idempotencyKey: match.idempotencyKey,
-          };
-          this.recentActions.unshift(actionRecord);
-          if (this.recentActions.length > 50) {
-            this.recentActions = this.recentActions.slice(0, 50);
-          }
-
-          // Emit the action-taken event. Note: appendEvent swallows its
-          // own errors, so this never throws.
-          await appendEvent(this.repoPath, {
-            type: "reconciler-action-taken",
-            epicId: match.epicId,
-            payload: {
-              ruleName: rule.name,
-              idempotencyKey: match.idempotencyKey,
-              context: match.context,
-            },
-          });
         } catch (err) {
+          actError = err instanceof Error ? err.message : String(err);
           console.error(
-            `[reconciler] rule "${rule.name}" act() threw for key="${match.idempotencyKey}" — will retry on next tick:`,
-            err instanceof Error ? err.message : err,
+            `[reconciler] rule "${rule.name}" act() threw for key="${match.idempotencyKey}": ${actError}`,
           );
-          // DO NOT append action-taken on failure — allow retry next tick
         }
+
+        const stats =
+          this.ruleStats.get(rule.name) ?? { totalActionsDispatched: 0 };
+        stats.totalActionsDispatched += 1;
+        stats.lastMatchedAt = now.toISOString();
+        this.ruleStats.set(rule.name, stats);
+
+        const actionRecord = {
+          at: now.toISOString(),
+          ruleName: rule.name,
+          epicId: match.epicId,
+          idempotencyKey: match.idempotencyKey,
+        };
+        this.recentActions.unshift(actionRecord);
+        if (this.recentActions.length > 50) {
+          this.recentActions = this.recentActions.slice(0, 50);
+        }
+
+        // Always-emit: consumes the idempotency bucket so the next tick
+        // sees this action as already taken. Errors in the payload make
+        // the failure visible for debugging.
+        await appendEvent(this.repoPath, {
+          type: "reconciler-action-taken",
+          epicId: match.epicId,
+          payload: {
+            ruleName: rule.name,
+            idempotencyKey: match.idempotencyKey,
+            context: match.context,
+            ...(actError !== undefined && {
+              success: false,
+              error: actError,
+            }),
+          },
+        });
       }
     }
   }

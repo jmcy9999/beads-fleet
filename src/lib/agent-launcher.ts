@@ -1443,6 +1443,9 @@ async function emitStageDispatched(
   toAction: string,
   extra: Record<string, unknown> = {},
 ): Promise<void> {
+  // zsjv hotfix: skip emission in test env — tests don't want to
+  // pollute the real fleet-core event log.
+  if (process.env.NODE_ENV === "test") return;
   try {
     const { appendEvent } = await import("./event-log");
     await appendEvent(FLEET_CORE_PATH, {
@@ -2559,7 +2562,11 @@ async function handleAgentExit(
   // the work actually finished, not to whatever happens next. appendEvent
   // swallows errors (see event-log.ts failure contract) so this never
   // affects the rest of handleAgentExit.
-  if (session.epicId) {
+  //
+  // factory-core-zsjv hotfix 2026-04-21: skip emission in test env so tests
+  // don't pollute the real fleet-core event log. NODE_ENV === 'test' when
+  // jest is running.
+  if (session.epicId && process.env.NODE_ENV !== "test") {
     try {
       const { appendEvent } = await import("./event-log");
       await appendEvent(FLEET_CORE_PATH, {

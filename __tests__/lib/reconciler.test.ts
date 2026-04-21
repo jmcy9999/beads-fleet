@@ -106,7 +106,13 @@ describe("Reconciler", () => {
     });
   });
 
-  test("act that throws does NOT emit action-taken event (allow retry)", async () => {
+  test("act that throws STILL emits action-taken with error payload (idempotency consumed)", async () => {
+    // factory-core-zsjv hotfix 2026-04-21: previous behaviour (no
+    // action-taken on throw) hammered the same dispatch every tick for
+    // the entire idempotency horizon when act() had a permanent failure
+    // (e.g. 4xx from action endpoint). Fix: always emit action-taken so
+    // the idempotency bucket is consumed. Failures are visible in the
+    // payload; transient failures get retried when the bucket rotates.
     const repo = await makeRepo();
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule({
@@ -122,7 +128,13 @@ describe("Reconciler", () => {
     const events = await readEvents(repo, {
       type: "reconciler-action-taken",
     });
-    expect(events).toEqual([]);
+    expect(events).toHaveLength(1);
+    const payload = events[0].payload as {
+      success?: boolean;
+      error?: string;
+    };
+    expect(payload.success).toBe(false);
+    expect(payload.error).toMatch(/boom/);
   });
 
   test("rule-matches throwing does NOT kill other rules in the same tick", async () => {
