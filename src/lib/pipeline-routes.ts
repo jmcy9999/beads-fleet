@@ -210,7 +210,19 @@ export const PIPELINE_ROUTES: Record<ShipType, PipelineRoute> = {
       ...UNIVERSAL_AUTO_CHAIN_PRE_QA,
       ...SUBMISSION_TAIL_AUTO_CHAIN,
     },
-    ctas: {},
+    // B2 seeds the iOS submission-prep CTAs so `isActionAllowed` can
+    // discriminate "approve-submission for ios-app at submission-prep"
+    // (legal) from "approve-submission for internal" (illegal). B5 will
+    // extend CTA coverage to every stage × ship type; until then other
+    // stages legitimately declare no CTAs (ctas[stage] === undefined),
+    // which `getCTAsForStage` surfaces as `[]` (never iOS-default).
+    ctas: {
+      "submission-prep": [
+        "launch",
+        "send-back-to-dev",
+        "revise-plan-from-launch",
+      ],
+    },
     closureChecklistId: "ios-app",
   },
 
