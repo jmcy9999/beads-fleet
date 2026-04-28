@@ -570,6 +570,14 @@ export function buildPerBeadPrompt(inputs: PerBeadPromptInputs): string {
     testScenariosBlock,
     ``,
     `--- Standing orders ---`,
-    `Read fleet-core standing orders and agent instructions (agent-discipline.md, regression-patterns.md, platform standards for ${shipType}) before writing code. Follow the builder agent process: read standing orders, claim, implement, commit, self-review, close with a meaningful reason.`,
+    `Read these files in order before writing code (each path is absolute under fleet-core):`,
+    `- ${fleetCorePath}/standards/generic/agent-discipline.md (process gates: investigation, plan decomposition, closure rules)`,
+    `- ${fleetCorePath}/standards/generic/regression-patterns.md (known bug patterns this product must guard against)`,
+    `- ${fleetCorePath}/standards/generic/surfacing-protocol.md (STOP-and-Surface discipline § 1; per-agent failure modes § 2; do NOT silently guess on contradictory inputs)`,
+    `- ${fleetCorePath}/standards/generic/marker-protocol.md (exit-marker contract: write a marker file at <repoPath>/.beads/markers/<bead-id>.json on exit per § 1, applying Quality discipline § 2 incl. BLOCKER/FOLLOW-ON convention; per-agent slant for builders at § 3.6; schema + worked example at ${fleetCorePath}/docs/architecture/marker-schema.md)`,
+    `- ${fleetCorePath}/standards/platforms/${shipType}/ (platform-specific standards if present)`,
+    `- ${fleetCorePath}/.claude/agents/builder.md (your own agent file: Verification Depth, AC Ambiguity Check, per-AC-item verification checkpoint, full builder discipline including STOP-on-gap-not-degrade and close-note-diagnosis-must-be-verified rules)`,
+    ``,
+    `Follow the builder process: read standing orders, claim the bead (Step 5b), implement per AC items (Step 5c — including per-AC-item checkpoint write to .beads/checkpoints/), commit per-bead with bead-id-prefixed message (Step 5d), self-review (Step 5e), write the marker file on exit (Step 5f-adjacent per marker-protocol.md), then close the bead with a meaningful reason (Step 5f).`,
   ].join("\n");
 }
