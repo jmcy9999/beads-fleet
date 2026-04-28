@@ -423,33 +423,50 @@ export function formatPriorProgressBlock(
 }
 
 /**
- * Builder agent's standing-orders directive — shared between buildPerBeadPrompt
- * (per-bead dispatch) and the route.ts builder dispatches (epic / wave / fix /
- * resume). Single source of truth so updates land in one place.
+ * Generic standing-orders directive used by all Class B agent dispatches
+ * (cwd=productRepo, can't auto-resolve agent file from cwd). Names six
+ * fleet-core paths absolute so the agent reads IMPROVED's discipline.
  *
- * Each path is absolute under fleetCorePath so FLEET_CORE_PATH on beads_web
- * controls whether the agent reads STABLE vs IMPROVED discipline. Phase 2
- * Items 1+2 (surfacing-protocol.md), Item 4 (marker-protocol.md), and the
- * canonical builder discipline (.claude/agents/builder.md) are all explicitly
- * named so the dispatched builder doesn't have to infer paths.
+ * Phase 2 Aspirational Pipeline plan, factory-core-2ayl.
  *
- * Phase 2 Aspirational Pipeline plan, factory-core-ocz9.
+ * For builders specifically, formatBuilderStandingOrdersDirective wraps this
+ * + adds per-AC-item Step 5b/5c/5d/5e/5f process notes.
+ */
+export function formatAgentStandingOrdersDirective(
+  fleetCorePath: string,
+  shipType: string,
+  agentName: string,
+): string {
+  return [
+    `Read these fleet-core files in order before starting (each path is absolute):`,
+    `- ${fleetCorePath}/standards/generic/agent-discipline.md (process gates: investigation, plan decomposition, closure rules)`,
+    `- ${fleetCorePath}/standards/generic/regression-patterns.md (known bug patterns)`,
+    `- ${fleetCorePath}/standards/generic/surfacing-protocol.md (STOP-and-Surface discipline § 1; per-agent failure modes § 2; do NOT silently guess on contradictory inputs)`,
+    `- ${fleetCorePath}/standards/generic/marker-protocol.md (exit-marker contract: write a marker file on exit per § 1, applying Quality discipline § 2 incl. BLOCKER/FOLLOW-ON convention; per-agent slant for ${agentName} in § 3; schema + worked example at ${fleetCorePath}/docs/architecture/marker-schema.md)`,
+    `- ${fleetCorePath}/standards/platforms/${shipType}/ (platform-specific standards if present)`,
+    `- ${fleetCorePath}/.claude/agents/${agentName}.md (your own agent file: full discipline for this agent type)`,
+    ``,
+    `Follow the agent process defined in your agent file. On exit, write the marker file per marker-protocol.md (filename per § 1: per-bead agents use <bead-id>.json; epic-scope agents use <epic-id>-<stage>.json).`,
+  ].join("\n");
+}
+
+/**
+ * Builder agent's standing-orders directive — generic directive plus the
+ * builder-specific Step 5b/5c/5d/5e/5f process steps and the per-AC-item
+ * checkpoint protocol. Used by buildPerBeadPrompt and the 7 builder dispatches
+ * in route.ts (start-wave, run-development, sendBack, fix-QA-bugs, resume,
+ * legacy perBeadPrompt fallback).
+ *
+ * Phase 2 Aspirational Pipeline plan, factory-core-ocz9 (initial) +
+ * factory-core-2ayl (refactored to share the generic helper).
  */
 export function formatBuilderStandingOrdersDirective(
   fleetCorePath: string,
   shipType: string,
 ): string {
-  return [
-    `Read these fleet-core files in order before writing code (each path is absolute):`,
-    `- ${fleetCorePath}/standards/generic/agent-discipline.md (process gates: investigation, plan decomposition, closure rules)`,
-    `- ${fleetCorePath}/standards/generic/regression-patterns.md (known bug patterns this product must guard against)`,
-    `- ${fleetCorePath}/standards/generic/surfacing-protocol.md (STOP-and-Surface discipline § 1; per-agent failure modes § 2; do NOT silently guess on contradictory inputs)`,
-    `- ${fleetCorePath}/standards/generic/marker-protocol.md (exit-marker contract: write a marker file at <repoPath>/.beads/markers/<bead-id>.json on exit per § 1, applying Quality discipline § 2 incl. BLOCKER/FOLLOW-ON convention; per-agent slant for builders at § 3.6; schema + worked example at ${fleetCorePath}/docs/architecture/marker-schema.md)`,
-    `- ${fleetCorePath}/standards/platforms/${shipType}/ (platform-specific standards if present)`,
-    `- ${fleetCorePath}/.claude/agents/builder.md (your own agent file: Verification Depth, AC Ambiguity Check, per-AC-item verification checkpoint, full builder discipline including STOP-on-gap-not-degrade and close-note-diagnosis-must-be-verified rules)`,
-    ``,
-    `Follow the builder process: read standing orders, claim the bead (Step 5b), implement per AC items (Step 5c — including per-AC-item checkpoint write to .beads/checkpoints/), commit per-bead with bead-id-prefixed message (Step 5d), self-review (Step 5e), write the marker file on exit (per marker-protocol.md), then close the bead with a meaningful reason (Step 5f).`,
-  ].join("\n");
+  return formatAgentStandingOrdersDirective(fleetCorePath, shipType, "builder")
+    + "\n\n"
+    + `Builder-specific process: claim the bead (Step 5b), implement per AC items (Step 5c — including per-AC-item checkpoint write to .beads/checkpoints/), commit per-bead with bead-id-prefixed message (Step 5d), self-review (Step 5e), write the marker file on exit, then close the bead with a meaningful reason (Step 5f). See ${fleetCorePath}/.claude/agents/builder.md for the full discipline including Verification Depth and STOP-on-gap-not-degrade.`;
 }
 
 export interface PerBeadPromptInputs {

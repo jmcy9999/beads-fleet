@@ -24,6 +24,7 @@ import {
   loadBuildPromptOverride,
   buildPerBeadPrompt,
   formatBuilderStandingOrdersDirective,
+  formatAgentStandingOrdersDirective,
 } from "@/lib/bead-prompt";
 import { getRepos } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
@@ -1411,7 +1412,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ success: true, action, epicId, dispatched: "skipped-no-polish-agent", shipType });
         }
 
-        const polishPrompt = `Run UX polish for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Build plan: ${planPath}. Follow .claude/agents/platforms/${polishShipKey}/polish.md. Launch the simulator, take screenshots of every screen in light and dark mode via tools/platforms/ios/snapship.sh where available, and file bug beads for any visual / runtime issues.`;
+        const polishPrompt = `Run UX polish for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Build plan: ${planPath}. Launch the simulator, take screenshots of every screen in light and dark mode via tools/platforms/ios/snapship.sh where available, and file bug beads for any visual / runtime issues.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, polishAgentName)}`;
 
         const polishSession = await launchAgent({
           repoPath: repoPath,
@@ -1469,7 +1470,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ success: true, action, epicId, dispatched: "skipped-no-smoke-agent", shipType });
         }
 
-        const stPrompt = `Run the iOS smoke test for epic ${epicId} (${epicTitle}). Product repo: ${repoPath}. Scheme: ${smokeAppName}. Build plan: ${planPath}. Follow .claude/agents/platforms/ios/smoke-test.md. Invoke tools/platforms/ios/smoke-test.sh. On FAIL file a bug under the epic; on PASS exit cleanly.`;
+        const stPrompt = `Run the iOS smoke test for epic ${epicId} (${epicTitle}). Product repo: ${repoPath}. Scheme: ${smokeAppName}. Build plan: ${planPath}. Invoke tools/platforms/ios/smoke-test.sh. On FAIL file a bug under the epic; on PASS exit cleanly.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, smokeAgentName)}`;
 
         const stSession = await launchAgent({
           repoPath: repoPath,
@@ -1604,7 +1605,7 @@ export async function POST(request: NextRequest) {
         const session = await launchAgent({
           repoPath: repoPath,
           repoName: repoName,
-          prompt: `Run QA for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. QA round: ${currentRound}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Shipyard: ${fleetCorePath}.${totalWavesStr}`,
+          prompt: `Run QA for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. QA round: ${currentRound}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}.${totalWavesStr}\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, qaAgentName)}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Glob,Grep,Task",
@@ -1992,7 +1993,7 @@ export async function POST(request: NextRequest) {
           ? `platforms/${shipType.replace("-app", "")}/reviewer`
           : "reviewer";
 
-        const reviewWavePrompt = `Review Wave ${rWave} changes for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${rRepoPath}. Research report: ${rResearchPath}. Build plan: ${rPlanPath}. Shipyard: ${fleetCorePath}. ONLY review beads with wave:${rWave} label. Check code quality, security patterns, standing order compliance.`;
+        const reviewWavePrompt = `Review Wave ${rWave} changes for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${rRepoPath}. Research report: ${rResearchPath}. Build plan: ${rPlanPath}. ONLY review beads with wave:${rWave} label. Check code quality, security patterns, standing order compliance.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, reviewerAgentName)}`;
 
         const reviewWaveSession = await launchAgent({
           repoPath: rRepoPath,
@@ -2035,7 +2036,7 @@ export async function POST(request: NextRequest) {
           ? `platforms/${shipType.replace("-app", "")}/reviewer`
           : "reviewer";
 
-        const sendReviewPrompt = `Review all changes for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${reviewRepoPath}. Research report: ${reviewResearchPath}. Build plan: ${reviewPlanPath}. Shipyard: ${fleetCorePath}. Check code quality, security patterns, standing order compliance.`;
+        const sendReviewPrompt = `Review all changes for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${reviewRepoPath}. Research report: ${reviewResearchPath}. Build plan: ${reviewPlanPath}. Check code quality, security patterns, standing order compliance.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, sendReviewAgentName)}`;
 
         const sendReviewSession = await launchAgent({
           repoPath: reviewRepoPath,
@@ -2096,7 +2097,7 @@ export async function POST(request: NextRequest) {
           ? `platforms/${shipType.replace("-app", "")}/polish`
           : "polish";
 
-        const polishPrompt = `Polish UI/UX for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${polishRepoPath}. Research report: ${polishResearchPath}. Build plan: ${polishPlanPath}. Shipyard: ${fleetCorePath}. Review visual quality, layout, accessibility, empty states, responsive design.`;
+        const polishPrompt = `Polish UI/UX for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${polishRepoPath}. Research report: ${polishResearchPath}. Build plan: ${polishPlanPath}. Review visual quality, layout, accessibility, empty states, responsive design.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, polishAgentName)}`;
 
         const polishSession = await launchAgent({
           repoPath: polishRepoPath,
