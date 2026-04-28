@@ -406,7 +406,14 @@ export async function POST(request: NextRequest) {
   }
 
   const store = await getRepos();
-  const fleetCoreRepo = store.repos.find((r) => r.path === FLEET_CORE_PATH || r.name.includes("fleet-core"));
+  // factory-core-ap56: env-var precedence — try exact path equality first,
+  // then fall back to name substring. Without splitting the predicate, find()
+  // returns the first match regardless of branch, which means a substring hit
+  // on STABLE's "fleet-core" entry wins over an env-var pointed at
+  // fleet-core-improved.
+  const fleetCoreRepo =
+    store.repos.find((r) => r.path === FLEET_CORE_PATH) ??
+    store.repos.find((r) => r.name.includes("fleet-core"));
   const fleetCorePath = fleetCoreRepo?.path ?? FLEET_CORE_PATH;
 
   const appName = deriveAppName(epicTitle as string, epicId as string);
