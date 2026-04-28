@@ -23,6 +23,7 @@ import {
   loadCheckpointEntries,
   loadBuildPromptOverride,
   buildPerBeadPrompt,
+  formatBuilderStandingOrdersDirective,
 } from "@/lib/bead-prompt";
 import { getRepos } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
@@ -631,7 +632,7 @@ export async function POST(request: NextRequest) {
           const waveTestScenariosInfo = testScenariosPath
             ? ` Test scenarios: ${testScenariosPath}.`
             : "";
-          const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+          const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)} ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
 
           const session = await launchAgent({
             repoPath: repoPath,
@@ -664,7 +665,7 @@ export async function POST(request: NextRequest) {
         const testScenariosInfo = testScenariosPath
           ? ` Test scenarios: ${testScenariosPath}.`
           : "";
-        const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}.${testScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting.`;
+        const devPrompt = `Build epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}. Fleet-core: ${fleetCorePath}.${testScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)}`;
 
         const session = await launchAgent({
           repoPath: repoPath,
@@ -1048,7 +1049,7 @@ export async function POST(request: NextRequest) {
           ? ` A feedback bug bead ${feedbackBeadId} has been filed under this epic with the full feedback as its description and acceptance criteria — you MUST close that bead as part of your fix. Do not simply read the feedback and move on; the bead is the contract.`
           : "";
 
-        const sendBackPrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}.${feedbackStr2}${feedbackBeadStr}`;
+        const sendBackPrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}.${feedbackStr2}${feedbackBeadStr}\n\n${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)}`;
 
         const session = await launchAgent({
           repoPath: repoPath,
@@ -1630,7 +1631,7 @@ export async function POST(request: NextRequest) {
         const session = await launchAgent({
           repoPath: repoPath,
           repoName: repoName,
-          prompt: `Fix QA bugs for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}.`,
+          prompt: `Fix QA bugs for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${repoPath}. Research report: ${researchPath}. Build plan: ${planPath}.\n\n${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)}`,
           model: "opus",
           maxTurns: 300,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -1708,7 +1709,7 @@ export async function POST(request: NextRequest) {
             fleetCorePath,
           });
 
-        const resumePrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${rbRepoPath}. Research report: ${rbResearchPath}. Build plan: ${rbPlanPath}. Fix all open bugs and complete remaining tasks.${feedbackStrResume}${feedbackBeadStrResume}`;
+        const resumePrompt = `Continue building epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${rbRepoPath}. Research report: ${rbResearchPath}. Build plan: ${rbPlanPath}. Fix all open bugs and complete remaining tasks.${feedbackStrResume}${feedbackBeadStrResume}\n\n${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)}`;
 
         const resumeSession = await launchAgent({
           repoPath: rbRepoPath,
@@ -1800,7 +1801,7 @@ export async function POST(request: NextRequest) {
         // Legacy fallback: no enumerable open beads → launch one wave-scoped
         // session as before. Keeps pre-z9h.7 epics working.
         if (openBeads.length === 0) {
-          const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+          const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)} ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
 
           const startWaveSession = await launchAgent({
             repoPath: waveRepoPath,
@@ -1916,7 +1917,7 @@ export async function POST(request: NextRequest) {
             } catch (err) {
               // Fallback to a simple prompt; log so we can investigate.
               console.error(`[start-wave] Failed to build per-bead prompt for ${head.id}:`, err);
-              perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} Standing orders and agent instructions are in fleet-core — read them before starting. ONLY work bead ${head.id}. Do not start any other bead.`;
+              perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)} ONLY work bead ${head.id}. Do not start any other bead.`;
             }
 
             const beadSession = await launchAgent({
