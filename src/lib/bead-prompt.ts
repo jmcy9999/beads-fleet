@@ -369,6 +369,37 @@ export async function loadCheckpointEntries(
 }
 
 /**
+ * Read a planner-authored build_prompt from `.beads/prompts/<beadId>.md`.
+ * Returns the file contents trimmed when present and non-empty; null
+ * otherwise (file missing, empty, or whitespace-only).
+ *
+ * Phase 2 Item 3.5 (factory-core-mkp2): per-bead override that captures
+ * planner-time context the orchestrator's auto-generated prompt loses
+ * (architectural intent, prior-bead findings, bead-specific risk flags).
+ * When the file is present, the orchestrator dispatches it verbatim — see
+ * buildPerBeadPrompt's early-return below.
+ *
+ * Backward compatible: beads without a prompt file fall through to today's
+ * auto-generated prompt unchanged. ENOENT is the common case (most beads
+ * have no override) and is silenced; other read errors throw so the caller
+ * can decide whether to log + degrade or propagate.
+ */
+export async function loadBuildPromptOverride(
+  repoPath: string,
+  beadId: string,
+): Promise<string | null> {
+  const path = `${repoPath}/.beads/prompts/${beadId}.md`;
+  try {
+    const raw = await fs.readFile(path, "utf-8");
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+/**
  * Render the Prior-Progress prompt body. Returns null when there are no
  * entries — caller omits the section entirely so the prompt matches today's
  * shape for fresh beads.
@@ -426,6 +457,16 @@ export interface PerBeadPromptInputs {
    * Strictly additive: undefined or empty means today's behaviour.
    */
   priorProgress?: CheckpointEntry[];
+  /**
+   * Optional planner-authored prompt loaded via loadBuildPromptOverride()
+   * from `.beads/prompts/<beadId>.md`. When present and non-empty,
+   * buildPerBeadPrompt returns this string VERBATIM — the entire
+   * auto-generated assembly is bypassed. Planner is responsible for the
+   * prompt's completeness (per spec at
+   * docs/research/aspirational-pipeline/item-3.5-planner-authored-prompts.md).
+   * When absent, falls through to today's auto-generated prompt unchanged.
+   */
+  buildPromptOverride?: string;
 }
 
 /**
@@ -455,7 +496,16 @@ export function buildPerBeadPrompt(inputs: PerBeadPromptInputs): string {
     testScenarios,
     testScenariosPath,
     priorProgress,
+    buildPromptOverride,
   } = inputs;
+
+  // Phase 2 Item 3.5: planner-authored override wins. Bypass all
+  // auto-generation — the planner has captured context the orchestrator
+  // cannot (architectural intent, prior-bead findings, bead-specific risks).
+  // Backward compatible: beads without a prompt file fall through.
+  if (buildPromptOverride && buildPromptOverride.length > 0) {
+    return buildPromptOverride;
+  }
 
   const paths: string[] = [];
   paths.push(`Product repo: ${repoPath}`);

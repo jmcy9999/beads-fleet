@@ -21,6 +21,7 @@ import {
   loadBeadDetail,
   loadBeadTestScenarios,
   loadCheckpointEntries,
+  loadBuildPromptOverride,
   buildPerBeadPrompt,
 } from "@/lib/bead-prompt";
 import { getRepos } from "@/lib/repo-config";
@@ -1882,6 +1883,15 @@ export async function POST(request: NextRequest) {
                 wave,
                 head.id,
               );
+              const buildPromptOverride = await loadBuildPromptOverride(
+                waveRepoPath,
+                head.id,
+              );
+              if (buildPromptOverride) {
+                console.info(
+                  `[start-wave] Using planner-authored build_prompt override for ${head.id} from .beads/prompts/${head.id}.md (bypassing auto-generated prompt)`,
+                );
+              }
               perBeadPrompt = buildPerBeadPrompt({
                 beadId: head.id,
                 beadTitle: detail.title || head.title,
@@ -1901,6 +1911,7 @@ export async function POST(request: NextRequest) {
                 testScenariosPath: waveTestScenariosPath,
                 testScenarios,
                 priorProgress,
+                buildPromptOverride: buildPromptOverride ?? undefined,
               });
             } catch (err) {
               // Fallback to a simple prompt; log so we can investigate.
