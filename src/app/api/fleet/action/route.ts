@@ -20,6 +20,7 @@ import {
 import {
   loadBeadDetail,
   loadBeadTestScenarios,
+  loadCheckpointEntries,
   buildPerBeadPrompt,
 } from "@/lib/bead-prompt";
 import { getRepos } from "@/lib/repo-config";
@@ -1875,6 +1876,12 @@ export async function POST(request: NextRequest) {
                 waveTestScenariosPath,
                 head.id,
               );
+              const priorProgress = await loadCheckpointEntries(
+                waveRepoPath,
+                epicId as string,
+                wave,
+                head.id,
+              );
               perBeadPrompt = buildPerBeadPrompt({
                 beadId: head.id,
                 beadTitle: detail.title || head.title,
@@ -1893,6 +1900,7 @@ export async function POST(request: NextRequest) {
                 architecturePath: waveArchitecturePath,
                 testScenariosPath: waveTestScenariosPath,
                 testScenarios,
+                priorProgress,
               });
             } catch (err) {
               // Fallback to a simple prompt; log so we can investigate.

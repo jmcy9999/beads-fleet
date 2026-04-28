@@ -298,6 +298,99 @@ export async function loadBeadTestScenarios(
 // Prompt construction
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-AC-item verification checkpoint written by the builder agent
+ * (factory-core-ufg2 / Phase 2 Item 3) after each AC item is verified within
+ * a bead. The file lives at `<repoPath>/.beads/checkpoints/<epicId>-wave-
+ * <waveNumber>.jsonl` — append-only, one line per (bead, ac_item).
+ *
+ * The checkpoint signals VERIFICATION, not commit — commits stay per-bead
+ * per builder.md Step 5d. Strictly additive: when the file is missing or
+ * contains no entries for the current bead, callers fall back to today's
+ * prompt (no "Prior progress" section). Agents that don't write checkpoints
+ * still close beads via bd; fresh agents fall back to
+ * `bd list --status=in_progress`.
+ */
+export interface CheckpointEntry {
+  bead: string;
+  ac_item: number;
+  verified_at: string;
+  note?: string;
+}
+
+/**
+ * Read checkpoint entries from `.beads/checkpoints/<epicId>-wave-<N>.jsonl`,
+ * filtered to the given bead. Returns empty array on missing file or no
+ * matching entries (the fallback path).
+ *
+ * Tolerant of malformed lines: parse failures are skipped, not thrown,
+ * because the file is best-effort signal and one bad line shouldn't lose
+ * the rest of the bead's progress.
+ */
+export async function loadCheckpointEntries(
+  repoPath: string,
+  epicId: string,
+  waveNumber: number,
+  beadId: string,
+): Promise<CheckpointEntry[]> {
+  const path = `${repoPath}/.beads/checkpoints/${epicId}-wave-${waveNumber}.jsonl`;
+  let raw: string;
+  try {
+    raw = await fs.readFile(path, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const entries: CheckpointEntry[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as Partial<CheckpointEntry>;
+      if (
+        typeof parsed.bead === "string" &&
+        parsed.bead === beadId &&
+        typeof parsed.ac_item === "number" &&
+        typeof parsed.verified_at === "string"
+      ) {
+        entries.push({
+          bead: parsed.bead,
+          ac_item: parsed.ac_item,
+          verified_at: parsed.verified_at,
+          note: typeof parsed.note === "string" ? parsed.note : undefined,
+        });
+      }
+    } catch {
+      // Tolerate malformed lines.
+    }
+  }
+  entries.sort((a, b) => a.ac_item - b.ac_item);
+  return entries;
+}
+
+/**
+ * Render the Prior-Progress prompt body. Returns null when there are no
+ * entries — caller omits the section entirely so the prompt matches today's
+ * shape for fresh beads.
+ */
+export function formatPriorProgressBlock(
+  entries: CheckpointEntry[],
+): string | null {
+  if (entries.length === 0) return null;
+  const lines = entries.map((e) => {
+    const noteSuffix = e.note && e.note.length > 0 ? ` — ${e.note}` : "";
+    return `- AC item ${e.ac_item}: verified at ${e.verified_at}${noteSuffix}`;
+  });
+  const maxItem = entries[entries.length - 1].ac_item;
+  return [
+    `The following AC items in this bead have already been verified by a prior builder run (commits stay per-bead, so the implementation may not yet be in git — inspect the working tree before re-implementing):`,
+    ``,
+    ...lines,
+    ``,
+    `Resume at AC item ${maxItem + 1}. Do NOT re-implement items already verified.`,
+  ].join("\n");
+}
+
 export interface PerBeadPromptInputs {
   beadId: string;
   beadTitle: string;
@@ -325,6 +418,14 @@ export interface PerBeadPromptInputs {
    * didn't supply one).
    */
   testScenariosPath?: string;
+  /**
+   * Optional prior-progress entries for this bead, populated by the caller
+   * via loadCheckpointEntries(). When present and non-empty, the prompt
+   * renders a "Prior progress" section so a fresh agent (after context-
+   * death) resumes at the right AC item rather than starting over.
+   * Strictly additive: undefined or empty means today's behaviour.
+   */
+  priorProgress?: CheckpointEntry[];
 }
 
 /**
@@ -353,6 +454,7 @@ export function buildPerBeadPrompt(inputs: PerBeadPromptInputs): string {
     architecturePath,
     testScenarios,
     testScenariosPath,
+    priorProgress,
   } = inputs;
 
   const paths: string[] = [];
@@ -388,6 +490,10 @@ export function buildPerBeadPrompt(inputs: PerBeadPromptInputs): string {
       break;
   }
 
+  const priorProgressBlock = priorProgress
+    ? formatPriorProgressBlock(priorProgress)
+    : null;
+
   return [
     `Build bead ${beadId} — ${beadTitle}.`,
     ``,
@@ -404,6 +510,9 @@ export function buildPerBeadPrompt(inputs: PerBeadPromptInputs): string {
     `--- Acceptance Criteria ---`,
     acBlock,
     ``,
+    ...(priorProgressBlock
+      ? [`--- Prior progress for bead ${beadId} ---`, priorProgressBlock, ``]
+      : []),
     `--- Files: manifest (this bead's declared blast radius) ---`,
     filesBlock,
     ``,
