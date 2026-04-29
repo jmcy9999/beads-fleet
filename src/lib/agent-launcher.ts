@@ -27,6 +27,7 @@ import {
   AUTO_CHAIN_STAGES,
   type AutoChainStage,
 } from "./fleet-config";
+import { getAllRepoPaths } from "./repo-config";
 
 const execAsync = promisify(exec);
 
@@ -144,6 +145,53 @@ interface ActiveAgent {
 
 const activeAgents = new Map<string, ActiveAgent>();
 
+/**
+ * Test-only helper: inject an entry into `activeAgents` so unit tests can
+ * exercise cross-repo bead-ID lookup and collision detection in
+ * `isAgentActive` without spawning real tmux sessions.
+ *
+ * Returns a cleanup function that removes the injected entry.
+ *
+ * @internal — not part of the public API. Use only in tests.
+ */
+export function _testOnlySetActiveAgent(
+  key: string,
+  session: Partial<AgentSession> & { repoPath: string; beadId?: string },
+): () => void {
+  const stub: ActiveAgent = {
+    session: {
+      pid: 0,
+      repoName: "",
+      prompt: "",
+      model: "",
+      startedAt: new Date().toISOString(),
+      logFile: "",
+      ...session,
+    } as AgentSession,
+    pollInterval: null as unknown as NodeJS.Timeout,
+  };
+  activeAgents.set(key, stub);
+  return () => {
+    activeAgents.delete(key);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cross-repo dispatch kill-switch (beads_web-9vv)
+// ---------------------------------------------------------------------------
+// When "false", listOpenWaveBeadsAllRepos falls through to single-repo
+// listOpenWaveBeads only — no parallel fanout across the repo registry.
+// The bead-ID collision check in isAgentActive is unconditional (always
+// fires) — it's a correctness check, not a feature.
+// Default: "true" (cross-repo dispatch enabled).
+// ---------------------------------------------------------------------------
+
+function isCrossRepoDispatchEnabled(): boolean {
+  const val = process.env.CROSS_REPO_DISPATCH_ENABLED;
+  // Default to enabled. Only disable on explicit "false".
+  return val !== "false";
+}
+
 // Module-level guard: prevent duplicate flush+exit sequences.
 // Hot-reloads can create multiple poll loops for the same session.
 // Once a flush starts for a tmux session, no other poll loop can start another.
@@ -212,8 +260,47 @@ export function clearWaveReviewGuard(epicId: string, wave?: number): void {
  * Exported so route.ts can skip re-launching heads that are already active
  * when start-wave is called from the auto-chain after a bead closes
  * (factory-core-z9h.6 tail-bead launch).
+ *
+ * Cross-repo mode (beads_web-9vv): when `opts.crossRepo` is true and
+ * `beadId` is provided, searches ALL entries in activeAgents for a matching
+ * beadId regardless of repoPath. Bead IDs are globally unique (repo prefix
+ * is part of the ID); if two or more entries share the same beadId across
+ * different repoPaths, that is state corruption and the function THROWS.
+ *
+ * The collision check fires unconditionally when crossRepo mode is used —
+ * it is a correctness check, not gated by the kill-switch.
+ *
+ * Default mode (no opts or opts.crossRepo === false) preserves today's
+ * behaviour byte-for-byte: key-based lookup via activeAgentKey.
  */
-export function isAgentActive(repoPath: string, beadId?: string, epicId?: string): boolean {
+export function isAgentActive(
+  repoPath: string,
+  beadId?: string,
+  epicId?: string,
+  opts?: { crossRepo?: boolean },
+): boolean {
+  if (opts?.crossRepo && beadId) {
+    // beads_web-9vv: cross-repo bead-ID search with collision detection.
+    // Uses snapshot-iteration pattern from hasActiveAgentForEpic
+    // (factory-core-ppx.6, lines 254-261): Array.from() before iterating
+    // to defend against concurrent mutation of activeAgents.
+    const matches: string[] = [];
+    for (const agent of Array.from(activeAgents.values())) {
+      if (agent.session.beadId === beadId) {
+        matches.push(agent.session.repoPath);
+      }
+    }
+    if (matches.length > 1) {
+      // State corruption: same beadId claimed by agents in multiple repos.
+      // The dispatcher cannot decide which repo to act on — throw.
+      throw new Error(
+        `isAgentActive: bead-ID collision — beadId "${beadId}" is active in ${matches.length} repos: ${matches.join(", ")}. Bead IDs must be globally unique; this indicates state corruption.`,
+      );
+    }
+    return matches.length === 1;
+  }
+
+  // Default mode: key-based lookup (preserves existing behaviour).
   const key = activeAgentKey(repoPath, beadId, epicId);
   return activeAgents.has(key);
 }
@@ -1421,6 +1508,97 @@ export async function listOpenWaveBeads(
     open.push({ id: child.id, title, files });
   }
   return open;
+}
+
+// ---------------------------------------------------------------------------
+// beads_web-9vv: Cross-repo bead enumeration
+// ---------------------------------------------------------------------------
+//
+// Wraps the single-repo listOpenWaveBeads over getAllRepoPaths() to produce
+// the union of open wave beads across all configured repos. Uses
+// Promise.allSettled (NOT Promise.all) so that partial repo failures are
+// collected and reported — not silently swallowed.
+//
+// Preserves the factory-core-z9h.9 contract: bd failures throw (return 500),
+// not silent empty-result. If ANY repo fails, the wrapper throws with an
+// error listing the failing repos. A successful result is the union of all
+// repos that succeeded — but only when ZERO repos failed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Dependency-injection overrides for `listOpenWaveBeadsAllRepos`.
+ * Production callers never pass these — they exist so unit tests can
+ * inject stubs without mocking child_process or filesystem.
+ * @internal
+ */
+export interface CrossRepoBeadListDeps {
+  getRepoPaths?: () => Promise<string[]>;
+  listBeads?: (epicId: string, wave: number, repoPath: string) => Promise<WaveBead[]>;
+}
+
+/**
+ * Returns the union of open wave beads from ALL configured repos.
+ *
+ * When `CROSS_REPO_DISPATCH_ENABLED=false`, falls through to
+ * `listOpenWaveBeads(epicId, wave, defaultRepoPath)` using the first
+ * repo path from the registry — no parallel fanout.
+ *
+ * @throws {Error} If bd fails in one or more repos (z9h.9 contract).
+ *   The error message lists the failing repos for operator triage.
+ */
+export async function listOpenWaveBeadsAllRepos(
+  epicId: string,
+  wave: number,
+  deps?: CrossRepoBeadListDeps,
+): Promise<WaveBead[]> {
+  const getRepoPaths = deps?.getRepoPaths ?? getAllRepoPaths;
+  const listBeads = deps?.listBeads ?? listOpenWaveBeads;
+
+  const allPaths = await getRepoPaths();
+
+  if (!isCrossRepoDispatchEnabled()) {
+    // Kill-switch: fall through to single-repo behaviour.
+    // Use the first repo path as the default — matches the pre-cross-repo
+    // dispatch behaviour where the action handler passed a single repoPath.
+    const defaultRepoPath = allPaths[0];
+    if (!defaultRepoPath) {
+      throw new Error(
+        "listOpenWaveBeadsAllRepos: no repos configured — cannot enumerate wave beads",
+      );
+    }
+    return listBeads(epicId, wave, defaultRepoPath);
+  }
+
+  // Parallel fanout over all configured repos.
+  // Promise.allSettled (NOT Promise.all) — we need to know which repos
+  // failed, not just that at least one did. Promise.all would reject on
+  // first failure and drop partial results.
+  const results = await Promise.allSettled(
+    allPaths.map((repoPath) => listBeads(epicId, wave, repoPath)),
+  );
+
+  // Partition results into fulfilled and rejected.
+  const failedRepos: string[] = [];
+  const allBeads: WaveBead[] = [];
+
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === "rejected") {
+      failedRepos.push(allPaths[i]);
+    } else {
+      allBeads.push(...result.value);
+    }
+  }
+
+  if (failedRepos.length > 0) {
+    // factory-core-z9h.9 contract: bd failure must throw, not return empty.
+    // Aggregate the failing repos into a single error for operator triage.
+    throw new Error(
+      `listOpenWaveBeadsAllRepos: bd failed in ${failedRepos.length} repo(s) for epic ${epicId} wave ${wave}: ${failedRepos.join(", ")}. Cannot enumerate wave beads.`,
+    );
+  }
+
+  return allBeads;
 }
 
 // ---------------------------------------------------------------------------

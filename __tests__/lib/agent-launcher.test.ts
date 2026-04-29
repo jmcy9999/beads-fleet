@@ -17,7 +17,10 @@ import {
   clearWaveReviewGuard,
   isAgentActive,
   hasActiveAgentForEpic,
+  listOpenWaveBeadsAllRepos,
+  _testOnlySetActiveAgent,
   type WaveBead,
+  type CrossRepoBeadListDeps,
 } from "@/lib/agent-launcher";
 
 describe("sessionScopeSuffix", () => {
@@ -486,5 +489,177 @@ describe("hasActiveAgentForEpic", () => {
     // exercised in unit tests because launchAgent is not callable without
     // tmux), N-1 siblings are still alive and the label must be preserved.
     expect(hasActiveAgentForEpic("factory-core-z9h")).toBe(false);
+  });
+});
+
+// ===========================================================================
+// beads_web-9vv — Cross-repo bead enumeration primitives
+// ===========================================================================
+
+describe("listOpenWaveBeadsAllRepos (beads_web-9vv)", () => {
+  const bead = (id: string, title?: string): WaveBead => ({
+    id,
+    title: title ?? id,
+    files: [],
+  });
+
+  // (a) Union case: beads from multiple repos are merged
+  it("returns the union of beads from all repos via Promise.allSettled", async () => {
+    const deps: CrossRepoBeadListDeps = {
+      getRepoPaths: async () => ["/repo/alpha", "/repo/beta", "/repo/gamma"],
+      listBeads: async (_epicId, _wave, repoPath) => {
+        if (repoPath === "/repo/alpha") return [bead("epic-1.1")];
+        if (repoPath === "/repo/beta") return [bead("epic-1.2"), bead("epic-1.3")];
+        if (repoPath === "/repo/gamma") return [];
+        return [];
+      },
+    };
+    const result = await listOpenWaveBeadsAllRepos("epic-1", 1, deps);
+    expect(result).toHaveLength(3);
+    expect(result.map((b) => b.id).sort()).toEqual(["epic-1.1", "epic-1.2", "epic-1.3"]);
+  });
+
+  // (b) Error-discrimination: one repo fails, wrapper throws listing the failing repo
+  it("throws an error listing failing repos when any repo's bd fails (z9h.9 contract)", async () => {
+    const deps: CrossRepoBeadListDeps = {
+      getRepoPaths: async () => ["/repo/ok", "/repo/broken"],
+      listBeads: async (_epicId, _wave, repoPath) => {
+        if (repoPath === "/repo/broken") {
+          throw new Error("bd list failed for epic test-epic");
+        }
+        return [bead("ok-bead")];
+      },
+    };
+    await expect(listOpenWaveBeadsAllRepos("test-epic", 1, deps)).rejects.toThrow(
+      /listOpenWaveBeadsAllRepos: bd failed in 1 repo\(s\).*\/repo\/broken/,
+    );
+  });
+
+  it("throws listing ALL failing repos, not just the first (aggregated error)", async () => {
+    const deps: CrossRepoBeadListDeps = {
+      getRepoPaths: async () => ["/repo/bad1", "/repo/bad2", "/repo/good"],
+      listBeads: async (_epicId, _wave, repoPath) => {
+        if (repoPath.includes("bad")) {
+          throw new Error("bd failure");
+        }
+        return [bead("good-bead")];
+      },
+    };
+    await expect(listOpenWaveBeadsAllRepos("epic-x", 2, deps)).rejects.toThrow(
+      /bd failed in 2 repo\(s\).*\/repo\/bad1.*\/repo\/bad2/,
+    );
+  });
+
+  // (e) Kill-switch: env=false falls through to single-repo only
+  it("falls through to single-repo listOpenWaveBeads when CROSS_REPO_DISPATCH_ENABLED=false", async () => {
+    const originalEnv = process.env.CROSS_REPO_DISPATCH_ENABLED;
+    try {
+      process.env.CROSS_REPO_DISPATCH_ENABLED = "false";
+
+      const calledPaths: string[] = [];
+      const deps: CrossRepoBeadListDeps = {
+        getRepoPaths: async () => ["/repo/primary", "/repo/secondary"],
+        listBeads: async (_epicId, _wave, repoPath) => {
+          calledPaths.push(repoPath);
+          return [bead("primary-bead")];
+        },
+      };
+
+      const result = await listOpenWaveBeadsAllRepos("epic-kill", 1, deps);
+
+      // Only the first (default) repo should have been queried — no fanout.
+      expect(calledPaths).toEqual(["/repo/primary"]);
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe("primary-bead");
+    } finally {
+      // Restore env
+      if (originalEnv === undefined) {
+        delete process.env.CROSS_REPO_DISPATCH_ENABLED;
+      } else {
+        process.env.CROSS_REPO_DISPATCH_ENABLED = originalEnv;
+      }
+    }
+  });
+});
+
+describe("isAgentActive cross-repo mode (beads_web-9vv)", () => {
+  const cleanups: (() => void)[] = [];
+
+  afterEach(() => {
+    for (const cleanup of cleanups) cleanup();
+    cleanups.length = 0;
+  });
+
+  // (c) Cross-repo by-bead-id positive case
+  it("returns true when the beadId matches an active agent regardless of repoPath", () => {
+    // Inject an agent in /repo/alpha with beadId "epic-1.5"
+    cleanups.push(
+      _testOnlySetActiveAgent("/repo/alpha::epic-1.5", {
+        repoPath: "/repo/alpha",
+        beadId: "epic-1.5",
+      }),
+    );
+
+    // Cross-repo lookup from /repo/beta should find it
+    expect(
+      isAgentActive("/repo/beta", "epic-1.5", undefined, { crossRepo: true }),
+    ).toBe(true);
+  });
+
+  it("returns false when no active agent has the given beadId (cross-repo mode)", () => {
+    cleanups.push(
+      _testOnlySetActiveAgent("/repo/alpha::epic-1.5", {
+        repoPath: "/repo/alpha",
+        beadId: "epic-1.5",
+      }),
+    );
+
+    expect(
+      isAgentActive("/repo/alpha", "epic-1.99", undefined, { crossRepo: true }),
+    ).toBe(false);
+  });
+
+  // (d) Collision case: same beadId in multiple repos throws
+  it("throws on bead-ID collision (multiple active agents with same beadId in different repos)", () => {
+    // Inject two agents with the same beadId in different repos
+    cleanups.push(
+      _testOnlySetActiveAgent("/repo/alpha::epic-1.5", {
+        repoPath: "/repo/alpha",
+        beadId: "epic-1.5",
+      }),
+    );
+    cleanups.push(
+      _testOnlySetActiveAgent("/repo/beta::epic-1.5", {
+        repoPath: "/repo/beta",
+        beadId: "epic-1.5",
+      }),
+    );
+
+    expect(() =>
+      isAgentActive("/repo/gamma", "epic-1.5", undefined, { crossRepo: true }),
+    ).toThrow(/bead-ID collision.*epic-1\.5.*2 repos.*\/repo\/alpha.*\/repo\/beta/);
+  });
+
+  it("preserves default key-based behaviour when crossRepo is not set", () => {
+    // Use /tmp (resolvable via realpathSync on macOS/Linux) to avoid ENOENT.
+    // activeAgentKey resolves repoPath via realpathSync before keying.
+    // On macOS, /tmp → /private/tmp — the map key must use the resolved path
+    // to match activeAgentKey's internal resolution.
+    const fs = require("fs");
+    const resolvedTmp = fs.realpathSync("/tmp");
+
+    cleanups.push(
+      _testOnlySetActiveAgent(`${resolvedTmp}::epic-1.5`, {
+        repoPath: resolvedTmp,
+        beadId: "epic-1.5",
+      }),
+    );
+
+    // Without crossRepo mode, isAgentActive uses key-based lookup which
+    // computes the key from the passed repoPath. /var (a different valid path)
+    // won't match the /tmp-based key, proving default mode is repo-scoped.
+    expect(isAgentActive("/var", "epic-1.5")).toBe(false);
+    // Same repo SHOULD match via the default key-based path.
+    expect(isAgentActive("/tmp", "epic-1.5")).toBe(true);
   });
 });
