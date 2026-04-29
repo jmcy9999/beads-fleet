@@ -1,6 +1,6 @@
 // =============================================================================
 // Tests for src/lib/reconciler-rules/repeat-dispatch-escalation.ts
-// (factory-core-zsjv.6)
+// (factory-core-zsjv.6 + factory-core-3p1e.10 active-progress suppression)
 // =============================================================================
 
 import { promises as fs } from "fs";
@@ -13,6 +13,12 @@ import {
   buildRepeatDispatchEscalationRule,
   type EpicSnapshot,
 } from "@/lib/reconciler-rules/repeat-dispatch-escalation";
+import {
+  probeActiveDispatch,
+  ACTIVE_PROGRESS_WINDOW_MS,
+  type ActiveDispatchProbeDeps,
+  type ActiveDispatchProbeResult,
+} from "@/lib/reconciler-rules/active-dispatch-probe";
 
 async function makeRepo(): Promise<string> {
   return await fs.mkdtemp(path.join(os.tmpdir(), "zsjv6-test-"));
@@ -308,5 +314,353 @@ describe("repeat-dispatch-escalation rule", () => {
     );
     await rec.tick(now);
     expect(fetchCalls).toHaveLength(1);
+  });
+
+  // --------------------------------------------------------------------------
+  // factory-core-3p1e.10 — active-progress suppression
+  // --------------------------------------------------------------------------
+
+  test("3p1e.10: active probe (true) suppresses escalation; emits suppressed event", async () => {
+    const repo = await makeRepo();
+    const now = new Date();
+    await seedStuckInStageActions(
+      repo,
+      "factory-core-e1",
+      "plan-review",
+      3,
+      20 * 60_000,
+      now.getTime(),
+    );
+
+    const suppressedEvents: Array<Record<string, unknown>> = [];
+    const probeCalls: Array<{ epicId: string; stage: string }> = [];
+
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(
+      buildRepeatDispatchEscalationRule({
+        readEpicSnapshot: async () => snap({ currentStage: "plan-review" }),
+        probeActiveDispatch: async (epicId, stage) => {
+          probeCalls.push({ epicId, stage });
+          return {
+            active: true,
+            sessionName: "shipyard-factory-core-e1-plan-review-wave1",
+            jsonlMtime: new Date(now.getTime() - 60_000).toISOString(),
+            lastActivityAt: new Date(now.getTime() - 5_000).toISOString(),
+          };
+        },
+        appendSuppressedEvent: async (ev) => {
+          suppressedEvents.push(ev as unknown as Record<string, unknown>);
+        },
+      }),
+    );
+
+    await rec.tick(now);
+
+    // Probe was consulted exactly once (one (epic, stage) group)
+    expect(probeCalls).toEqual([
+      { epicId: "factory-core-e1", stage: "plan-review" },
+    ]);
+    // No coherence dispatch fired
+    expect(fetchCalls).toHaveLength(0);
+    // Audit event emitted with the canonical fields
+    expect(suppressedEvents).toHaveLength(1);
+    expect(suppressedEvents[0]).toMatchObject({
+      epicId: "factory-core-e1",
+      stage: "plan-review",
+      attemptCount: 3,
+      sessionName: "shipyard-factory-core-e1-plan-review-wave1",
+    });
+    expect(suppressedEvents[0].jsonlMtime).toBeTruthy();
+  });
+
+  test("3p1e.10: active probe (false) lets escalation proceed", async () => {
+    const repo = await makeRepo();
+    const now = new Date();
+    await seedStuckInStageActions(
+      repo,
+      "factory-core-e1",
+      "plan-review",
+      3,
+      20 * 60_000,
+      now.getTime(),
+    );
+
+    const suppressedEvents: Array<Record<string, unknown>> = [];
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(
+      buildRepeatDispatchEscalationRule({
+        readEpicSnapshot: async () => snap({ currentStage: "plan-review" }),
+        probeActiveDispatch: async () => ({ active: false }),
+        appendSuppressedEvent: async (ev) => {
+          suppressedEvents.push(ev as unknown as Record<string, unknown>);
+        },
+      }),
+    );
+
+    await rec.tick(now);
+
+    // Coherence dispatch fires as before
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].body).toMatchObject({
+      action: "run-coherence-agent",
+      epicId: "factory-core-e1",
+      anomalyClass: "repeat-dispatch-no-progress",
+    });
+    // No suppression event
+    expect(suppressedEvents).toHaveLength(0);
+  });
+
+  test("3p1e.10: probe throwing degrades to escalate (probe failure cannot mask real escalation)", async () => {
+    const repo = await makeRepo();
+    const now = new Date();
+    await seedStuckInStageActions(
+      repo,
+      "factory-core-e1",
+      "plan-review",
+      3,
+      20 * 60_000,
+      now.getTime(),
+    );
+    // Silence the warn we expect
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(
+      buildRepeatDispatchEscalationRule({
+        readEpicSnapshot: async () => snap({ currentStage: "plan-review" }),
+        probeActiveDispatch: async () => {
+          throw new Error("probe boom");
+        },
+      }),
+    );
+
+    await rec.tick(now);
+    expect(fetchCalls).toHaveLength(1); // escalation still fired
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("active-dispatch probe threw"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  test("3p1e.10: appendSuppressedEvent throwing does not block suppression itself", async () => {
+    const repo = await makeRepo();
+    const now = new Date();
+    await seedStuckInStageActions(
+      repo,
+      "factory-core-e1",
+      "plan-review",
+      3,
+      20 * 60_000,
+      now.getTime(),
+    );
+    const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(
+      buildRepeatDispatchEscalationRule({
+        readEpicSnapshot: async () => snap({ currentStage: "plan-review" }),
+        probeActiveDispatch: async () => ({
+          active: true,
+          sessionName: "shipyard-factory-core-e1-plan-review-wave1",
+        }),
+        appendSuppressedEvent: async () => {
+          throw new Error("append boom");
+        },
+      }),
+    );
+    await rec.tick(now);
+    // Suppression still occurred — no coherence dispatch
+    expect(fetchCalls).toHaveLength(0);
+    // Error logged but tick didn't throw
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining("appendSuppressedEvent threw"),
+    );
+    errSpy.mockRestore();
+  });
+
+  test("3p1e.10: probe omitted preserves pre-3p1e.10 behaviour (escalate on count)", async () => {
+    const repo = await makeRepo();
+    const now = new Date();
+    await seedStuckInStageActions(
+      repo,
+      "factory-core-e1",
+      "plan-review",
+      3,
+      20 * 60_000,
+      now.getTime(),
+    );
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(
+      buildRepeatDispatchEscalationRule({
+        readEpicSnapshot: async () => snap({ currentStage: "plan-review" }),
+        // No probeActiveDispatch
+      }),
+    );
+    await rec.tick(now);
+    expect(fetchCalls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// factory-core-3p1e.10 — active-dispatch probe unit tests
+// ---------------------------------------------------------------------------
+
+describe("probeActiveDispatch (factory-core-3p1e.10)", () => {
+  function makeDeps(
+    overrides: Partial<ActiveDispatchProbeDeps>,
+  ): ActiveDispatchProbeDeps {
+    return {
+      listTmuxSessions: () => [],
+      getTmuxSessionActivitySec: () => null,
+      findLatestJsonlMtimeMs: () => null,
+      now: () => 1_700_000_000_000,
+      ...overrides,
+    };
+  }
+
+  test("no matching tmux session → active=false", () => {
+    const result = probeActiveDispatch(
+      "factory-core-e1",
+      "plan-review",
+      makeDeps({
+        listTmuxSessions: () => [
+          "shipyard-factory-core-OTHER-plan-review-wave1",
+          "unrelated-session",
+        ],
+      }),
+    );
+    expect(result.active).toBe(false);
+    expect(result.sessionName).toBeUndefined();
+  });
+
+  test("matching session + JSONL mtime within 5min window → active=true (jsonlMtime path)", () => {
+    const nowMs = 1_700_000_000_000;
+    const result = probeActiveDispatch(
+      "factory-core-e1",
+      "plan-review",
+      makeDeps({
+        listTmuxSessions: () => [
+          "shipyard-factory-core-e1-plan-review-wave2",
+        ],
+        findLatestJsonlMtimeMs: () => nowMs - 60_000, // 1 min ago
+        now: () => nowMs,
+      }),
+    );
+    expect(result.active).toBe(true);
+    expect(result.sessionName).toBe(
+      "shipyard-factory-core-e1-plan-review-wave2",
+    );
+    expect(result.jsonlMtime).toBe(new Date(nowMs - 60_000).toISOString());
+  });
+
+  test("matching session + JSONL mtime older than 5min + tmux activity recent → active=true (tmux path)", () => {
+    const nowMs = 1_700_000_000_000;
+    const result = probeActiveDispatch(
+      "factory-core-e1",
+      "plan-review",
+      makeDeps({
+        listTmuxSessions: () => [
+          "shipyard-factory-core-e1-plan-review-wave1",
+        ],
+        // JSONL is 10 min old — outside window
+        findLatestJsonlMtimeMs: () => nowMs - 10 * 60_000,
+        // tmux activity is 30s ago — inside window
+        getTmuxSessionActivitySec: () => Math.floor((nowMs - 30_000) / 1000),
+        now: () => nowMs,
+      }),
+    );
+    expect(result.active).toBe(true);
+    expect(result.jsonlMtime).toBeUndefined();
+    expect(result.lastActivityAt).toBeTruthy();
+  });
+
+  test("matching session + both signals stale → active=false", () => {
+    const nowMs = 1_700_000_000_000;
+    const result = probeActiveDispatch(
+      "factory-core-e1",
+      "plan-review",
+      makeDeps({
+        listTmuxSessions: () => [
+          "shipyard-factory-core-e1-plan-review-wave1",
+        ],
+        findLatestJsonlMtimeMs: () => nowMs - 10 * 60_000,
+        getTmuxSessionActivitySec: () => Math.floor((nowMs - 10 * 60_000) / 1000),
+        now: () => nowMs,
+      }),
+    );
+    expect(result.active).toBe(false);
+    expect(result.sessionName).toBe(
+      "shipyard-factory-core-e1-plan-review-wave1",
+    );
+    expect(result.lastActivityAt).toBeTruthy();
+  });
+
+  test("multiple matching sessions: picks the one with most recent activity", () => {
+    const nowMs = 1_700_000_000_000;
+    const result = probeActiveDispatch(
+      "factory-core-e1",
+      "plan-review",
+      makeDeps({
+        listTmuxSessions: () => [
+          "shipyard-factory-core-e1-plan-review-wave1",
+          "shipyard-factory-core-e1-plan-review-wave2",
+          "shipyard-factory-core-e1-plan-review-wave3",
+        ],
+        getTmuxSessionActivitySec: (name) => {
+          if (name.endsWith("wave1")) return Math.floor((nowMs - 10 * 60_000) / 1000);
+          if (name.endsWith("wave2")) return Math.floor((nowMs - 30_000) / 1000); // most recent
+          if (name.endsWith("wave3")) return Math.floor((nowMs - 5 * 60_000) / 1000);
+          return null;
+        },
+        findLatestJsonlMtimeMs: () => null,
+        now: () => nowMs,
+      }),
+    );
+    expect(result.active).toBe(true);
+    expect(result.sessionName).toBe(
+      "shipyard-factory-core-e1-plan-review-wave2",
+    );
+  });
+
+  test("session prefix matches stage exactly (does not bleed across stages)", () => {
+    const nowMs = 1_700_000_000_000;
+    const result = probeActiveDispatch(
+      "factory-core-e1",
+      "plan-review",
+      makeDeps({
+        listTmuxSessions: () => [
+          // Different stage (development) — must NOT match plan-review probe
+          "shipyard-factory-core-e1-development-wave1",
+        ],
+        getTmuxSessionActivitySec: () => Math.floor((nowMs - 30_000) / 1000),
+        findLatestJsonlMtimeMs: () => nowMs - 60_000,
+        now: () => nowMs,
+      }),
+    );
+    expect(result.active).toBe(false);
+    expect(result.sessionName).toBeUndefined();
+  });
+
+  test("epicId matches by exact prefix only (does not match epic-id substrings)", () => {
+    const nowMs = 1_700_000_000_000;
+    const result = probeActiveDispatch(
+      "factory-core-e1",
+      "plan-review",
+      makeDeps({
+        listTmuxSessions: () => [
+          // Different epic with similar id (e1 vs e10) — prefix is
+          // `shipyard-factory-core-e1-plan-review-` so e10 sessions
+          // start with `shipyard-factory-core-e10-` and DON'T match.
+          "shipyard-factory-core-e10-plan-review-wave1",
+        ],
+        getTmuxSessionActivitySec: () => Math.floor((nowMs - 30_000) / 1000),
+        findLatestJsonlMtimeMs: () => nowMs - 60_000,
+        now: () => nowMs,
+      }),
+    );
+    expect(result.active).toBe(false);
+  });
+
+  test("ACTIVE_PROGRESS_WINDOW_MS is exactly 5 minutes (AC requirement)", () => {
+    expect(ACTIVE_PROGRESS_WINDOW_MS).toBe(5 * 60_000);
   });
 });

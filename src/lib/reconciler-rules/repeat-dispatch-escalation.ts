@@ -39,9 +39,19 @@
 
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
 import { getDefaultActionUrl } from "../orchestrator-url";
+import type { ActiveDispatchProbeResult } from "./active-dispatch-probe";
 
 export const REPEAT_DISPATCH_ESCALATION_RULE_NAME =
   "repeat-dispatch-escalation";
+
+/**
+ * factory-core-3p1e.10 — kind for the audit event written when the rule
+ * suppresses an otherwise-eligible escalation because the latest
+ * dispatch is actively progressing. Distinct from `reconciler-action-taken`
+ * so suppression is auditable without being mistaken for an action.
+ */
+export const REPEAT_DISPATCH_SUPPRESSED_EVENT_TYPE =
+  "repeat-dispatch-suppressed";
 
 /** How many stuck-in-stage action-taken events for the same (epic, stage)
  *  before we call in coherence. 3 means we've watched mechanical
@@ -71,6 +81,33 @@ export interface RepeatDispatchEscalationRuleOptions {
   windowMs?: number;
   /** Reads live epic state. Null = bd failure → skip. */
   readEpicSnapshot: (epicId: string) => Promise<EpicSnapshot | null>;
+  /**
+   * factory-core-3p1e.10 — active-dispatch probe. When provided, the
+   * rule consults the probe before escalating: if the latest dispatch
+   * for (epicId, stage) is actively progressing (matching tmux session
+   * alive AND transcript mtime / session activity within 5 minutes),
+   * the rule logs + emits a `repeat-dispatch-suppressed` event and
+   * does NOT enqueue a coherence escalation. Omitting the probe
+   * preserves pre-3p1e.10 behaviour (escalate purely on count).
+   */
+  probeActiveDispatch?: (
+    epicId: string,
+    stage: string,
+  ) => Promise<ActiveDispatchProbeResult> | ActiveDispatchProbeResult;
+  /**
+   * factory-core-3p1e.10 — emit a `repeat-dispatch-suppressed` audit
+   * event when the probe reports active. Required iff `probeActiveDispatch`
+   * is provided; absence is silently ignored (suppression still occurs;
+   * just no audit trail). Production binds this to `appendEvent(repoPath, ...)`.
+   */
+  appendSuppressedEvent?: (event: {
+    epicId: string;
+    stage: string;
+    attemptCount: number;
+    sessionName?: string;
+    jsonlMtime?: string;
+    lastActivityAt?: string;
+  }) => Promise<void>;
 }
 
 interface RepeatGroup {
@@ -144,6 +181,53 @@ export function buildRepeatDispatchEscalationRule(
           // Epic moved on; the prior repeat dispatches belong to a past
           // state. Skip.
           continue;
+        }
+
+        // factory-core-3p1e.10 — suppress when the latest dispatch is
+        // actively progressing. The repeat-count counts dispatch events
+        // but does not prove "no progress"; the FIRST two firings can
+        // legitimately be no-ops (blocked-on a needs-decision child)
+        // and the THIRD firing can succeed and launch a real builder.
+        // Escalating to coherence in that scenario races a live agent.
+        if (opts.probeActiveDispatch) {
+          let probe: ActiveDispatchProbeResult;
+          try {
+            probe = await opts.probeActiveDispatch(group.epicId, group.stage);
+          } catch (err) {
+            // Probe failure is non-fatal: degrade to "no signal" so a
+            // probe defect can't accidentally suppress a real escalation.
+            console.warn(
+              `[zsjv.6] active-dispatch probe threw for ${group.epicId} ${group.stage}; proceeding to escalate. err=${err instanceof Error ? err.message : String(err)}`,
+            );
+            probe = { active: false };
+          }
+          if (probe.active) {
+            const jsonlPart = probe.jsonlMtime
+              ? `, jsonl_mtime=${probe.jsonlMtime}`
+              : probe.lastActivityAt
+                ? `, session_activity=${probe.lastActivityAt}`
+                : "";
+            console.log(
+              `[zsjv.6] repeat-dispatch suppressed: ${group.epicId} ${group.stage} latest dispatch active (session=${probe.sessionName ?? "<unknown>"}${jsonlPart})`,
+            );
+            if (opts.appendSuppressedEvent) {
+              try {
+                await opts.appendSuppressedEvent({
+                  epicId: group.epicId,
+                  stage: group.stage,
+                  attemptCount: group.count,
+                  sessionName: probe.sessionName,
+                  jsonlMtime: probe.jsonlMtime,
+                  lastActivityAt: probe.lastActivityAt,
+                });
+              } catch (err) {
+                console.error(
+                  `[zsjv.6] appendSuppressedEvent threw for ${group.epicId} ${group.stage}: ${err instanceof Error ? err.message : String(err)}`,
+                );
+              }
+            }
+            continue; // suppress: do NOT enqueue escalation
+          }
         }
 
         matches.push({

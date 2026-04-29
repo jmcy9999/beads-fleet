@@ -34,12 +34,19 @@ import { buildStuckInStageRule } from "./reconciler-rules/stuck-in-stage";
 import { buildWaveBeadMismatchRule } from "./reconciler-rules/wave-bead-mismatch";
 import { buildRepeatedQaRoundRule } from "./reconciler-rules/repeated-qa-round";
 import { buildCoherenceEscalationRule } from "./reconciler-rules/coherence-escalation";
-import { buildRepeatDispatchEscalationRule } from "./reconciler-rules/repeat-dispatch-escalation";
+import {
+  buildRepeatDispatchEscalationRule,
+  REPEAT_DISPATCH_SUPPRESSED_EVENT_TYPE,
+} from "./reconciler-rules/repeat-dispatch-escalation";
+import { probeActiveDispatch } from "./reconciler-rules/active-dispatch-probe";
 import { buildLivenessCheckRule } from "./reconciler-rules/liveness-check";
 import { readEpicState } from "./agent-launcher";
 import { removeLabelsFromEpic } from "./pipeline-labels";
 import { appendEvent, readEvents } from "./event-log";
 import { execSync } from "child_process";
+import { statSync, readdirSync } from "fs";
+import * as path from "path";
+import * as os from "os";
 import { getBdPath, getBdEnv } from "./bd-path";
 
 /**
@@ -76,6 +83,106 @@ function listTmuxSessionsCached(): Set<string> {
   }
   g.__beadsWebTmuxCache = { sessions, fetchedAtMs: now };
   return sessions;
+}
+
+/**
+ * factory-core-3p1e.10 — read the `session_activity` field for a tmux
+ * session. tmux stores this as a unix timestamp in seconds; the active-
+ * dispatch probe converts to milliseconds and compares against a 5-min
+ * window. Failure-safe: returns null on any error so the probe degrades
+ * to "no signal" rather than mis-suppressing a real escalation.
+ */
+function getTmuxSessionActivitySec(sessionName: string): number | null {
+  try {
+    // -t targets the session; -p prints to stdout; -F format string.
+    // session_activity is documented in tmux(1) format strings.
+    const out = execSync(
+      `/opt/homebrew/bin/tmux display-message -p -t ${JSON.stringify(sessionName)} '#{session_activity}'`,
+      {
+        encoding: "utf-8",
+        env: process.env,
+        timeout: 3_000,
+      },
+    ).trim();
+    if (!out) return null;
+    const n = parseInt(out, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * factory-core-3p1e.10 — find the most recent .jsonl transcript mtime
+ * (in milliseconds) for an epic.
+ *
+ * Claude Code writes transcripts to ~/.claude/projects/<safeCwd>/<sessionId>.jsonl
+ * where safeCwd is the repo path with / and _ both replaced by -.
+ * The reconciler does not know which repo a given epic was launched
+ * against, so we scan ALL project directories for any .jsonl file
+ * whose mtime is recent. This is intentionally wider than strictly
+ * needed — a false-positive here only causes one extra suppression on
+ * an unrelated epic that happens to have a fresh transcript at the
+ * same time, which is acceptable. The rule's tmux-session check
+ * already filters per-(epicId, stage), so false positives from this
+ * function are gated behind that filter.
+ *
+ * Returns null when ~/.claude/projects/ does not exist or no .jsonl
+ * files can be statted.
+ */
+function findLatestJsonlMtimeMs(epicId: string): number | null {
+  // Heuristic: the transcript is most useful as a "is the agent making
+  // progress?" signal. We don't know the repo cwd, but we can scan the
+  // standard claude-projects root for fresh .jsonl files. The probe
+  // gate (tmux session matching `shipyard-<epicId>-<stage>-`) filters
+  // per-epic; this function only needs to confirm "some fresh
+  // transcript exists in the last N minutes." We bound the cost by
+  // skipping entire project dirs whose dir mtime is stale.
+  void epicId; // signature kept for future targeted lookup; current scan is global
+  try {
+    const root = path.join(os.homedir(), ".claude", "projects");
+    let projectDirs: string[];
+    try {
+      projectDirs = readdirSync(root);
+    } catch {
+      return null; // root missing
+    }
+    const horizonMs = Date.now() - 10 * 60_000; // double the 5-min window for slack
+    let best: number | null = null;
+    for (const proj of projectDirs) {
+      const projPath = path.join(root, proj);
+      let projStat;
+      try {
+        projStat = statSync(projPath);
+      } catch {
+        continue;
+      }
+      if (!projStat.isDirectory()) continue;
+      // Skip dirs whose own mtime is older than horizon — fresh writes
+      // bump dir mtime, so a stale dir cannot contain a fresh file.
+      if (projStat.mtimeMs < horizonMs) continue;
+      let entries: string[];
+      try {
+        entries = readdirSync(projPath);
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.endsWith(".jsonl")) continue;
+        try {
+          const fStat = statSync(path.join(projPath, entry));
+          if (best === null || fStat.mtimeMs > best) {
+            best = fStat.mtimeMs;
+          }
+        } catch {
+          /* skip */
+        }
+      }
+    }
+    return best;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -287,6 +394,11 @@ export function ensureReconcilerRunning(): void {
     // the epic. Dispatch the coherence agent to diagnose.
     // factory-core-3akh.2: pattern matures over 15-min buckets; 1-min
     // poll is plenty.
+    // factory-core-3p1e.10 — short-circuit if the latest dispatch is
+    // actively progressing (matching tmux session alive AND transcript
+    // mtime / session activity within 5 min). Avoids racing a live
+    // builder with a coherence escalation. Audit trail via
+    // `repeat-dispatch-suppressed` events on the reconciler event log.
     rec.registerRule(
       throttled(buildRepeatDispatchEscalationRule({
         readEpicSnapshot: async (epicId: string) => {
@@ -302,6 +414,39 @@ export function ensureReconcilerRunning(): void {
             labels: snap.labels,
             title: readEpicTitle(epicId, repoPath),
           };
+        },
+        probeActiveDispatch: async (epicId, stage) => {
+          // Use the per-tick cached tmux session list to avoid
+          // re-shelling out on every probe. session_activity / JSONL
+          // mtime go through dedicated helpers above.
+          const sessions = listTmuxSessionsCached();
+          return probeActiveDispatch(epicId, stage, {
+            listTmuxSessions: () => [...sessions],
+            getTmuxSessionActivitySec,
+            findLatestJsonlMtimeMs,
+            now: () => Date.now(),
+          });
+        },
+        appendSuppressedEvent: async ({
+          epicId,
+          stage,
+          attemptCount,
+          sessionName,
+          jsonlMtime,
+          lastActivityAt,
+        }) => {
+          await appendEvent(repoPath, {
+            type: REPEAT_DISPATCH_SUPPRESSED_EVENT_TYPE,
+            epicId,
+            stage,
+            payload: {
+              ruleName: "repeat-dispatch-escalation",
+              attemptCount,
+              sessionName,
+              jsonlMtime,
+              lastActivityAt,
+            },
+          });
         },
       }), 60_000), // factory-core-3akh.2: 1-min poll for pattern-maturation rule
     );
