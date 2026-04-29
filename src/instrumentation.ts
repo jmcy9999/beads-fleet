@@ -54,4 +54,20 @@ export async function register() {
       );
     });
   }, 2_000);
+
+  // beads_web-8wh: non-blocking bead-ID collision scan (A.6 diagnostic).
+  // Deferred via setTimeout past the HTTP listener bind point — same pattern
+  // as the self-fetch above. Uses dynamic import() to avoid pulling
+  // child_process (via bv-client.ts) into the webpack edge bundle.
+  // Fire-and-forget: the .catch() swallows errors so startup is never blocked.
+  setTimeout(() => {
+    import("./lib/startup-collision-scan")
+      .then(({ scanForBeadIdCollisions }) => scanForBeadIdCollisions())
+      .catch((err) => {
+        console.warn(
+          "[instrumentation] boot collision scan failed:",
+          err instanceof Error ? err.message : err,
+        );
+      });
+  }, 3_000);
 }
