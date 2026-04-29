@@ -136,53 +136,94 @@ export async function removeRepo(repoPath: string): Promise<RepoStore> {
 }
 
 /**
- * Find which repo an issue belongs to by checking each configured repo's
- * SQLite DB for a matching issue ID. Returns the repo path, or null if
- * no repo contains the issue.
+ * Probe a single repo for an issue. Returns the repo path if the issue
+ * exists in that repo, or null if it doesn't (or the repo is unreachable).
+ *
+ * Each invocation owns its own mysql.Connection lifecycle via try/finally —
+ * safe for parallel fanout with no connection leaks.
+ *
+ * The inner logic (TCP probe, MySQL handshake, query) is preserved from the
+ * sequential implementation; only the outer loop changed (beads_web-ccn).
+ */
+async function probeRepoForIssue(repo: RepoConfig, issueId: string): Promise<string | null> {
+  const portFile = path.join(repo.path, ".beads", "dolt-server.port");
+  if (!existsSync(portFile)) return null;
+
+  const port = parseInt(readFileSync(portFile, "utf-8").trim(), 10);
+  if (isNaN(port)) return null;
+
+  // Cheap reachability check: TCP probe before MySQL handshake.
+  // factory-core-3p1e.5 — drops dead-repo cost from ~3s (MySQL handshake
+  // timeout) to ~50ms (TCP refusal). The MySQL handshake below is still
+  // required for the actual issue-existence query.
+  const probe = await probeDolt("127.0.0.1", port, 2000);
+  if (probe.category !== "reachable") return null;
+
+  // Read database name from metadata
+  let database = path.basename(repo.path);
+  const metaFile = path.join(repo.path, ".beads", "metadata.json");
+  if (existsSync(metaFile)) {
+    try {
+      const meta = JSON.parse(readFileSync(metaFile, "utf-8"));
+      if (meta.dolt_database) database = meta.dolt_database;
+    } catch {
+      // Use default
+    }
+  }
+
+  let conn: mysql.Connection | null = null;
+  try {
+    conn = await mysql.createConnection({
+      host: "127.0.0.1",
+      port,
+      user: "root",
+      database,
+      connectTimeout: 2000,
+    });
+    const [rows] = await conn.query("SELECT 1 FROM issues WHERE id = ? LIMIT 1", [issueId]);
+    if ((rows as unknown[]).length > 0) return repo.path;
+  } catch {
+    // Dolt server unreachable or query failed — skip
+  } finally {
+    if (conn) await conn.end();
+  }
+  return null;
+}
+
+/**
+ * Find which repo an issue belongs to by probing all configured repos in
+ * parallel. Returns the repo path, or null if no repo contains the issue.
+ *
+ * Parallelization strategy (beads_web-ccn): uses Promise.allSettled over
+ * the full registry, then returns the first non-null result in registry
+ * order. This preserves deterministic ordering (same result as the former
+ * sequential for...of) while reducing worst-case wall time from ~5s
+ * (50 repos × 100ms each, sequential) to ~200-300ms (bounded by the
+ * slowest reachable repo's MySQL handshake, parallel).
+ *
+ * Promise.allSettled chosen over Promise.any because:
+ *   - Promise.any resolves on the first *fulfilled* value — but a repo
+ *     returning null (issue not found) is a fulfilled promise, not a
+ *     rejection. Promise.any would resolve on the first null, which is
+ *     wrong.
+ *   - Promise.allSettled waits for all probes, then we filter. The extra
+ *     wall time vs a hypothetical early-exit is negligible: probes that
+ *     find the issue return in ~100ms; probes that don't also return in
+ *     ~100ms. The bottleneck is parallel I/O, not sequential filtering.
  */
 export async function findRepoForIssue(issueId: string): Promise<string | null> {
   const store = await readConfig();
-  for (const repo of store.repos) {
-    const portFile = path.join(repo.path, ".beads", "dolt-server.port");
-    if (!existsSync(portFile)) continue;
+  if (store.repos.length === 0) return null;
 
-    const port = parseInt(readFileSync(portFile, "utf-8").trim(), 10);
-    if (isNaN(port)) continue;
+  const results = await Promise.allSettled(
+    store.repos.map((repo) => probeRepoForIssue(repo, issueId)),
+  );
 
-    // Cheap reachability check: TCP probe before MySQL handshake.
-    // factory-core-3p1e.5 — drops dead-repo cost from ~3s (MySQL handshake
-    // timeout) to ~50ms (TCP refusal). The MySQL handshake below is still
-    // required for the actual issue-existence query.
-    const probe = await probeDolt("127.0.0.1", port, 2000);
-    if (probe.category !== "reachable") continue;
-
-    // Read database name from metadata
-    let database = path.basename(repo.path);
-    const metaFile = path.join(repo.path, ".beads", "metadata.json");
-    if (existsSync(metaFile)) {
-      try {
-        const meta = JSON.parse(readFileSync(metaFile, "utf-8"));
-        if (meta.dolt_database) database = meta.dolt_database;
-      } catch {
-        // Use default
-      }
-    }
-
-    let conn: mysql.Connection | null = null;
-    try {
-      conn = await mysql.createConnection({
-        host: "127.0.0.1",
-        port,
-        user: "root",
-        database,
-        connectTimeout: 2000,
-      });
-      const [rows] = await conn.query("SELECT 1 FROM issues WHERE id = ? LIMIT 1", [issueId]);
-      if ((rows as unknown[]).length > 0) return repo.path;
-    } catch {
-      // Dolt server unreachable or query failed — skip
-    } finally {
-      if (conn) await conn.end();
+  // Return the first match in registry order (deterministic, same as
+  // the former sequential walk).
+  for (const result of results) {
+    if (result.status === "fulfilled" && result.value !== null) {
+      return result.value;
     }
   }
   return null;

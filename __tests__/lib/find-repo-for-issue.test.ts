@@ -1,5 +1,6 @@
 // =============================================================================
 // Tests for findRepoForIssue() in src/lib/repo-config.ts
+// beads_web-ccn: added parallel-walk correctness and performance tests.
 // =============================================================================
 
 import path from "path";
@@ -179,5 +180,220 @@ describe("findRepoForIssue", () => {
     await findRepoForIssue("NONEXISTENT");
     // Should have connected to repo-a and repo-b (repo-no-port skipped)
     expect(mockEnd).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// beads_web-ccn: Parallel-walk correctness tests
+// AC item 6 — parallel walk returns same result as sequential reference for:
+//   (a) bead in repo[0], (b) bead in repo[N-1], (c) bead in no repo,
+//   (d) bead in multiple repos (returns first in registry order).
+// ---------------------------------------------------------------------------
+
+describe("findRepoForIssue — parallel correctness (beads_web-ccn)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({
+        repos: [
+          { name: "repo-a", path: repoA },
+          { name: "repo-b", path: repoB },
+          { name: "repo-no-port", path: repoNoPort },
+        ],
+        activeRepo: "__all__",
+      }),
+    );
+  });
+
+  it("(a) bead exists in repo[0] — returns repo[0]", async () => {
+    setupMockConnections({
+      55001: ["TARGET-001"],
+      55002: [],
+    });
+    const result = await findRepoForIssue("TARGET-001");
+    expect(result).toBe(repoA);
+  });
+
+  it("(b) bead exists in repo[N-1] — returns repo[N-1]", async () => {
+    setupMockConnections({
+      55001: [],
+      55002: ["TARGET-002"],
+    });
+    const result = await findRepoForIssue("TARGET-002");
+    expect(result).toBe(repoB);
+  });
+
+  it("(c) bead exists in no repo — returns null", async () => {
+    setupMockConnections({
+      55001: [],
+      55002: [],
+    });
+    const result = await findRepoForIssue("GHOST-999");
+    expect(result).toBeNull();
+  });
+
+  it("(d) bead exists in multiple repos — returns first in registry order", async () => {
+    // Both repos contain the same bead ID (shouldn't happen in practice,
+    // but must return deterministic result — first in registry order).
+    setupMockConnections({
+      55001: ["SHARED-001"],
+      55002: ["SHARED-001"],
+    });
+    const result = await findRepoForIssue("SHARED-001");
+    expect(result).toBe(repoA);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// beads_web-ccn: Connection cleanup under parallel fanout
+// AC item 7 — per-closure try/finally with conn.end() preserved.
+// ---------------------------------------------------------------------------
+
+describe("findRepoForIssue — connection cleanup (beads_web-ccn)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({
+        repos: [
+          { name: "repo-a", path: repoA },
+          { name: "repo-b", path: repoB },
+        ],
+        activeRepo: "__all__",
+      }),
+    );
+  });
+
+  it("closes every connection even when one repo throws", async () => {
+    const endFns: jest.Mock[] = [];
+    mockCreateConnection.mockImplementation(async (opts) => {
+      const port = (opts as { port: number }).port;
+      const mockEnd = jest.fn();
+      endFns.push(mockEnd);
+      if (port === 55001) {
+        // Simulate a query failure after successful connection
+        const mockQuery = jest.fn().mockRejectedValue(new Error("table not found"));
+        return { query: mockQuery, end: mockEnd } as unknown as mysql.Connection;
+      }
+      const mockQuery = jest.fn().mockResolvedValue([[{ "1": 1 }]]);
+      return { query: mockQuery, end: mockEnd } as unknown as mysql.Connection;
+    });
+
+    const result = await findRepoForIssue("BETA-001");
+    expect(result).toBe(repoB);
+    // Both connections must have been closed
+    expect(endFns).toHaveLength(2);
+    for (const endFn of endFns) {
+      expect(endFn).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("closes connection even when issue is found (early match)", async () => {
+    const endFns: jest.Mock[] = [];
+    mockCreateConnection.mockImplementation(async () => {
+      const mockEnd = jest.fn();
+      endFns.push(mockEnd);
+      const mockQuery = jest.fn().mockResolvedValue([[{ "1": 1 }]]);
+      return { query: mockQuery, end: mockEnd } as unknown as mysql.Connection;
+    });
+
+    await findRepoForIssue("ANY-001");
+    // All connections opened in parallel must be closed
+    for (const endFn of endFns) {
+      expect(endFn).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// beads_web-ccn: Parallel performance — wall-time comparison
+// AC items 3-5 — parallel fanout is faster than sequential for N repos.
+// Uses artificial delays to demonstrate parallelism without real I/O.
+// ---------------------------------------------------------------------------
+
+describe("findRepoForIssue — parallel performance (beads_web-ccn)", () => {
+  // Create a large repo registry (N repos) with artificial delay per probe
+  const N = 20;
+  const DELAY_MS = 50; // each probe takes 50ms
+
+  let manyRepos: { name: string; path: string }[];
+
+  beforeAll(() => {
+    // Create N repo fixtures on disk
+    manyRepos = [];
+    for (let i = 0; i < N; i++) {
+      const repoPath = path.join(tmpDir, `perf-repo-${i}`);
+      fs.mkdirSync(repoPath, { recursive: true });
+      createDoltFixture(repoPath, 56000 + i, `perf_db_${i}`);
+      manyRepos.push({ name: `perf-repo-${i}`, path: repoPath });
+    }
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockReadFile.mockResolvedValue(
+      JSON.stringify({
+        repos: manyRepos,
+        activeRepo: "__all__",
+      }),
+    );
+  });
+
+  it("parallel fanout completes in O(1) wall time, not O(N)", async () => {
+    // Each mock connection takes DELAY_MS to resolve.
+    // Sequential: N * DELAY_MS = 1000ms.
+    // Parallel: ~DELAY_MS = ~50ms.
+    mockCreateConnection.mockImplementation(async (opts) => {
+      const port = (opts as { port: number }).port;
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+      const targetPort = 56000 + (N - 1); // issue in last repo
+      const mockQuery = jest.fn().mockImplementation(async () => {
+        if (port === targetPort) return [[{ "1": 1 }]];
+        return [[]];
+      });
+      return { query: mockQuery, end: jest.fn() } as unknown as mysql.Connection;
+    });
+
+    const start = Date.now();
+    const result = await findRepoForIssue("PERF-TARGET");
+    const elapsed = Date.now() - start;
+
+    // The issue is in the last repo
+    expect(result).toBe(manyRepos[N - 1].path);
+
+    // Sequential would take ~N*DELAY_MS = ~1000ms.
+    // Parallel should take ~DELAY_MS + overhead = ~100-200ms.
+    // We use a generous threshold: must be under N*DELAY_MS/2 = 500ms.
+    const sequentialEstimate = N * DELAY_MS;
+    expect(elapsed).toBeLessThan(sequentialEstimate / 2);
+
+    // Log for the marker's wall-time delta
+    console.log(
+      `[beads_web-ccn perf] ${N} repos, ${DELAY_MS}ms/probe: ` +
+      `parallel=${elapsed}ms vs sequential-estimate=${sequentialEstimate}ms ` +
+      `(${((1 - elapsed / sequentialEstimate) * 100).toFixed(0)}% faster)`,
+    );
+  });
+
+  it("all-dead case completes quickly when all TCP probes fail", async () => {
+    // Override the probeDolt mock to return "connection_refused" for all repos
+    const { probeDolt: mockProbeDolt } = require("@/lib/dolt-health");
+    (mockProbeDolt as jest.Mock).mockImplementation(async (host: string, port: number) => ({
+      host,
+      port,
+      category: "connection_refused",
+      latencyMs: 1,
+    }));
+
+    const start = Date.now();
+    const result = await findRepoForIssue("DEAD-001");
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeNull();
+    // All-dead with mocked probes should be near-instant (no MySQL handshakes)
+    expect(elapsed).toBeLessThan(200);
+
+    console.log(
+      `[beads_web-ccn perf] all-dead ${N} repos: ${elapsed}ms`,
+    );
   });
 });
