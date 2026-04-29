@@ -28,6 +28,7 @@
  */
 
 import type { WaveStatus } from "./agent-launcher";
+import { getDefaultActionUrl } from "./orchestrator-url";
 
 export interface WaveCompletenessCheck {
   /** True when every wave has (closed === total) or the epic has no waves. */
@@ -174,7 +175,7 @@ export async function enforceWaveCompletenessOrDispatch(
     );
   }
 
-  const url = opts.actionUrl ?? "http://localhost:3000/api/fleet/action";
+  const url = opts.actionUrl ?? getDefaultActionUrl();
   try {
     const res = await fetch(`${url}`, {
       method: "POST",

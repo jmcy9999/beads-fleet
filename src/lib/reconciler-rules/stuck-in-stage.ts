@@ -25,6 +25,7 @@
 
 import type { PipelineEvent } from "../event-log";
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
+import { getDefaultActionUrl } from "../orchestrator-url";
 
 export const STUCK_IN_STAGE_RULE_NAME = "stuck-in-stage";
 
@@ -88,7 +89,7 @@ export interface StuckInStageRuleOptions {
 export function buildStuckInStageRule(
   opts: StuckInStageRuleOptions,
 ): ReconcilerRule {
-  const actionUrl = opts.actionUrl ?? "http://localhost:3000/api/fleet/action";
+  const actionUrl = opts.actionUrl ?? getDefaultActionUrl();
   const stalenessMs = opts.stalenessMs ?? DEFAULT_STALENESS_MS;
   const discoveryHorizonMs =
     opts.discoveryHorizonMs ?? DEFAULT_DISCOVERY_HORIZON_MS;

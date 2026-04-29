@@ -18,6 +18,7 @@ import path from "path";
 import os from "os";
 import { promisify } from "util";
 import { getBdPath, getBdEnv } from "./bd-path";
+import { getDefaultActionUrl } from "./orchestrator-url";
 import { buildOtelEnv, buildLangfuseTraceUrl, isLangfuseConfigured } from "./langfuse-env";
 import { withLock, chainLock, LockTimeoutError } from "./locks";
 import {
@@ -1528,7 +1529,7 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
     const planningEpicId = session.epicId;
     try {
       return await withLock(chainLock(planningEpicId), 500, async () => {
-        const res = await fetch("http://localhost:3000/api/fleet/action", {
+        const res = await fetch(getDefaultActionUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1718,7 +1719,7 @@ async function chainToNextStage(
   //     stays at its current pipeline:<stage-complete> label; the owner
   //     sees the existing manual CTA and can retry.
   try {
-    const res = await fetch("http://localhost:3000/api/fleet/action", {
+    const res = await fetch(getDefaultActionUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1857,7 +1858,7 @@ async function dispatchChainAction(
           // mutated before the operation it guards succeeds).
           markWaveReviewFired(session.epicId!, waveStatus.currentWave);
           try {
-            const res = await fetch("http://localhost:3000/api/fleet/action", {
+            const res = await fetch(getDefaultActionUrl(), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -1893,7 +1894,7 @@ async function dispatchChainAction(
         // (isAgentActive) so parallel heads in other groups are not
         // re-launched.
         if (session.beadId) {
-          await fetch("http://localhost:3000/api/fleet/action", {
+          await fetch(getDefaultActionUrl(), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1920,7 +1921,7 @@ async function dispatchChainAction(
       // through review-wave first — even the final wave. Review-wave's
       // build-review handler at line 1440 handles "no next wave → QA" once
       // the reviewer passes.
-      await fetch("http://localhost:3000/api/fleet/action", {
+      await fetch(getDefaultActionUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1976,7 +1977,7 @@ async function dispatchChainAction(
         // completion (after fixes) can re-fire review-wave.
         clearWaveReviewGuard(session.epicId!, reviewedWave);
 
-        await fetch("http://localhost:3000/api/fleet/action", {
+        await fetch(getDefaultActionUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2012,7 +2013,7 @@ async function dispatchChainAction(
         // Auto-advance to next wave — clear the guard for the wave we just reviewed
         // so the Set doesn't leak entries for the lifetime of the process (z9h.6 P2).
         clearWaveReviewGuard(session.epicId!, reviewedWave);
-        await fetch("http://localhost:3000/api/fleet/action", {
+        await fetch(getDefaultActionUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2036,7 +2037,7 @@ async function dispatchChainAction(
       // auto-advances to build-review (a no-op passthrough for non-iOS).
       // Clear guard for the reviewed wave (z9h.6 P2).
       clearWaveReviewGuard(session.epicId!, reviewedWave);
-      await fetch("http://localhost:3000/api/fleet/action", {
+      await fetch(getDefaultActionUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2070,7 +2071,7 @@ async function dispatchChainAction(
       }
       const hasBugs = openBugCount > 0;
       if (hasBugs) {
-        await fetch("http://localhost:3000/api/fleet/action", {
+        await fetch(getDefaultActionUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2107,7 +2108,7 @@ async function dispatchChainAction(
       }
 
       // No bugs — advance to next QA round.
-      await fetch("http://localhost:3000/api/fleet/action", {
+      await fetch(getDefaultActionUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2139,7 +2140,7 @@ async function dispatchChainAction(
       }
       const hasBugs = openBugCount > 0;
       if (hasBugs) {
-        await fetch("http://localhost:3000/api/fleet/action", {
+        await fetch(getDefaultActionUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2155,7 +2156,7 @@ async function dispatchChainAction(
         return true; // Chain handled (smoke-test -> fix loop)
       }
       // No bugs — advance to QA.
-      await fetch("http://localhost:3000/api/fleet/action", {
+      await fetch(getDefaultActionUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2222,7 +2223,7 @@ async function dispatchChainAction(
         }
 
         // Send back to build crew to fix bugs, then re-QA
-        await fetch("http://localhost:3000/api/fleet/action", {
+        await fetch(getDefaultActionUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2282,7 +2283,7 @@ async function dispatchChainAction(
 
       if (hasPolish) {
         await addQALabels(session.epicId!, ["pipeline:ux-polish", "agent:running"]);
-        await fetch("http://localhost:3000/api/fleet/action", {
+        await fetch(getDefaultActionUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2330,7 +2331,7 @@ async function dispatchChainAction(
   } else if (stage === "qa-fixes") {
     // After build crew fixes QA bugs, send back to QA
     try {
-      await fetch("http://localhost:3000/api/fleet/action", {
+      await fetch(getDefaultActionUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2402,7 +2403,7 @@ async function dispatchChainAction(
       // The route strips plan:reviewing/plan:reviewed/plan:needs-revision
       // and applies plan:approved + pipeline:test-spec (ADR-008).
       try {
-        const res = await fetch("http://localhost:3000/api/fleet/action", {
+        const res = await fetch(getDefaultActionUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2491,7 +2492,7 @@ async function dispatchChainAction(
       `${session.repoPath}/.beads/plans/${session.epicId}-review.md`;
 
     try {
-      const res = await fetch("http://localhost:3000/api/fleet/action", {
+      const res = await fetch(getDefaultActionUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

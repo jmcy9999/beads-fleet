@@ -24,6 +24,7 @@ import type {
   /* intentionally unused in types below */
 } from "../event-log";
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
+import { getDefaultActionUrl } from "../orchestrator-url";
 
 export const MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME =
   "missed-wave-review-dispatch";
@@ -82,7 +83,7 @@ export interface MissedWaveReviewDispatchRuleOptions {
 export function buildMissedWaveReviewDispatchRule(
   opts: MissedWaveReviewDispatchRuleOptions,
 ): ReconcilerRule {
-  const actionUrl = opts.actionUrl ?? "http://localhost:3000/api/fleet/action";
+  const actionUrl = opts.actionUrl ?? getDefaultActionUrl();
   const pairingGraceMs = opts.pairingGraceMs ?? DEFAULT_PAIRING_GRACE_MS;
   const recoveryHorizonMs =
     opts.recoveryHorizonMs ?? DEFAULT_RECOVERY_HORIZON_MS;

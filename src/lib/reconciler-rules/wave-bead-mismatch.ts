@@ -18,6 +18,7 @@
  */
 
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
+import { getDefaultActionUrl } from "../orchestrator-url";
 
 export const WAVE_BEAD_MISMATCH_RULE_NAME = "wave-bead-mismatch";
 
@@ -66,7 +67,7 @@ export interface WaveBeadMismatchRuleOptions {
 export function buildWaveBeadMismatchRule(
   opts: WaveBeadMismatchRuleOptions,
 ): ReconcilerRule {
-  const actionUrl = opts.actionUrl ?? "http://localhost:3000/api/fleet/action";
+  const actionUrl = opts.actionUrl ?? getDefaultActionUrl();
 
   return {
     name: WAVE_BEAD_MISMATCH_RULE_NAME,

@@ -38,6 +38,7 @@
  */
 
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
+import { getDefaultActionUrl } from "../orchestrator-url";
 
 export const REPEAT_DISPATCH_ESCALATION_RULE_NAME =
   "repeat-dispatch-escalation";
@@ -85,7 +86,7 @@ interface RepeatGroup {
 export function buildRepeatDispatchEscalationRule(
   opts: RepeatDispatchEscalationRuleOptions,
 ): ReconcilerRule {
-  const actionUrl = opts.actionUrl ?? "http://localhost:3000/api/fleet/action";
+  const actionUrl = opts.actionUrl ?? getDefaultActionUrl();
   const threshold = opts.threshold ?? DEFAULT_REPEAT_THRESHOLD;
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
 

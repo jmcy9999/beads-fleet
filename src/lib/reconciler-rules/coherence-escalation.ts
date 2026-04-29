@@ -26,6 +26,7 @@
  */
 
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
+import { getDefaultActionUrl } from "../orchestrator-url";
 
 export const COHERENCE_ESCALATION_RULE_NAME = "coherence-escalation";
 
@@ -49,7 +50,7 @@ export interface CoherenceEscalationRuleOptions {
 export function buildCoherenceEscalationRule(
   opts: CoherenceEscalationRuleOptions,
 ): ReconcilerRule {
-  const actionUrl = opts.actionUrl ?? "http://localhost:3000/api/fleet/action";
+  const actionUrl = opts.actionUrl ?? getDefaultActionUrl();
 
   return {
     name: COHERENCE_ESCALATION_RULE_NAME,
