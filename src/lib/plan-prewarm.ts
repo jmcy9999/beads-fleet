@@ -57,6 +57,14 @@ export function ensurePlanPrewarmed(): Promise<void> {
   const start = Date.now();
   g.__planPrewarmPromise = (async () => {
     try {
+      // Wake all per-repo Dolt sql-servers BEFORE plan queries fire.
+      // Without this, dead-Dolt repos shortcut to UnreachableRobotPlan
+      // (factory-core-8260.1's probe) and the dashboard shows them as
+      // offline. With this, the probe succeeds for all repos and the
+      // plan cache is populated with real data for the full portfolio.
+      const { ensureDoltPrewarmed } = await import("./dolt-prewarm");
+      await ensureDoltPrewarmed();
+
       const { getAllProjectsPlan } = await import("./bv-client");
       const { getAllRepoPaths } = await import("./repo-config");
       const paths = await getAllRepoPaths();
