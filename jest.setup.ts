@@ -11,6 +11,5 @@ if (typeof globalThis.ResizeObserver === "undefined") {
     unobserve(): void {}
     disconnect(): void {}
   }
-  // @ts-expect-error — jsdom global type does not declare ResizeObserver.
   globalThis.ResizeObserver = NoopResizeObserver;
 }
