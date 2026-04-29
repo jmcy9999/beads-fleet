@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# shipyard — CLI dispatcher (factory-core-3p1e.8)
+#
+# Minimal subcommand dispatcher. Resolves the project root by ascending from
+# this script's location, finds tsx in node_modules/.bin, and execs the
+# matching TypeScript entry point under src/cli/.
+#
+# Today: one subcommand (`reason`). The case statement is the extension point;
+# new subcommands add a branch and a corresponding src/cli/<name>.ts file.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TSX="${ROOT}/node_modules/.bin/tsx"
+
+if [[ ! -x "${TSX}" ]]; then
+  echo "shipyard: tsx not found at ${TSX}" >&2
+  echo "shipyard: run 'npm install' from ${ROOT} first" >&2
+  exit 3
+fi
+
+CMD="${1:-}"
+
+case "${CMD}" in
+  reason)
+    shift
+    exec "${TSX}" "${ROOT}/src/cli/reason.ts" "$@"
+    ;;
+  ""|-h|--help|help)
+    cat >&2 <<'EOF'
+Usage: shipyard <command> [args...]
+
+Commands:
+  reason <epic-id>   On-demand coherence reasoning for a stuck epic.
+
+Environment:
+  SHIPYARD_PATH      Path to fleet-core-improved (default:
+                     /Users/janemckay/dev/fleet/fleet-core-improved).
+EOF
+    [[ -z "${CMD}" ]] && exit 64 || exit 0
+    ;;
+  *)
+    echo "shipyard: unknown command '${CMD}'" >&2
+    echo "Run 'shipyard --help' for usage." >&2
+    exit 64
+    ;;
+esac

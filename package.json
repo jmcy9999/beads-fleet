@@ -2,6 +2,9 @@
   "name": "beads-fleet",
   "version": "1.0.0",
   "private": true,
+  "bin": {
+    "shipyard": "bin/shipyard"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,6 +12,7 @@
     "lint": "next lint",
     "test": "jest",
     "test:coverage": "jest --coverage",
+    "reason": "tsx src/cli/reason.ts",
     "postinstall": "bash scripts/install-bv.sh || true"
   },
   "dependencies": {
@@ -48,6 +52,7 @@
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "ts-jest": "^29.4.6",
+    "tsx": "^4.20.6",
     "typescript": "^5"
   }
 }
