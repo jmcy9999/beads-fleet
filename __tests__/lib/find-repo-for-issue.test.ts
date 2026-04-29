@@ -11,6 +11,21 @@ jest.mock("mysql2/promise");
 import * as mysql from "mysql2/promise";
 const mockCreateConnection = mysql.createConnection as jest.MockedFunction<typeof mysql.createConnection>;
 
+// Mock the dolt-health TCP probe — factory-core-3p1e.5 added a TCP probe
+// before the MySQL handshake. Since these tests use synthetic ports (55001,
+// 55002) without real listeners, a real probe would always return
+// "connection_refused" and short-circuit the test. Force "reachable" so the
+// existing test scenarios continue to exercise the MySQL handshake mocks.
+jest.mock("@/lib/dolt-health", () => ({
+  probeDolt: jest.fn(async (host: string, port: number) => ({
+    host,
+    port,
+    category: "reachable",
+    latencyMs: 0,
+  })),
+  clearProbeCache: jest.fn(),
+}));
+
 import { findRepoForIssue } from "@/lib/repo-config";
 
 // ---------------------------------------------------------------------------

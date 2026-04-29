@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "fs";
 import path from "path";
 import os from "os";
 import * as mysql from "mysql2/promise";
+import { probeDolt } from "./dolt-health";
 
 export interface RepoConfig {
   name: string;
@@ -147,6 +148,13 @@ export async function findRepoForIssue(issueId: string): Promise<string | null> 
 
     const port = parseInt(readFileSync(portFile, "utf-8").trim(), 10);
     if (isNaN(port)) continue;
+
+    // Cheap reachability check: TCP probe before MySQL handshake.
+    // factory-core-3p1e.5 — drops dead-repo cost from ~3s (MySQL handshake
+    // timeout) to ~50ms (TCP refusal). The MySQL handshake below is still
+    // required for the actual issue-existence query.
+    const probe = await probeDolt("127.0.0.1", port, 2000);
+    if (probe.category !== "reachable") continue;
 
     // Read database name from metadata
     let database = path.basename(repo.path);

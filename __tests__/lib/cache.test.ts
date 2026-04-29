@@ -92,10 +92,13 @@ describe("TTLCache", () => {
       expect(cache.get<string>("key")).toBeNull();
     });
 
-    it("uses the default TTL of 10s when no TTL is specified", () => {
+    it("uses the default TTL of 30s when no TTL is specified", () => {
+      // factory-core-3p1e.5 bumped the default TTL from 10s to 30s to reduce
+      // dashboard cold-misses on the 15s refetch interval. Test updated to
+      // match the new boundary; behaviour is otherwise identical.
       const cache = new TTLCache();
       cache.set("key", "value");
-      jest.advanceTimersByTime(9999);
+      jest.advanceTimersByTime(29_999);
       expect(cache.get<string>("key")).toBe("value");
       jest.advanceTimersByTime(2);
       expect(cache.get<string>("key")).toBeNull();

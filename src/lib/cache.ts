@@ -87,7 +87,7 @@ export class TTLCache {
   private inFlight = new Map<string, Promise<unknown>>();
   private defaultTTL: number;
 
-  constructor(defaultTTLMs: number = 10_000) {
+  constructor(defaultTTLMs: number = 30_000) {
     this.defaultTTL = defaultTTLMs;
   }
 
@@ -218,4 +218,4 @@ export class TTLCache {
   }
 }
 
-export const cache = new TTLCache(10_000);
+export const cache = new TTLCache(30_000);
