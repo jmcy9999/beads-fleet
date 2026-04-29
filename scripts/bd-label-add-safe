@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# bd-label-add-safe — defensive wrapper around `bd label add`
+#
+# Wraps `bd label add`, then verifies the label was actually applied via
+# `bd show --json | jq -e`. Converts the silent-success-on-wrong-cwd bug
+# (bd label add exits 0 but no-ops when .beads/ doesn't contain the bead)
+# into a loud failure (non-zero exit).
+#
+# Usage: bd-label-add-safe <bead-id> <label>
+
+set -euo pipefail
+
+BEAD_ID="${1:-}"
+LABEL="${2:-}"
+
+if [ -z "$BEAD_ID" ] || [ -z "$LABEL" ]; then
+  echo "Usage: bd-label-add-safe <bead-id> <label>" >&2
+  exit 1
+fi
+
+# Step 1: Run bd label add, capturing both stdout and stderr.
+ADD_OUTPUT="$(bd label add "$BEAD_ID" "$LABEL" 2>&1)" || true
+
+# Step 2: Verify the label was actually applied.
+# bd show --json returns an array; use .[0] to get the bead object.
+# Use `|| true` to prevent set -e from exiting before we can check $?.
+SHOW_OUTPUT="$(bd show "$BEAD_ID" --json 2>&1)" && SHOW_EXIT=0 || SHOW_EXIT=$?
+
+if [ "$SHOW_EXIT" -ne 0 ]; then
+  echo "ERROR: bead not found in current cwd's .beads/" >&2
+  echo "  bead-id: $BEAD_ID" >&2
+  echo "  bd show output: $SHOW_OUTPUT" >&2
+  exit 1
+fi
+
+# Step 3: Check that the label is present in the bead's label set.
+# Use --arg to safely pass the label value without shell/jq injection risk.
+if echo "$SHOW_OUTPUT" | jq -e --arg lbl "$LABEL" '.[0].labels | index($lbl)' > /dev/null 2>&1; then
+  echo "OK: label \"$LABEL\" verified on bead $BEAD_ID"
+  exit 0
+else
+  ACTUAL_LABELS="$(echo "$SHOW_OUTPUT" | jq -r '.[0].labels // [] | join(", ")' 2>/dev/null || echo "(could not parse labels)")"
+  echo "ERROR: label \"$LABEL\" was NOT applied to bead $BEAD_ID" >&2
+  echo "  expected label: $LABEL" >&2
+  echo "  actual labels:  $ACTUAL_LABELS" >&2
+  echo "  hint: wrong cwd? bd label add silently no-ops when invoked from a directory whose .beads/ doesn't contain the bead." >&2
+  exit 1
+fi
