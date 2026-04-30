@@ -1,0 +1,5 @@
+{"bead":"beads_web-b98","ac_item":1,"verified_at":"2026-04-30T17:38:15Z","note":"PASS-with-no-progress fires at K=3 with distinct ::no-progress:: key — 3 tests verify"}
+{"bead":"beads_web-b98","ac_item":2,"verified_at":"2026-04-30T17:38:15Z","note":"Existing predicate byte-for-byte unchanged — 9 existing tests pass, git diff confirms"}
+{"bead":"beads_web-b98","ac_item":3,"verified_at":"2026-04-30T17:38:15Z","note":"marker-read data source documented in module JSDoc + readQaRoundMarker option comment"}
+{"bead":"beads_web-b98","ac_item":4,"verified_at":"2026-04-30T17:38:15Z","note":"64 reconciler-rule tests pass across 5 suites — zero regressions"}
+{"bead":"beads_web-b98","ac_item":5,"verified_at":"2026-04-30T17:38:15Z","note":"12 new tests cover all 5 AC scenarios: fires-at-K, no-fire-at-K-1, no-fire-on-decrease, no-fire-on-FAIL, idempotency + extras"}
