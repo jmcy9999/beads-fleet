@@ -13,6 +13,9 @@ src/app/api/monetization/
 src/app/monetization/
 src/hooks/useMonetization.ts
 
+# bd CLI local state
+.beads/checkpoints/*.jsonl
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
