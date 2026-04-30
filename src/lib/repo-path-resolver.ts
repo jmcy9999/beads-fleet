@@ -32,8 +32,14 @@ export interface RepoPathResult {
   testScenariosPath?: string;
 }
 
-// Resolve fleet-core path: env var > hardcoded fallback
-const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
+// Resolve fleet-core path: env var > hardcoded fallback.
+// factory-core-so74 A.8 deferred-AC fix: fallback updated to fleet-core-improved
+// (the active fork). The legacy fleet-core directory remains registered for
+// ARCHIVE reference but is not the default. Without this update, the bounding
+// rule at route.ts (path.basename === "fleet-core-improved") silently returns
+// false on env-var absence, disabling cross-repo dispatch. See
+// docs/aspirational-pipeline/a8-deferred-fixes.md.
+const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core-improved";
 const PRODUCT_REPO_BASE = "/Users/janemckay/dev/claude_projects";
 
 /**

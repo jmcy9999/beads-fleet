@@ -245,8 +245,13 @@ function readEpicTitle(epicId: string, repoPath: string): string {
 export function ensureReconcilerRunning(): void {
   if (getGlobalReconciler()) return;
   try {
+    // factory-core-so74 A.8 deferred-AC fix: fallback updated to
+    // fleet-core-improved (the active fork). Architect's design at
+    // docs/aspirational-pipeline/a8-deferred-fixes.md missed this third
+    // FLEET_CORE_PATH location and the one in route.ts; without these
+    // updates the reconciler boots against the legacy fleet-core dir.
     const repoPath =
-      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core";
+      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core-improved";
     const rec = initReconciler(repoPath);
 
     // Register the one production rule. When more rules arrive, add

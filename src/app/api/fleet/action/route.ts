@@ -120,8 +120,16 @@ const VALID_ACTIONS = new Set<PipelineAction>([
   "run-coherence-agent",
 ]);
 
-// Resolve fleet-core path: env var > hardcoded fallback
-const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
+// Resolve fleet-core path: env var > hardcoded fallback.
+// factory-core-so74 A.8 deferred-AC fix: fallback updated to
+// fleet-core-improved (the active fork). Without this, the registry-fallback
+// `find` at lines 416-419 hits the legacy fleet-core entry first when the env
+// var is unset, and the bounding rule at line 1792 (path.basename ===
+// "fleet-core-improved") silently returns false, disabling cross-repo
+// dispatch. See docs/aspirational-pipeline/a8-deferred-fixes.md (architect's
+// design originally targeted only repo-path-resolver.ts and agent-launcher.ts;
+// this third location was discovered during retest).
+const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core-improved";
 
 /**
  * Derive the app name from the epic title. Strips common suffixes and extracts

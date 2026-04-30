@@ -942,18 +942,37 @@ function lineIsBugType(line: string): boolean {
 }
 
 /**
- * Parse child bead IDs and closed status from bd list --parent= tree output.
- * Tree format: ├── ✓ factory-core-cur.1.16 ● P0 bug Title...
- * Returns array of { id, isClosed } for each child (skips the root epic line).
+ * Parse child bead IDs and closed status from bd list output.
+ *
+ * Handles two output formats:
+ *   1. Tree format (bd list --parent=): "├── ✓ factory-core-cur.1.16 ● P0 …"
+ *      The leading `├──`/`└──` markers anchor the bead-ID position. The parent
+ *      epic appears at column 0 with no tree marker; passing `excludeId` filters
+ *      it out (otherwise the flat-format match below would re-capture it).
+ *   2. Flat format (bd list --label …): "○ beads_web-0l2 ● P4 …"
+ *      The status icon at column 0 anchors the bead-ID position. (factory-core-so74
+ *      A.8 deferred-AC fix: cross-repo enumeration uses --label and returned
+ *      empty because the tree-only regex did not match flat-list output. See
+ *      docs/aspirational-pipeline/a8-deferred-fixes.md.)
+ *
+ * Returns array of { id, isClosed } for each matched line (skips header/footer
+ * and any line whose ID equals `excludeId`).
  */
-function parseChildrenFromTree(treeOutput: string): Array<{ id: string; isClosed: boolean }> {
+function parseChildrenFromTree(
+  treeOutput: string,
+  excludeId?: string,
+): Array<{ id: string; isClosed: boolean }> {
   const children: Array<{ id: string; isClosed: boolean }> = [];
   for (const line of treeOutput.split("\n")) {
-    // Match tree lines (├── or └──) with status icon and bead ID
-    const idMatch = line.match(/[├└].*?[✓○◐●❄]\s+(\S+)\s/);
+    // Tree-format match: prefix has ├── or └── before the status icon.
+    let idMatch = line.match(/[├└].*?[✓○◐●❄]\s+(\S+)\s/);
+    // Flat-format match: line starts with status icon at column 0.
+    if (!idMatch) idMatch = line.match(/^[✓○◐●❄]\s+(\S+)\s/);
     if (!idMatch) continue;
+    if (excludeId && idMatch[1] === excludeId) continue;
     children.push({
       id: idMatch[1],
+      // For both formats, "✓" before the bead ID indicates closed.
       isClosed: line.includes("✓"),
     });
   }
@@ -1058,7 +1077,7 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
     };
   }
 
-  const children = parseChildrenFromTree(childrenResult.stdout);
+  const children = parseChildrenFromTree(childrenResult.stdout, epicId);
   if (children.length === 0) {
     return { hasWaves: false, waves: new Map(), currentWave: 0, totalWaves: 0, currentWaveComplete: false, allWavesComplete: false, hasCheckpointRequired, totalChildren: 0, childrenWithWaveLabels: 0, closedWithoutWaveLabel: 0 };
   }
@@ -1446,6 +1465,13 @@ export async function listOpenWaveBeads(
 
   const epicResult = execBdSync(["show", epicId], repoPath, 10000);
   const isInternal = epicResult.success && epicResult.stdout.includes("ship-type:internal");
+  // factory-core-so74 A.8 fix: diagnostic logging — root-cause analysis of
+  // empty cross-repo enumeration results. Per a8-deferred-fixes.md ADR-002.
+  console.info(
+    `[cross-repo] listOpenWaveBeads: epic ${epicId} in ${path.basename(repoPath)} — ` +
+    `bd show ${epicResult.success ? "succeeded" : "failed"}, isInternal=${isInternal}` +
+    (epicResult.success ? "" : " (expected for cross-repo epics — using label-based filter)"),
+  );
   const filterArgs = isInternal
     ? ["list", "--status=all", `--parent=${epicId}`]
     : ["list", "--status=all", "--label", `epic:${epicId}`];
@@ -1461,7 +1487,12 @@ export async function listOpenWaveBeads(
     );
   }
 
-  const children = parseChildrenFromTree(listResult.stdout);
+  const children = parseChildrenFromTree(listResult.stdout, epicId);
+  // factory-core-so74 A.8 fix: log child count from bd list.
+  console.info(
+    `[cross-repo] listOpenWaveBeads: bd list found ${children.length} children for epic ${epicId} ` +
+    `in ${path.basename(repoPath)} (filter: ${filterArgs.slice(1).join(" ")})`,
+  );
   const open: WaveBead[] = [];
   for (const child of children) {
     if (child.isClosed) continue;
@@ -1494,8 +1525,21 @@ export async function listOpenWaveBeads(
     // Confirm wave label matches the requested wave — filter defensively
     // since we're not using a composite --label filter on bd list.
     const waveMatch = showResult.stdout.match(/wave:(\d+)/);
-    if (!waveMatch) continue;
-    if (parseInt(waveMatch[1], 10) !== wave) continue;
+    if (!waveMatch) {
+      // factory-core-so74 A.8 fix: log skip reason for diagnosis.
+      console.info(
+        `[cross-repo] listOpenWaveBeads: child ${child.id} in ${path.basename(repoPath)} ` +
+        `skipped — no wave:N label found in bd show output`,
+      );
+      continue;
+    }
+    if (parseInt(waveMatch[1], 10) !== wave) {
+      console.info(
+        `[cross-repo] listOpenWaveBeads: child ${child.id} in ${path.basename(repoPath)} ` +
+        `skipped — wave ${waveMatch[1]} != requested wave ${wave}`,
+      );
+      continue;
+    }
 
     // Title is the first line of the show output that looks like
     // "... · <Bead ID> · <Title> ...". Fall back to the bead ID.
@@ -1605,9 +1649,11 @@ export async function listOpenWaveBeadsAllRepos(
 // Chain actions -- when an agent exits, optionally trigger the next step
 // ---------------------------------------------------------------------------
 
-// Resolve fleet-core path: env var > hardcoded fallback
-// Externalised so the path isn't brittle if fleet-core moves.
-const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
+// Resolve fleet-core path: env var > hardcoded fallback.
+// factory-core-so74 A.8 deferred-AC fix: fallback updated to fleet-core-improved
+// (the active fork). See repo-path-resolver.ts for full context and
+// docs/aspirational-pipeline/a8-deferred-fixes.md.
+const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core-improved";
 
 /**
  * factory-core-lfcf.3: emit a `stage-dispatched` event to pair with the

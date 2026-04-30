@@ -15,8 +15,11 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const { readEvents } = await import("@/lib/event-log");
+    // factory-core-so74 A.8 deferred-AC fix: fallback updated to
+    // fleet-core-improved (the active fork). See
+    // docs/aspirational-pipeline/a8-deferred-fixes.md.
     const repoPath =
-      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core";
+      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core-improved";
 
     // Lookback: 24 hours by default — enough to cover overnight runs.
     const sinceMs = Date.now() - 24 * 60 * 60_000;
