@@ -101,6 +101,32 @@ export async function scanForBeadIdCollisions(): Promise<void> {
     for (const { beadId, repos } of collisions) {
       console.warn(`  - ${beadId} in repos: ${repos.join(", ")}`);
     }
+
+    // beads_web-8wh redesign (ADR-002): persist collision findings to the
+    // reconciler event log so the operator can audit them even if not
+    // watching the terminal at boot. console.warn alone is transient;
+    // event log entries are persistent + queryable via reconciler status.
+    // Failure to write the event log is non-fatal — the scan's primary
+    // visibility (console.warn above) is unaffected.
+    try {
+      const repoPath =
+        process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core-improved";
+      const { appendEvent } = await import("./event-log");
+      await appendEvent(repoPath, {
+        type: "collision-detected",
+        epicId: "__collision-scan__",
+        payload: {
+          collisions: collisions.map((c) => ({ beadId: c.beadId, repos: c.repos })),
+          scannedRepoCount,
+          detectedAt: new Date().toISOString(),
+        },
+      });
+    } catch (err) {
+      console.warn(
+        "[COLLISION SCAN] Failed to write event log (non-fatal):",
+        err instanceof Error ? err.message : err,
+      );
+    }
   } else {
     console.log(
       `[COLLISION SCAN] No bead-ID collisions found across ${scannedRepoCount} repos.`,

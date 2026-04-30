@@ -808,9 +808,29 @@ export async function getDiff(since: string, projectPath?: string): Promise<Robo
   });
 }
 
+// beads_web-8wh (A.6 redesign): module-scope flag for boot-time collision scan.
+// First call to getAllProjectsPlan triggers a fire-and-forget collision scan
+// across all registered repos. Subsequent calls skip it. See
+// docs/aspirational-pipeline/a6-redesign.md ADR-001 for the design choice
+// (fold-into-aggregator) over the self-fetch-to-route alternative.
+let collisionScanHasRun = false;
+
+/**
+ * Test helper: reset the collision-scan first-run flag so tests that exercise
+ * boot-time behaviour can re-trigger the scan in a cold-state setup.
+ */
+export function __resetCollisionScanForTests(): void {
+  collisionScanHasRun = false;
+}
+
 /**
  * Fetch and aggregate plans from multiple project paths into a single RobotPlan.
  * Adds a `project:<repoName>` label to each issue for filtering.
+ *
+ * Side-effect (beads_web-8wh): on first invocation, triggers a non-blocking
+ * bead-ID collision scan across registered repos. Subsequent invocations skip
+ * the scan (gated by `collisionScanHasRun`). Failures are swallowed and
+ * logged; the aggregator's primary contract is unaffected.
  */
 export async function getAllProjectsPlan(repoPaths: string[]): Promise<RobotPlan> {
   const results = await Promise.allSettled(repoPaths.map((p) => getPlan(p)));
@@ -862,6 +882,23 @@ export async function getAllProjectsPlan(repoPaths: string[]): Promise<RobotPlan
     summary.in_progress_count += plan.summary.in_progress_count;
     summary.blocked_count += plan.summary.blocked_count;
     summary.closed_count += plan.summary.closed_count;
+  }
+
+  // beads_web-8wh (A.6): first-call trigger for the boot-time collision scan.
+  // Fire-and-forget — the aggregator returns immediately. Dynamic import is
+  // safe here because bv-client.ts is Node-only (never compiled for edge);
+  // the dynamic-import-from-instrumentation.ts edge-bundle hazard does not
+  // apply to this call site. See docs/aspirational-pipeline/a6-redesign.md.
+  if (!collisionScanHasRun) {
+    collisionScanHasRun = true;
+    import("./startup-collision-scan")
+      .then(({ scanForBeadIdCollisions }) => scanForBeadIdCollisions())
+      .catch((err) => {
+        console.warn(
+          "[getAllProjectsPlan] collision scan failed (non-fatal):",
+          err instanceof Error ? err.message : err,
+        );
+      });
   }
 
   return {
