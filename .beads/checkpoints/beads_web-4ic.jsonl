@@ -1,0 +1,6 @@
+{"bead":"beads_web-4ic","ac_item":1,"verified_at":"2026-04-30T17:23:49Z","note":"three QA describe blocks moved byte-for-byte, diff confirmed identical"}
+{"bead":"beads_web-4ic","ac_item":2,"verified_at":"2026-04-30T17:23:49Z","note":"132+49=181 equals pre-split 181; same 11 pre-existing failures"}
+{"bead":"beads_web-4ic","ac_item":3,"verified_at":"2026-04-30T17:23:49Z","note":"mock setup (lines 1-245) byte-for-byte identical in both files"}
+{"bead":"beads_web-4ic","ac_item":4,"verified_at":"2026-04-30T17:23:49Z","note":"zero grep matches for three QA describe blocks in original; all remaining blocks byte-identical"}
+{"bead":"beads_web-4ic","ac_item":5,"verified_at":"2026-04-30T17:23:49Z","note":"no helper file created, ls confirmed"}
+{"bead":"beads_web-4ic","ac_item":6,"verified_at":"2026-04-30T17:23:49Z","note":"only three named describe blocks moved, no fourth block"}
