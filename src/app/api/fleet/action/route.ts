@@ -1658,7 +1658,7 @@ export async function POST(request: NextRequest) {
             );
           }
 
-          let marker: { whats_open?: string[]; [key: string]: unknown };
+          let marker: { whats_open?: string[]; verdict?: string; open_bugs?: number; [key: string]: unknown };
           try {
             marker = JSON.parse(markerJson);
           } catch (err) {
@@ -1713,6 +1713,47 @@ export async function POST(request: NextRequest) {
               },
               { status: 500 }
             );
+          }
+
+          // factory-core-0kkt: Verdict + open-bugs transition predicate.
+          // Pre-fix: qa:round-N label exists → unconditionally advance to round-(N+1).
+          // Post-fix: verdict=PASS AND openBugs=0 → TERMINATE (clear pipeline:qa, no next round).
+          // Only FAIL/SKIP/UNKNOWN verdicts OR openBugs>0 advance to next round.
+          // Empirical grounding: 3p1e rounds 3-21 all verdict=PASS, 0 bugs, yet advanced.
+          const markerVerdict = marker.verdict;
+          const markerOpenBugs = typeof marker.open_bugs === "number" ? marker.open_bugs : undefined;
+
+          if (markerVerdict === "PASS" && markerOpenBugs === 0) {
+            // QA loop complete — terminate. Remove the pipeline:qa, qa:round-N,
+            // and agent:running labels that were already added at line ~1585
+            // (before the marker gate runs). Do NOT add qa:round-(N+1).
+            await removeLabelsFromEpic(
+              epicId,
+              ["pipeline:qa", `qa:round-${currentRound}`, "agent:running"],
+              fleetCorePath
+            );
+            invalidateCache({ type: "epic", epicId });
+
+            console.log(
+              JSON.stringify({
+                level: "INFO",
+                event: "qa_loop_terminated",
+                epicId,
+                round: currentRound,
+                previousRound,
+                verdict: markerVerdict,
+                openBugs: markerOpenBugs,
+                message: `QA loop terminated for ${epicId}: round ${previousRound} verdict=PASS, 0 open bugs. No round ${currentRound} dispatched.`,
+              })
+            );
+            return NextResponse.json({
+              success: true,
+              action,
+              epicId,
+              terminated: true,
+              reason: "QA loop terminated: PASS verdict, 0 open bugs",
+              lastRound: previousRound,
+            });
           }
         }
 
@@ -2381,7 +2422,7 @@ export async function POST(request: NextRequest) {
             );
           }
 
-          let skipPolishMarker: { whats_open?: string[]; [key: string]: unknown };
+          let skipPolishMarker: { whats_open?: string[]; verdict?: string; open_bugs?: number; [key: string]: unknown };
           try {
             skipPolishMarker = JSON.parse(skipPolishMarkerJson);
           } catch (err) {
@@ -2438,6 +2479,42 @@ export async function POST(request: NextRequest) {
               },
               { status: 500 }
             );
+          }
+
+          // factory-core-0kkt: Verdict + open-bugs transition predicate.
+          // Same logic as send-for-qa site. This path fires round currentRound+1,
+          // so the round-just-completed is currentRound.
+          // verdict=PASS AND openBugs=0 → TERMINATE. Otherwise → advance.
+          const skipPolishVerdict = skipPolishMarker.verdict;
+          const skipPolishOpenBugs = typeof skipPolishMarker.open_bugs === "number" ? skipPolishMarker.open_bugs : undefined;
+
+          if (skipPolishVerdict === "PASS" && skipPolishOpenBugs === 0) {
+            // QA loop complete — terminate. Clear pipeline:qa and round labels.
+            // Do NOT add qa:round-(N+1).
+            await removeLabelsFromEpic(epicId, ["pipeline:qa", ...roundLabels], fleetCorePath);
+            invalidateCache({ type: "epic", epicId });
+
+            console.log(
+              JSON.stringify({
+                level: "INFO",
+                event: "qa_loop_terminated",
+                epicId,
+                round: currentRound + 1,
+                previousRound: currentRound,
+                verdict: skipPolishVerdict,
+                openBugs: skipPolishOpenBugs,
+                message: `QA loop terminated for ${epicId} (skip-polish-advance): round ${currentRound} verdict=PASS, 0 open bugs. No round ${currentRound + 1} dispatched.`,
+              })
+            );
+            return NextResponse.json({
+              success: true,
+              action,
+              epicId,
+              terminated: true,
+              reason: "QA loop terminated: PASS verdict, 0 open bugs",
+              lastRound: currentRound,
+              skipped: true,
+            });
           }
 
           await removeLabelsFromEpic(epicId, ["pipeline:qa", ...roundLabels], fleetCorePath);

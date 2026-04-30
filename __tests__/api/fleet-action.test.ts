@@ -1555,6 +1555,285 @@ describe("POST /api/fleet/action", () => {
       expect(data.qaRound).toBe(2);
       expect(mockLaunchAgent).toHaveBeenCalled();
     });
+
+    // -----------------------------------------------------------------
+    // factory-core-0kkt: Verdict + open-bugs transition predicate tests
+    // for send-for-qa dispatch site. Tests all (PASS/FAIL/SKIP/UNKNOWN)
+    // × (openBugs=0, >0) combinations.
+    // -----------------------------------------------------------------
+
+    it("0kkt: terminates QA loop when verdict=PASS and open_bugs=0 (round 2+)", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "PASS",
+        open_bugs: 0,
+      }));
+      const consoleSpy = jest.spyOn(console, "log").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.terminated).toBe(true);
+      expect(data.reason).toBe("QA loop terminated: PASS verdict, 0 open bugs");
+      expect(data.lastRound).toBe(1);
+
+      // Termination removes the labels that were already added at the
+      // start of send-for-qa (pipeline:qa, qa:round-2, agent:running).
+      // The second removeLabels call is the 0kkt termination cleanup.
+      // (First removeLabels was the initial round-label cleanup at line ~1584.)
+      const removeCallArgs = mockRemoveLabels.mock.calls;
+      const terminationCall = removeCallArgs.find(
+        (args: unknown[]) =>
+          Array.isArray(args[1]) &&
+          (args[1] as string[]).includes("pipeline:qa") &&
+          (args[1] as string[]).includes("qa:round-2") &&
+          (args[1] as string[]).includes("agent:running")
+      );
+      expect(terminationCall).toBeDefined();
+
+      // launchAgent must NOT have been called
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+
+      // Structured log emitted
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls.find(
+        c => typeof c[0] === "string" && c[0].includes("qa_loop_terminated")
+      );
+      expect(logArg).toBeDefined();
+      const parsed = JSON.parse(logArg![0]);
+      expect(parsed.event).toBe("qa_loop_terminated");
+      expect(parsed.verdict).toBe("PASS");
+      expect(parsed.openBugs).toBe(0);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("0kkt: advances to next round when verdict=FAIL and open_bugs=0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 0,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(data.terminated).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("0kkt: advances to next round when verdict=PASS but open_bugs>0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "PASS",
+        open_bugs: 3,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(data.terminated).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("0kkt: advances to next round when verdict=SKIP and open_bugs=0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "SKIP",
+        open_bugs: 0,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(data.terminated).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("0kkt: advances to next round when verdict=UNKNOWN and open_bugs=0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "UNKNOWN",
+        open_bugs: 0,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(data.terminated).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("0kkt: advances to next round when verdict=FAIL and open_bugs>0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 5,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(data.terminated).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("0kkt: advances to next round when verdict=SKIP and open_bugs>0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "SKIP",
+        open_bugs: 2,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(data.terminated).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("0kkt: advances to next round when verdict=UNKNOWN and open_bugs>0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "UNKNOWN",
+        open_bugs: 1,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(data.terminated).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("0kkt: round-1 happy path unchanged (no marker exists for round 0)", async () => {
+      // First QA round — no previous round, no marker to check.
+      // Should dispatch normally without checking verdict.
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(1);
+      expect(data.terminated).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -2091,6 +2370,324 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
       expect(data.skipped).toBe(true);
       // Labels were advanced
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    // -----------------------------------------------------------------
+    // factory-core-0kkt: Verdict + open-bugs transition predicate tests
+    // for skip-polish-advance dispatch site. Tests all (PASS/FAIL/SKIP/
+    // UNKNOWN) × (openBugs=0, >0) combinations.
+    // -----------------------------------------------------------------
+
+    it("0kkt: terminates QA loop via skip-polish when verdict=PASS and open_bugs=0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "PASS",
+        open_bugs: 0,
+      }));
+      const consoleSpy = jest.spyOn(console, "log").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.terminated).toBe(true);
+      expect(data.reason).toBe("QA loop terminated: PASS verdict, 0 open bugs");
+      expect(data.lastRound).toBe(1);
+      expect(data.skipped).toBe(true);
+
+      // pipeline:qa and round labels cleared
+      expect(mockRemoveLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-1"],
+        expect.any(String),
+      );
+      // No qa:round-2 label added
+      expect(mockAddLabels).not.toHaveBeenCalledWith(
+        "epic-1",
+        expect.arrayContaining(["qa:round-2"]),
+        expect.any(String),
+      );
+
+      // Structured log emitted
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls.find(
+        c => typeof c[0] === "string" && c[0].includes("qa_loop_terminated")
+      );
+      expect(logArg).toBeDefined();
+      const parsed = JSON.parse(logArg![0]);
+      expect(parsed.event).toBe("qa_loop_terminated");
+      expect(parsed.verdict).toBe("PASS");
+      expect(parsed.openBugs).toBe(0);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("0kkt: advances skip-polish when verdict=FAIL and open_bugs=0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 0,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.terminated).toBeUndefined();
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    it("0kkt: advances skip-polish when verdict=PASS but open_bugs>0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "PASS",
+        open_bugs: 3,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.terminated).toBeUndefined();
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    it("0kkt: advances skip-polish when verdict=SKIP and open_bugs=0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "SKIP",
+        open_bugs: 0,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.terminated).toBeUndefined();
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    it("0kkt: advances skip-polish when verdict=UNKNOWN and open_bugs=0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "UNKNOWN",
+        open_bugs: 0,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.terminated).toBeUndefined();
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    it("0kkt: advances skip-polish when verdict=FAIL and open_bugs>0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 5,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.terminated).toBeUndefined();
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    it("0kkt: advances skip-polish when verdict=SKIP and open_bugs>0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "SKIP",
+        open_bugs: 2,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.terminated).toBeUndefined();
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    it("0kkt: advances skip-polish when verdict=UNKNOWN and open_bugs>0", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "UNKNOWN",
+        open_bugs: 1,
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.terminated).toBeUndefined();
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:qa", "qa:round-2"],
