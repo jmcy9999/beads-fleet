@@ -1834,6 +1834,191 @@ describe("POST /api/fleet/action", () => {
       expect(data.terminated).toBeUndefined();
       expect(mockLaunchAgent).toHaveBeenCalled();
     });
+
+    // -----------------------------------------------------------------
+    // factory-core-2r2m: QA ceiling check tests for send-for-qa site.
+    // The ceiling is defence-in-depth: even when 0kkt says "advance"
+    // (verdict=FAIL), halt if nextRound > maxRounds from qa.md.
+    // -----------------------------------------------------------------
+
+    it("2r2m: blocks round 21 when maxRounds=20 and verdict=FAIL (ceiling breach)", async () => {
+      // Epic is at round 20 (qa:round-20 label). currentRound = 21 (next to dispatch).
+      // Marker verdict=FAIL → 0kkt says advance. But 21 > 20 → ceiling blocks.
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-20"]);
+      // First readFile: marker for round 20 (FAIL verdict, 0kkt advances)
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 2,
+      }));
+      // Second readFile: qa.md content with maxRounds: 20
+      mockReadFile.mockResolvedValueOnce(
+        "---\nname: qa\ndescription: QA agent\nmodel: claude-opus-4-6\ntools:\n  - Read\n  - Bash\nmaxRounds: 20\n---\n\nYou are a QA agent."
+      );
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-20"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.success).toBe(false);
+      expect(data.reason).toBe("QA ceiling breached");
+      expect(data.attemptedRound).toBe(21);
+      expect(data.maxRounds).toBe(20);
+
+      // review:needs-human label set
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        expect.arrayContaining(["review:needs-human"]),
+        expect.any(String),
+      );
+
+      // launchAgent NOT called
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+
+      // Structured log emitted
+      const logArg = consoleSpy.mock.calls.find(
+        c => typeof c[0] === "string" && c[0].includes("qa_ceiling_breached")
+      );
+      expect(logArg).toBeDefined();
+      const parsed = JSON.parse(logArg![0]);
+      expect(parsed.event).toBe("qa_ceiling_breached");
+      expect(parsed.attemptedRound).toBe(21);
+      expect(parsed.maxRounds).toBe(20);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("2r2m: allows round 21 when maxRounds=25 (config override)", async () => {
+      // Epic is at round 20 (qa:round-20 label). currentRound = 21 (next to dispatch).
+      // maxRounds=25 → 21 <= 25, so dispatch proceeds normally.
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-20"]);
+      // First readFile: marker for round 20 (FAIL verdict → 0kkt advances)
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 1,
+      }));
+      // Second readFile: qa.md with maxRounds: 25
+      mockReadFile.mockResolvedValueOnce(
+        "---\nname: qa\ndescription: QA agent\nmodel: claude-opus-4-6\nmaxRounds: 25\n---\n\nYou are a QA agent."
+      );
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-20"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(21);
+      // Normal dispatch — qaRound present, no ceiling-breach fields
+      expect(data.reason).toBeUndefined();
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("2r2m: allows round 20 when maxRounds=20 (at ceiling, not past it)", async () => {
+      // Epic is at round 19 (qa:round-19 label). currentRound = 20 (next to dispatch).
+      // maxRounds=20 → 20 > 20 is FALSE → dispatch proceeds. Strict >, not >=.
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-19"]);
+      // First readFile: marker for round 19 (FAIL verdict → 0kkt advances)
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 1,
+      }));
+      // Second readFile: qa.md with maxRounds: 20
+      mockReadFile.mockResolvedValueOnce(
+        "---\nname: qa\ndescription: QA agent\nmodel: claude-opus-4-6\nmaxRounds: 20\n---\n\nYou are a QA agent."
+      );
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-19"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(20);
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("2r2m: uses default maxRounds=20 when qa.md frontmatter has no maxRounds key", async () => {
+      // Epic at round 20, trying to dispatch round 21. qa.md has no maxRounds key.
+      // Default fallback = 20 → 21 > 20 → ceiling blocks.
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-20"]);
+      // First readFile: marker for round 20 (FAIL verdict → 0kkt advances)
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 1,
+      }));
+      // Second readFile: qa.md WITHOUT maxRounds key
+      mockReadFile.mockResolvedValueOnce(
+        "---\nname: qa\ndescription: QA agent\nmodel: claude-opus-4-6\n---\n\nYou are a QA agent."
+      );
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+      const errorSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-20"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.success).toBe(false);
+      expect(data.reason).toBe("QA ceiling breached");
+      expect(data.maxRounds).toBe(20); // default fallback
+
+      // Warning logged about missing maxRounds key
+      const warnArg = warnSpy.mock.calls.find(
+        c => typeof c[0] === "string" && c[0].includes("qa_maxrounds_key_missing")
+      );
+      expect(warnArg).toBeDefined();
+      const warnParsed = JSON.parse(warnArg![0]);
+      expect(warnParsed.fallback).toBe(20);
+
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -2691,6 +2876,166 @@ describe("POST /api/fleet/action", () => {
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
+      );
+    });
+
+    // -----------------------------------------------------------------
+    // factory-core-2r2m: QA ceiling check tests for skip-polish-advance
+    // dispatch site. The ceiling is defence-in-depth: even when 0kkt
+    // says "advance" (verdict=FAIL), halt if nextRound > maxRounds.
+    // -----------------------------------------------------------------
+
+    it("2r2m: blocks round 21 via skip-polish when maxRounds=20 and verdict=FAIL (ceiling breach)", async () => {
+      // currentRound = 20 (qa:round-20 label). Next would be round 21.
+      // verdict=FAIL → 0kkt advances. But 21 > 20 → ceiling blocks.
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-20",
+        "ship-type:python-tool",
+      ]);
+      // First readFile: marker for round 20 (FAIL verdict)
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 2,
+      }));
+      // Second readFile: qa.md with maxRounds: 20
+      mockReadFile.mockResolvedValueOnce(
+        "---\nname: qa\ndescription: QA agent\nmodel: claude-opus-4-6\nmaxRounds: 20\n---\n\nYou are a QA agent."
+      );
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.success).toBe(false);
+      expect(data.reason).toBe("QA ceiling breached");
+      expect(data.attemptedRound).toBe(21);
+      expect(data.maxRounds).toBe(20);
+      expect(data.skipped).toBe(true);
+
+      // review:needs-human label set
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        expect.arrayContaining(["review:needs-human"]),
+        expect.any(String),
+      );
+
+      // Structured log
+      const logArg = consoleSpy.mock.calls.find(
+        c => typeof c[0] === "string" && c[0].includes("qa_ceiling_breached")
+      );
+      expect(logArg).toBeDefined();
+      const parsed = JSON.parse(logArg![0]);
+      expect(parsed.event).toBe("qa_ceiling_breached");
+      expect(parsed.attemptedRound).toBe(21);
+      expect(parsed.maxRounds).toBe(20);
+
+      // Label swap to round-21 must NOT have happened
+      expect(mockAddLabels).not.toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-21"],
+        expect.any(String),
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("2r2m: allows round 21 via skip-polish when maxRounds=25 (config override)", async () => {
+      // currentRound = 20. Next = 21. maxRounds = 25 → 21 <= 25 → advance.
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-20",
+        "ship-type:python-tool",
+      ]);
+      // First readFile: marker for round 20 (FAIL verdict)
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 1,
+      }));
+      // Second readFile: qa.md with maxRounds: 25
+      mockReadFile.mockResolvedValueOnce(
+        "---\nname: qa\ndescription: QA agent\nmodel: claude-opus-4-6\nmaxRounds: 25\n---\n\nYou are a QA agent."
+      );
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.reason).toBe("Non-UI ship type -- no polish needed");
+      // Label swap to round-21 happened
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-21"],
+        expect.any(String),
+      );
+    });
+
+    it("2r2m: allows round 20 via skip-polish when maxRounds=20 (at ceiling, not past it)", async () => {
+      // currentRound = 19. Next = 20. maxRounds = 20 → 20 > 20 is FALSE → advance.
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-19",
+        "ship-type:python-tool",
+      ]);
+      // First readFile: marker for round 19 (FAIL verdict)
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "failure",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        verdict: "FAIL",
+        open_bugs: 1,
+      }));
+      // Second readFile: qa.md with maxRounds: 20
+      mockReadFile.mockResolvedValueOnce(
+        "---\nname: qa\ndescription: QA agent\nmodel: claude-opus-4-6\nmaxRounds: 20\n---\n\nYou are a QA agent."
+      );
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      expect(data.reason).toBe("Non-UI ship type -- no polish needed");
+      // Label swap to round-20 happened
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-20"],
         expect.any(String),
       );
     });

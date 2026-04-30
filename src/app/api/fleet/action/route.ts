@@ -374,6 +374,74 @@ async function launchPmAgent(params: {
   return pmSession;
 }
 
+// factory-core-2r2m: Read maxRounds from qa.md YAML frontmatter.
+// Uses regex (not a parser library) to avoid adding an npm dependency.
+// Falls back to DEFAULT_MAX_ROUNDS with a structured warning if frontmatter
+// is missing or malformed.
+const DEFAULT_MAX_ROUNDS = 20;
+
+async function getQaMaxRounds(fleetCorePath: string): Promise<number> {
+  const qaAgentPath = path.join(fleetCorePath, ".claude", "agents", "qa.md");
+  try {
+    const content = await fs.readFile(qaAgentPath, "utf-8");
+    // Extract the YAML frontmatter block (between --- delimiters)
+    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!frontmatterMatch) {
+      console.warn(
+        JSON.stringify({
+          level: "WARN",
+          event: "qa_maxrounds_frontmatter_missing",
+          filePath: qaAgentPath,
+          fallback: DEFAULT_MAX_ROUNDS,
+          message: `qa.md at ${qaAgentPath} has no YAML frontmatter block. Using default maxRounds=${DEFAULT_MAX_ROUNDS}.`,
+        })
+      );
+      return DEFAULT_MAX_ROUNDS;
+    }
+    const frontmatter = frontmatterMatch[1];
+    const maxRoundsMatch = frontmatter.match(/^maxRounds:\s*(\d+)$/m);
+    if (!maxRoundsMatch) {
+      console.warn(
+        JSON.stringify({
+          level: "WARN",
+          event: "qa_maxrounds_key_missing",
+          filePath: qaAgentPath,
+          fallback: DEFAULT_MAX_ROUNDS,
+          message: `qa.md at ${qaAgentPath} frontmatter has no maxRounds key. Using default maxRounds=${DEFAULT_MAX_ROUNDS}.`,
+        })
+      );
+      return DEFAULT_MAX_ROUNDS;
+    }
+    const parsed = parseInt(maxRoundsMatch[1], 10);
+    if (isNaN(parsed) || parsed < 1) {
+      console.warn(
+        JSON.stringify({
+          level: "WARN",
+          event: "qa_maxrounds_invalid_value",
+          filePath: qaAgentPath,
+          rawValue: maxRoundsMatch[1],
+          fallback: DEFAULT_MAX_ROUNDS,
+          message: `qa.md at ${qaAgentPath} has invalid maxRounds value '${maxRoundsMatch[1]}'. Using default maxRounds=${DEFAULT_MAX_ROUNDS}.`,
+        })
+      );
+      return DEFAULT_MAX_ROUNDS;
+    }
+    return parsed;
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        level: "WARN",
+        event: "qa_maxrounds_read_failure",
+        filePath: qaAgentPath,
+        fallback: DEFAULT_MAX_ROUNDS,
+        error: err instanceof Error ? err.message : String(err),
+        message: `Failed to read qa.md at ${qaAgentPath}. Using default maxRounds=${DEFAULT_MAX_ROUNDS}.`,
+      })
+    );
+    return DEFAULT_MAX_ROUNDS;
+  }
+}
+
 /**
  * POST /api/fleet/action -- Execute a pipeline action on a fleet-core epic.
  *
@@ -1757,6 +1825,38 @@ export async function POST(request: NextRequest) {
           }
         }
 
+        // factory-core-2r2m: QA ceiling check — defence-in-depth.
+        // Even if 0kkt's verdict predicate says "advance" (verdict=FAIL or openBugs>0),
+        // halt if the round about to be dispatched exceeds maxRounds from qa.md.
+        // currentRound is the round about to dispatch (already incremented).
+        // Check: currentRound > maxRounds (strict >, NOT >=). maxRounds=20 allows round 20.
+        const maxRounds = await getQaMaxRounds(fleetCorePath);
+        if (currentRound > maxRounds) {
+          await addLabelsToEpic(epicId, ["review:needs-human"], fleetCorePath);
+          invalidateCache({ type: "epic", epicId });
+
+          console.error(
+            JSON.stringify({
+              level: "ERROR",
+              event: "qa_ceiling_breached",
+              epicId,
+              attemptedRound: currentRound,
+              maxRounds,
+              message: `[qa-ceiling] Epic ${epicId} breached ceiling: attempted round ${currentRound} > maxRounds ${maxRounds}. Dispatch halted. review:needs-human set.`,
+            })
+          );
+          return NextResponse.json(
+            {
+              success: false,
+              reason: "QA ceiling breached",
+              epicId,
+              attemptedRound: currentRound,
+              maxRounds,
+            },
+            { status: 200 }
+          );
+        }
+
         // Select platform-specific QA agent if available
         const platformQA = ["ios", "macos"];
         const qaAgentName = platformQA.includes(shipType.replace("-app", ""))
@@ -2515,6 +2615,37 @@ export async function POST(request: NextRequest) {
               lastRound: currentRound,
               skipped: true,
             });
+          }
+
+          // factory-core-2r2m: QA ceiling check — defence-in-depth (skip-polish-advance site).
+          // This path fires round currentRound+1. Check: currentRound + 1 > maxRounds.
+          // Same logic as send-for-qa site. maxRounds=20 allows round 20, blocks round 21.
+          const skipPolishMaxRounds = await getQaMaxRounds(fleetCorePath);
+          if (currentRound + 1 > skipPolishMaxRounds) {
+            await addLabelsToEpic(epicId, ["review:needs-human"], fleetCorePath);
+            invalidateCache({ type: "epic", epicId });
+
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_ceiling_breached",
+                epicId,
+                attemptedRound: currentRound + 1,
+                maxRounds: skipPolishMaxRounds,
+                message: `[qa-ceiling] Epic ${epicId} breached ceiling: attempted round ${currentRound + 1} > maxRounds ${skipPolishMaxRounds}. Dispatch halted (skip-polish-advance). review:needs-human set.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                success: false,
+                reason: "QA ceiling breached",
+                epicId,
+                attemptedRound: currentRound + 1,
+                maxRounds: skipPolishMaxRounds,
+                skipped: true,
+              },
+              { status: 200 }
+            );
           }
 
           await removeLabelsFromEpic(epicId, ["pipeline:qa", ...roundLabels], fleetCorePath);
