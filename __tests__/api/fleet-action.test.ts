@@ -1201,6 +1201,31 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("send-for-qa", () => {
+    // factory-core-mejh: marker-read gate requires fs.readFile for rounds > 1.
+    // Mock it per-describe so tests that trigger round > 1 provide a valid
+    // marker (happy path) unless specifically testing halt behaviour.
+    let mockReadFile: jest.SpyInstance;
+    const validPassMarker = JSON.stringify({
+      version: "1",
+      epic_id: "epic-1",
+      status: "success",
+      stage: "qa",
+      started_at: "2026-01-01T00:00:00Z",
+      exited_at: "2026-01-01T01:00:00Z",
+    });
+
+    beforeEach(() => {
+      mockReadFile = jest.spyOn(require("fs").promises, "readFile");
+      // Default: return a valid PASS marker (no BLOCKERs) so round > 1
+      // tests pass the marker gate. Tests that verify halt behaviour
+      // override with mockRejectedValueOnce or mockResolvedValueOnce.
+      mockReadFile.mockResolvedValue(validPassMarker);
+    });
+
+    afterEach(() => {
+      mockReadFile.mockRestore();
+    });
+
     it("starts first QA round when no prior QA labels exist", async () => {
       const req = makeRequest({
         epicId: "epic-1",
@@ -1320,6 +1345,215 @@ describe("POST /api/fleet/action", () => {
         ["qa:round-2"],
         expect.any(String),
       );
+    });
+
+    // -----------------------------------------------------------------
+    // factory-core-mejh: Marker-read gate tests for send-for-qa
+    // -----------------------------------------------------------------
+
+    it("mejh: halts dispatch when epic has review:needs-human label (round 2+)", async () => {
+      // Epic is at round 1 → dispatcher would fire round 2
+      // but review:needs-human is present
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:development",
+        "qa:round-1",
+        "review:needs-human",
+      ]);
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1", "review:needs-human"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toBe("QA dispatch halted");
+      expect(data.reason).toContain("review:needs-human");
+      expect(data.epicId).toBe("epic-1");
+      expect(data.round).toBe(2);
+
+      // Structured log emitted
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls[0][0];
+      const parsed = JSON.parse(logArg);
+      expect(parsed.event).toBe("qa_dispatch_halted");
+      expect(parsed.epicId).toBe("epic-1");
+      expect(parsed.round).toBe(2);
+      expect(parsed.reason).toBe("review:needs-human present");
+
+      // launchAgent must NOT have been called
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+
+      consoleSpy.mockRestore();
+    });
+
+    it("mejh: does NOT halt on review:needs-human for first QA round", async () => {
+      // First round (currentRound === 1): no previous marker to check,
+      // and the review:needs-human check is inside the currentRound > 1 block.
+      // First round should proceed normally even with review:needs-human.
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(1);
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("mejh: happy path — PASS marker with no BLOCKERs allows dispatch (round 2+)", async () => {
+      // Epic at round 1, dispatcher fires round 2, marker has no BLOCKERs
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      // fs.readFile returns valid pass marker (default mock above)
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(mockLaunchAgent).toHaveBeenCalled();
+    });
+
+    it("mejh: halts dispatch when marker file is missing (round 2+)", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockRejectedValueOnce(new Error("ENOENT: no such file or directory"));
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("marker file missing");
+      expect(data.epicId).toBe("epic-1");
+      expect(data.round).toBe(2);
+      expect(data.previousRound).toBe(1);
+
+      // Structured log emitted with specific error
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls[0][0];
+      const parsed = JSON.parse(logArg);
+      expect(parsed.event).toBe("qa_marker_read_failure");
+      expect(parsed.epicId).toBe("epic-1");
+      expect(parsed.error).toContain("ENOENT");
+
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it("mejh: halts dispatch when marker JSON is malformed (round 2+)", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce("this is not valid JSON {{{");
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("malformed marker JSON");
+      expect(data.epicId).toBe("epic-1");
+      expect(data.round).toBe(2);
+      expect(data.previousRound).toBe(1);
+
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls[0][0];
+      const parsed = JSON.parse(logArg);
+      expect(parsed.event).toBe("qa_marker_parse_failure");
+
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it("mejh: halts dispatch when marker contains BLOCKER directive (round 2+)", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "needs-decision",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        whats_open: [
+          "BLOCKER: marker-consumption path not functional",
+          "FOLLOW-ON: minor style issue",
+        ],
+      }));
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("BLOCKER directive");
+      expect(data.epicId).toBe("epic-1");
+      expect(data.round).toBe(2);
+      expect(data.blockers).toEqual(["BLOCKER: marker-consumption path not functional"]);
+
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls[0][0];
+      const parsed = JSON.parse(logArg);
+      expect(parsed.event).toBe("qa_dispatch_halted_blocker");
+      expect(parsed.blockers).toEqual(["BLOCKER: marker-consumption path not functional"]);
+
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it("mejh: allows dispatch when marker has FOLLOW-ON but no BLOCKER", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce(["pipeline:development", "qa:round-1"]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        whats_open: ["FOLLOW-ON: performance regression for separate bead"],
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "LensCycle",
+        action: "send-for-qa",
+        currentLabels: ["pipeline:development", "qa:round-1"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.qaRound).toBe(2);
+      expect(mockLaunchAgent).toHaveBeenCalled();
     });
   });
 
@@ -1555,6 +1789,30 @@ describe("POST /api/fleet/action", () => {
   // -------------------------------------------------------------------------
 
   describe("send-for-polish", () => {
+    // factory-core-mejh: marker-read gate for skip-polish-advance path
+    // requires fs.readFile. Mock it per-describe.
+    let mockReadFile: jest.SpyInstance;
+    const validPassMarker = JSON.stringify({
+      version: "1",
+      epic_id: "epic-1",
+      status: "success",
+      stage: "qa",
+      started_at: "2026-01-01T00:00:00Z",
+      exited_at: "2026-01-01T01:00:00Z",
+    });
+
+    beforeEach(() => {
+      mockReadFile = jest.spyOn(require("fs").promises, "readFile");
+      // Default: return a valid PASS marker (no BLOCKERs) so skip-polish
+      // tests pass the marker gate. Tests that verify halt behaviour
+      // override with mockRejectedValueOnce or mockResolvedValueOnce.
+      mockReadFile.mockResolvedValue(validPassMarker);
+    });
+
+    afterEach(() => {
+      mockReadFile.mockRestore();
+    });
+
     it("transitions from qa to ux-polish for UI ship types", async () => {
       const req = makeRequest({
         epicId: "epic-1",
@@ -1649,6 +1907,194 @@ describe("POST /api/fleet/action", () => {
           pipelineStage: "ux-polish",
           agentName: "polish",
         }),
+      );
+    });
+
+    // -----------------------------------------------------------------
+    // factory-core-mejh: Marker-read gate tests for send-for-polish
+    // (skip-polish-advance path — non-UI ship types)
+    // -----------------------------------------------------------------
+
+    it("mejh: halts skip-polish-advance when epic has review:needs-human label", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+        "review:needs-human",
+      ]);
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool", "review:needs-human"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toBe("QA dispatch halted");
+      expect(data.reason).toContain("review:needs-human");
+      expect(data.epicId).toBe("epic-1");
+      expect(data.round).toBe(2); // currentRound=1, fires round 2
+
+      // Structured log emitted
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls[0][0];
+      const parsed = JSON.parse(logArg);
+      expect(parsed.event).toBe("qa_dispatch_halted");
+      expect(parsed.epicId).toBe("epic-1");
+      expect(parsed.round).toBe(2);
+
+      // Labels must NOT have been mutated (no removeLabels/addLabels after halt)
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+
+      consoleSpy.mockRestore();
+    });
+
+    it("mejh: halts skip-polish-advance when marker file is missing", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockRejectedValueOnce(new Error("ENOENT: no such file or directory"));
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("marker file missing");
+      expect(data.epicId).toBe("epic-1");
+      expect(data.round).toBe(2);
+      expect(data.previousRound).toBe(1);
+
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls[0][0];
+      const parsed = JSON.parse(logArg);
+      expect(parsed.event).toBe("qa_marker_read_failure");
+
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it("mejh: halts skip-polish-advance when marker JSON is malformed", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce("not valid json!!!");
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("malformed marker JSON");
+      expect(data.epicId).toBe("epic-1");
+
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls[0][0];
+      const parsed = JSON.parse(logArg);
+      expect(parsed.event).toBe("qa_marker_parse_failure");
+
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it("mejh: halts skip-polish-advance when marker contains BLOCKER directive", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-2",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "needs-decision",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        whats_open: [
+          "BLOCKER: dispatch-loop defect — 18 consecutive rounds fired after termination recommendation",
+        ],
+      }));
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("BLOCKER directive");
+      expect(data.epicId).toBe("epic-1");
+      expect(data.round).toBe(3); // currentRound=2, fires round 3
+      expect(data.previousRound).toBe(2);
+      expect(data.blockers).toEqual([
+        "BLOCKER: dispatch-loop defect — 18 consecutive rounds fired after termination recommendation",
+      ]);
+
+      expect(consoleSpy).toHaveBeenCalled();
+      const logArg = consoleSpy.mock.calls[0][0];
+      const parsed = JSON.parse(logArg);
+      expect(parsed.event).toBe("qa_dispatch_halted_blocker");
+
+      expect(mockRemoveLabels).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it("mejh: skip-polish-advance proceeds when marker has FOLLOW-ON but no BLOCKER", async () => {
+      mockGetEpicLabels.mockResolvedValueOnce([
+        "pipeline:qa",
+        "qa:round-1",
+        "ship-type:python-tool",
+      ]);
+      mockReadFile.mockResolvedValueOnce(JSON.stringify({
+        version: "1",
+        epic_id: "epic-1",
+        status: "success",
+        stage: "qa",
+        started_at: "2026-01-01T00:00:00Z",
+        exited_at: "2026-01-01T01:00:00Z",
+        whats_open: ["FOLLOW-ON: minor UI consistency issue"],
+      }));
+
+      const req = makeRequest({
+        epicId: "epic-1",
+        epicTitle: "ToolName: Python utility",
+        action: "send-for-polish",
+        currentLabels: ["ship-type:python-tool"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.skipped).toBe(true);
+      // Labels were advanced
+      expect(mockAddLabels).toHaveBeenCalledWith(
+        "epic-1",
+        ["pipeline:qa", "qa:round-2"],
+        expect.any(String),
       );
     });
   });

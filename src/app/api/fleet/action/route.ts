@@ -1594,6 +1594,128 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
+        // factory-core-mejh: Marker-read gate — check previous round's marker
+        // before dispatching next QA round. Prevents the 3p1e dispatch-loop
+        // (21 rounds, 34 ignored markers, operator hard-suppress only exit).
+        if (currentRound > 1) {
+          const previousRound = currentRound - 1;
+
+          // Check review:needs-human label — dispatcher must not refire QA
+          if (actualLabels.includes("review:needs-human")) {
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_dispatch_halted",
+                epicId,
+                round: currentRound,
+                reason: "review:needs-human present",
+                message: `QA dispatch halted for ${epicId} round ${currentRound}: epic carries review:needs-human label. Operator intervention required.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                error: "QA dispatch halted",
+                epicId,
+                round: currentRound,
+                reason: "review:needs-human present — operator intervention required",
+              },
+              { status: 500 }
+            );
+          }
+
+          // Read the previous round's marker file
+          const markerPath = path.join(
+            repoPath,
+            ".beads",
+            "markers",
+            `${epicId}-qa-round-${previousRound}.json`
+          );
+          let markerJson: string;
+          try {
+            markerJson = await fs.readFile(markerPath, "utf-8");
+          } catch (err) {
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_marker_read_failure",
+                epicId,
+                round: currentRound,
+                previousRound,
+                markerPath,
+                error: err instanceof Error ? err.message : String(err),
+                message: `QA dispatch halted for ${epicId} round ${currentRound}: cannot read marker for round ${previousRound} at ${markerPath}. Missing marker file.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                error: "QA dispatch halted — marker file missing",
+                epicId,
+                round: currentRound,
+                previousRound,
+                markerPath,
+              },
+              { status: 500 }
+            );
+          }
+
+          let marker: { whats_open?: string[]; [key: string]: unknown };
+          try {
+            marker = JSON.parse(markerJson);
+          } catch (err) {
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_marker_parse_failure",
+                epicId,
+                round: currentRound,
+                previousRound,
+                markerPath,
+                error: err instanceof Error ? err.message : String(err),
+                message: `QA dispatch halted for ${epicId} round ${currentRound}: malformed JSON in marker for round ${previousRound} at ${markerPath}.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                error: "QA dispatch halted — malformed marker JSON",
+                epicId,
+                round: currentRound,
+                previousRound,
+                markerPath,
+              },
+              { status: 500 }
+            );
+          }
+
+          // Check for BLOCKER directives in whats_open
+          const whatsOpen = Array.isArray(marker.whats_open) ? marker.whats_open : [];
+          const blockers = whatsOpen.filter(
+            (item) => typeof item === "string" && item.startsWith("BLOCKER:")
+          );
+          if (blockers.length > 0) {
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_dispatch_halted_blocker",
+                epicId,
+                round: currentRound,
+                previousRound,
+                blockers,
+                message: `QA dispatch halted for ${epicId} round ${currentRound}: marker for round ${previousRound} contains BLOCKER directive(s): ${blockers.join("; ")}. Operator intervention required.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                error: "QA dispatch halted — BLOCKER directive in marker",
+                epicId,
+                round: currentRound,
+                previousRound,
+                blockers,
+              },
+              { status: 500 }
+            );
+          }
+        }
+
         // Select platform-specific QA agent if available
         const platformQA = ["ios", "macos"];
         const qaAgentName = platformQA.includes(shipType.replace("-app", ""))
@@ -2186,6 +2308,138 @@ export async function POST(request: NextRequest) {
           const roundLabels = actualLabels.filter(l => l.startsWith("qa:round-"));
           const currentRound = roundLabels.length > 0
             ? Math.max(...roundLabels.map(l => parseInt(l.split("-")[1]))) : 1;
+
+          // factory-core-mejh: Marker-read gate — check current round's marker
+          // before advancing to next QA round. This is the second dispatch site
+          // (skip-polish-advance for non-UI types). Same gate as send-for-qa.
+          // Off-by-one note: this path fires round currentRound+1, so read
+          // marker for currentRound (the round that just completed).
+          const skipPolishAppName = extractAppName(epicTitle as string) ?? appName;
+          const { repoPath: skipPolishRepoPath } = resolveRepoPath(
+            shipType,
+            epicTitle as string,
+            skipPolishAppName,
+            epicId as string,
+            fleetCorePath
+          );
+
+          // Check review:needs-human label
+          if (actualLabels.includes("review:needs-human")) {
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_dispatch_halted",
+                epicId,
+                round: currentRound + 1,
+                reason: "review:needs-human present",
+                message: `QA dispatch halted for ${epicId} round ${currentRound + 1} (skip-polish-advance): epic carries review:needs-human label. Operator intervention required.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                error: "QA dispatch halted",
+                epicId,
+                round: currentRound + 1,
+                reason: "review:needs-human present — operator intervention required",
+              },
+              { status: 500 }
+            );
+          }
+
+          // Read the current round's marker file (the round that just completed)
+          const skipPolishMarkerPath = path.join(
+            skipPolishRepoPath,
+            ".beads",
+            "markers",
+            `${epicId}-qa-round-${currentRound}.json`
+          );
+          let skipPolishMarkerJson: string;
+          try {
+            skipPolishMarkerJson = await fs.readFile(skipPolishMarkerPath, "utf-8");
+          } catch (err) {
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_marker_read_failure",
+                epicId,
+                round: currentRound + 1,
+                previousRound: currentRound,
+                markerPath: skipPolishMarkerPath,
+                error: err instanceof Error ? err.message : String(err),
+                message: `QA dispatch halted for ${epicId} round ${currentRound + 1} (skip-polish-advance): cannot read marker for round ${currentRound} at ${skipPolishMarkerPath}. Missing marker file.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                error: "QA dispatch halted — marker file missing",
+                epicId,
+                round: currentRound + 1,
+                previousRound: currentRound,
+                markerPath: skipPolishMarkerPath,
+              },
+              { status: 500 }
+            );
+          }
+
+          let skipPolishMarker: { whats_open?: string[]; [key: string]: unknown };
+          try {
+            skipPolishMarker = JSON.parse(skipPolishMarkerJson);
+          } catch (err) {
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_marker_parse_failure",
+                epicId,
+                round: currentRound + 1,
+                previousRound: currentRound,
+                markerPath: skipPolishMarkerPath,
+                error: err instanceof Error ? err.message : String(err),
+                message: `QA dispatch halted for ${epicId} round ${currentRound + 1} (skip-polish-advance): malformed JSON in marker for round ${currentRound} at ${skipPolishMarkerPath}.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                error: "QA dispatch halted — malformed marker JSON",
+                epicId,
+                round: currentRound + 1,
+                previousRound: currentRound,
+                markerPath: skipPolishMarkerPath,
+              },
+              { status: 500 }
+            );
+          }
+
+          // Check for BLOCKER directives in whats_open
+          const skipPolishWhatsOpen = Array.isArray(skipPolishMarker.whats_open)
+            ? skipPolishMarker.whats_open
+            : [];
+          const skipPolishBlockers = skipPolishWhatsOpen.filter(
+            (item) => typeof item === "string" && item.startsWith("BLOCKER:")
+          );
+          if (skipPolishBlockers.length > 0) {
+            console.error(
+              JSON.stringify({
+                level: "ERROR",
+                event: "qa_dispatch_halted_blocker",
+                epicId,
+                round: currentRound + 1,
+                previousRound: currentRound,
+                blockers: skipPolishBlockers,
+                message: `QA dispatch halted for ${epicId} round ${currentRound + 1} (skip-polish-advance): marker for round ${currentRound} contains BLOCKER directive(s): ${skipPolishBlockers.join("; ")}. Operator intervention required.`,
+              })
+            );
+            return NextResponse.json(
+              {
+                error: "QA dispatch halted — BLOCKER directive in marker",
+                epicId,
+                round: currentRound + 1,
+                previousRound: currentRound,
+                blockers: skipPolishBlockers,
+              },
+              { status: 500 }
+            );
+          }
+
           await removeLabelsFromEpic(epicId, ["pipeline:qa", ...roundLabels], fleetCorePath);
           await addLabelsToEpic(epicId, ["pipeline:qa", `qa:round-${currentRound + 1}`], fleetCorePath);
           invalidateCache({ type: "epic", epicId });
