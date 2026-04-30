@@ -1,25 +1,32 @@
 // =============================================================================
-// Dolt lifecycle shutdown handler — beads_web-6pf
+// Dolt lifecycle shutdown handler — beads_web-6pf + beads_web-c28
 // =============================================================================
 //
 // On beads_web exit (SIGTERM / SIGINT), enumerates all Dolt sql-server PIDs
-// from the ~/.beads-web.json registry repos' `.beads/dolt-server.pid` files
-// and kills them: SIGTERM first, then SIGKILL after a 5s grace period.
+// from the ~/.beads-web.json registry repos' `.beads/dolt-server.pid` files,
+// checks whether each Dolt has active MySQL connections (alive-set check),
+// and kills only verified leaks (0 external connections): SIGTERM first,
+// then SIGKILL after a 5s grace period.
+//
+// beads_web-c28 (F3 alive-set protection): adds `isVerifiedLeak()` which
+// probes each Dolt via MySQL `SHOW PROCESSLIST` to distinguish live servers
+// (with active user connections) from leaked servers (no connections). Only
+// verified leaks are killed. Conservative policy: on probe failure (TCP
+// timeout, MySQL handshake failure, query timeout), skip the PID (do NOT
+// kill).
 //
 // This module is Node-only. It must NOT be imported from instrumentation.ts
 // (which webpack compiles for both node and edge targets). Instead, it is
 // bootstrapped via a self-fetch to a Node-runtime route handler that calls
 // ensureDoltLifecycleRegistered().
-//
-// Per Q1c (2026-04-30): F3 alive-set protection is OUT OF SCOPE — every
-// registry Dolt is killed unconditionally. beads_web-c28 adds the alive-set
-// guard as a follow-up.
 // =============================================================================
 
 import { readFileSync, existsSync } from "fs";
 import { execSync } from "child_process";
 import path from "path";
+import * as mysql from "mysql2/promise";
 import { getAllRepoPaths } from "./repo-config";
+import { probeDolt } from "./dolt-health";
 
 /** Grace period between SIGTERM and SIGKILL escalation (ms). */
 const KILL_GRACE_MS = 5_000;
@@ -60,16 +67,152 @@ export function isDoltProcess(pid: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Alive-set check — beads_web-c28 (F3)
+// ---------------------------------------------------------------------------
+
+/** Probe timeout for TCP and MySQL connection (ms). Per Q3: 2s. */
+const PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * Check if a Dolt PID is a verified leak (no active MySQL connections from
+ * external consumers). Returns `true` if the PID should be killed, `false`
+ * if it should be skipped.
+ *
+ * Conservative policy (per Q2): on probe failure (TCP timeout, MySQL
+ * handshake failure, query timeout), return `false` (skip — assume in-use).
+ *
+ * The check follows this sequence:
+ *   1. Read `.beads/dolt-server.port` — missing/invalid → verified leak.
+ *   2. TCP probe via `probeDolt()` — not reachable → verified leak.
+ *   3. MySQL handshake — connection fails → skip (conservative).
+ *   4. `SELECT CONNECTION_ID()` to capture selfId, then `SHOW PROCESSLIST`
+ *      filtered by: Id !== selfId, User non-null/non-empty, Command !== "Daemon".
+ *   5. Count > 0 → skip (in use). Count = 0 → verified leak.
+ *   6. MySQL connection closed in `finally` (no leak on probe failure).
+ *
+ * Design source: architect memo c28-alive-set-heuristic-investigation.md.
+ * Operator decisions Q1/Q2/Q3 baked 2026-05-01.
+ */
+export async function isVerifiedLeak(
+  pid: number,
+  repoPath: string,
+): Promise<boolean> {
+  const portFile = path.join(repoPath, ".beads", "dolt-server.port");
+
+  // Step 1: Read port file
+  if (!existsSync(portFile)) {
+    console.log(
+      `[dolt-lifecycle] PID ${pid} from ${repoPath} — no port file — verified leak`,
+    );
+    return true;
+  }
+
+  let port: number;
+  try {
+    port = parseInt(readFileSync(portFile, "utf-8").trim(), 10);
+  } catch {
+    console.log(
+      `[dolt-lifecycle] PID ${pid} from ${repoPath} — port file unreadable — verified leak`,
+    );
+    return true;
+  }
+
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    console.log(
+      `[dolt-lifecycle] PID ${pid} from ${repoPath} — invalid port ${port} — verified leak`,
+    );
+    return true;
+  }
+
+  // Step 2: TCP probe first (fast check — avoids ~3s MySQL timeout on dead repos)
+  const probe = await probeDolt("127.0.0.1", port, PROBE_TIMEOUT_MS);
+  if (probe.category !== "reachable") {
+    console.log(
+      `[dolt-lifecycle] PID ${pid} from ${repoPath} — TCP probe ${probe.category} — verified leak`,
+    );
+    return true;
+  }
+
+  // Step 3–7: MySQL handshake + PROCESSLIST check
+  let conn: mysql.Connection | null = null;
+  try {
+    conn = await mysql.createConnection({
+      host: "127.0.0.1",
+      port,
+      user: "root",
+      connectTimeout: PROBE_TIMEOUT_MS,
+    });
+
+    // Step 4a: Capture our own connection ID BEFORE running SHOW PROCESSLIST
+    // (RF5: self-id capture ordering — must be on the same connection)
+    const [idRows] = await conn.query("SELECT CONNECTION_ID() AS id");
+    const selfId = (idRows as Array<{ id: number }>)[0]?.id;
+
+    // Step 4b: Run SHOW PROCESSLIST and filter
+    const [plRows] = await conn.query("SHOW PROCESSLIST");
+    const rows = plRows as Array<{
+      Id: number;
+      User: string | null;
+      Command: string;
+      [key: string]: unknown;
+    }>;
+
+    // Filter: Id !== selfId (dominant clause — exclude probe's own connection)
+    //       + User non-null/non-empty (defence-in-depth)
+    //       + Command !== "Daemon" (defence-in-depth)
+    const activeConnections = rows.filter(
+      (r) =>
+        r.Id !== selfId &&
+        r.User != null &&
+        r.User !== "" &&
+        r.Command !== "Daemon",
+    );
+
+    if (activeConnections.length > 0) {
+      // Step 5: In use by external consumer(s)
+      console.log(
+        `[dolt-lifecycle] PID ${pid} from ${repoPath} — skipping — ${activeConnections.length} active connection(s)`,
+      );
+      return false;
+    }
+
+    // Step 6: Verified leak (0 external connections)
+    console.log(
+      `[dolt-lifecycle] PID ${pid} from ${repoPath} — killing — verified leak (0 connections)`,
+    );
+    return true;
+  } catch (err) {
+    // Step 3 / conservative policy: MySQL handshake or query failed → skip
+    console.log(
+      `[dolt-lifecycle] PID ${pid} from ${repoPath} — skipping — probe failed (${err instanceof Error ? err.message : String(err)})`,
+    );
+    return false;
+  } finally {
+    // Step 7: Close MySQL connection (RF1: no leak on probe failure)
+    if (conn) {
+      try {
+        await conn.end();
+      } catch {
+        // Connection already closed or errored — ignore
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PID enumeration from registry repos
 // ---------------------------------------------------------------------------
 
 /**
  * Read `.beads/dolt-server.pid` from each repo in the ~/.beads-web.json
  * registry. Returns an array of valid PIDs (positive integers) where the
- * process is verified to be a Dolt process.
+ * process is verified to be a Dolt process AND verified to be a leak
+ * (no active external MySQL connections).
+ *
+ * beads_web-c28: alive-set checks run in parallel via Promise.allSettled
+ * (AC 2). Failure in one repo's probe does not block others.
  */
 export async function enumerateDoltPids(): Promise<number[]> {
-  const pids: number[] = [];
   let repoPaths: string[];
   try {
     repoPaths = await getAllRepoPaths();
@@ -78,8 +221,12 @@ export async function enumerateDoltPids(): Promise<number[]> {
       "[dolt-lifecycle] failed to read repo paths from registry:",
       err instanceof Error ? err.message : err,
     );
-    return pids;
+    return [];
   }
+
+  // Phase 1 (sequential, synchronous): collect candidate PIDs that pass
+  // file-existence, PID-validity, and isDoltProcess checks.
+  const candidates: Array<{ pid: number; repoPath: string }> = [];
 
   for (const repoPath of repoPaths) {
     const pidFile = path.join(repoPath, ".beads", "dolt-server.pid");
@@ -108,7 +255,30 @@ export async function enumerateDoltPids(): Promise<number[]> {
       continue;
     }
 
-    pids.push(pid);
+    candidates.push({ pid, repoPath });
+  }
+
+  if (candidates.length === 0) return [];
+
+  // Phase 2 (parallel, async): alive-set check via Promise.allSettled.
+  // beads_web-c28 AC 2: failure in one repo's probe does not block others.
+  const results = await Promise.allSettled(
+    candidates.map(({ pid, repoPath }) => isVerifiedLeak(pid, repoPath)),
+  );
+
+  const pids: number[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const result = results[i];
+    if (result.status === "fulfilled" && result.value === true) {
+      pids.push(candidates[i].pid);
+    } else if (result.status === "rejected") {
+      // Promise.allSettled should not produce 'rejected' for isVerifiedLeak
+      // (it catches internally), but guard defensively — conservative skip.
+      console.warn(
+        `[dolt-lifecycle] PID ${candidates[i].pid} from ${candidates[i].repoPath} — alive-set check threw unexpectedly — skipping`,
+      );
+    }
+    // result.value === false → PID is in use or probe failed → skipped
   }
 
   return pids;
