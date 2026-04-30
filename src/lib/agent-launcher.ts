@@ -1653,7 +1653,7 @@ export async function listOpenWaveBeadsAllRepos(
 // factory-core-so74 A.8 deferred-AC fix: fallback updated to fleet-core-improved
 // (the active fork). See repo-path-resolver.ts for full context and
 // docs/aspirational-pipeline/a8-deferred-fixes.md.
-const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core-improved";
+const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
 
 /**
  * factory-core-lfcf.3: emit a `stage-dispatched` event to pair with the

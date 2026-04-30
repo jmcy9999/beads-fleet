@@ -251,7 +251,7 @@ export function ensureReconcilerRunning(): void {
     // FLEET_CORE_PATH location and the one in route.ts; without these
     // updates the reconciler boots against the legacy fleet-core dir.
     const repoPath =
-      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core-improved";
+      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/factory-core";
     const rec = initReconciler(repoPath);
 
     // Register the one production rule. When more rules arrive, add

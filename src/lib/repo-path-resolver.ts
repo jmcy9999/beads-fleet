@@ -39,7 +39,7 @@ export interface RepoPathResult {
 // rule at route.ts (path.basename === "fleet-core-improved") silently returns
 // false on env-var absence, disabling cross-repo dispatch. See
 // docs/aspirational-pipeline/a8-deferred-fixes.md.
-const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core-improved";
+const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
 const PRODUCT_REPO_BASE = "/Users/janemckay/dev/claude_projects";
 
 /**

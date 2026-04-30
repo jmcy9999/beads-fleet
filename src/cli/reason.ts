@@ -58,7 +58,7 @@ import { getBdEnv, getBdPath } from "../lib/bd-path";
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_SHIPYARD_PATH = "/Users/janemckay/dev/fleet/fleet-core-improved";
+const DEFAULT_SHIPYARD_PATH = "/Users/janemckay/dev/fleet/factory-core";
 const COHERENCE_REL_PATH = path.join(".claude", "agents", "coherence.md");
 const EVENT_TAIL_LIMIT = 50;
 

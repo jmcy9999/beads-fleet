@@ -110,7 +110,7 @@ export async function scanForBeadIdCollisions(): Promise<void> {
     // visibility (console.warn above) is unaffected.
     try {
       const repoPath =
-        process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core-improved";
+        process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/factory-core";
       const { appendEvent } = await import("./event-log");
       await appendEvent(repoPath, {
         type: "collision-detected",

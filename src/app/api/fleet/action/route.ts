@@ -129,7 +129,7 @@ const VALID_ACTIONS = new Set<PipelineAction>([
 // dispatch. See docs/aspirational-pipeline/a8-deferred-fixes.md (architect's
 // design originally targeted only repo-path-resolver.ts and agent-launcher.ts;
 // this third location was discovered during retest).
-const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core-improved";
+const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
 
 /**
  * Derive the app name from the epic title. Strips common suffixes and extracts
@@ -1797,7 +1797,7 @@ export async function POST(request: NextRequest) {
         // beads_web-4jb (AC 1): Bounding-rule gate — only fleet-core-improved
         // epics get cross-repo enumeration. Product epics use the existing
         // single-repo fast path.
-        const isCrossRepoEpic = path.basename(waveRepoPath) === "fleet-core-improved";
+        const isCrossRepoEpic = path.basename(waveRepoPath) === "factory-core";
 
         // beads_web-4jb (AC 7, emission point 1): log the bounding-rule decision.
         console.info(

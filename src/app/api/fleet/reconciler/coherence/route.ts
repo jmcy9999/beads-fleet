@@ -19,7 +19,7 @@ export async function GET() {
     // fleet-core-improved (the active fork). See
     // docs/aspirational-pipeline/a8-deferred-fixes.md.
     const repoPath =
-      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/fleet-core-improved";
+      process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/factory-core";
 
     // Lookback: 24 hours by default — enough to cover overnight runs.
     const sinceMs = Date.now() - 24 * 60 * 60_000;
