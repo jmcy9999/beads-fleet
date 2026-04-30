@@ -343,3 +343,116 @@ describe("Error handling", () => {
     expect(body.error).toMatch(/invalid status/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// beads_web-cnr (A.8) — Cross-cutting integration tests
+// ---------------------------------------------------------------------------
+// These tests exercise A.4's route in combination with A.1-A.3's primitives,
+// covering the integration surface between the cross-repo enumeration
+// HTTP route and the underlying getAllProjectsPlan + getAllRepoPaths chain.
+// ---------------------------------------------------------------------------
+
+describe("A.8 cross-cutting: multi-repo response shape", () => {
+  it("issues from different repos have distinct .repo values", async () => {
+    const issues = [
+      makePlanIssue({
+        id: "fleet-1",
+        title: "Fleet issue",
+        labels: ["epic:test-cross", "project:fleet-core-improved"],
+        status: "open",
+      }),
+      makePlanIssue({
+        id: "web-1",
+        title: "Web issue",
+        labels: ["epic:test-cross", "project:beads_web-improved"],
+        status: "open",
+      }),
+      makePlanIssue({
+        id: "study-1",
+        title: "Study issue",
+        labels: ["epic:test-cross", "project:StudyCycle"],
+        status: "open",
+      }),
+    ];
+    mockGetAllProjectsPlan.mockResolvedValue(makePlan(issues));
+
+    const req = makeGetRequest({ label: "epic:test-cross" });
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.count).toBe(3);
+    const repos = body.issues.map((i: { repo: string }) => i.repo).sort();
+    expect(repos).toEqual(["StudyCycle", "beads_web-improved", "fleet-core-improved"]);
+  });
+
+  it("getAllRepoPaths is called to resolve repo paths for the aggregation", async () => {
+    mockGetAllProjectsPlan.mockResolvedValue(makePlan([]));
+    mockGetAllRepoPaths.mockResolvedValue([
+      "/repos/fleet-core-improved",
+      "/repos/beads_web-improved",
+    ]);
+
+    const req = makeGetRequest({ label: "epic:test" });
+    await GET(req);
+
+    // getAllRepoPaths must have been called to get the repo list for
+    // getAllProjectsPlan.
+    expect(mockGetAllRepoPaths).toHaveBeenCalled();
+  });
+
+  it("in_progress issues are excluded by default (status=open filter)", async () => {
+    const issues = [
+      makePlanIssue({
+        id: "open-1",
+        labels: ["epic:test-filter", "project:fleet-core"],
+        status: "open",
+      }),
+      makePlanIssue({
+        id: "ip-1",
+        labels: ["epic:test-filter", "project:fleet-core"],
+        status: "in_progress",
+      }),
+    ];
+    mockGetAllProjectsPlan.mockResolvedValue(makePlan(issues));
+
+    const req = makeGetRequest({ label: "epic:test-filter" });
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Only open issues returned (in_progress excluded by default).
+    expect(body.count).toBe(1);
+    expect(body.issues[0].id).toBe("open-1");
+  });
+
+  it("status=all includes open, in_progress, and closed issues from all repos", async () => {
+    const issues = [
+      makePlanIssue({
+        id: "open-fleet",
+        labels: ["epic:test-all", "project:fleet-core"],
+        status: "open",
+      }),
+      makePlanIssue({
+        id: "ip-web",
+        labels: ["epic:test-all", "project:beads_web"],
+        status: "in_progress",
+      }),
+      makePlanIssue({
+        id: "closed-study",
+        labels: ["epic:test-all", "project:StudyCycle"],
+        status: "closed",
+      }),
+    ];
+    mockGetAllProjectsPlan.mockResolvedValue(makePlan(issues));
+
+    const req = makeGetRequest({ label: "epic:test-all", status: "all" });
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.count).toBe(3);
+    const ids = body.issues.map((i: { id: string }) => i.id).sort();
+    expect(ids).toEqual(["closed-study", "ip-web", "open-fleet"]);
+  });
+});
