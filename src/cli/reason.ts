@@ -415,7 +415,7 @@ export async function runReason(
     deps.err(
       `shipyard reason: coherence.md not found at ${coherencePath} ` +
         `(SHIPYARD_PATH=${shipyardPath}). ` +
-        `Set SHIPYARD_PATH to the fleet-core-improved repo root.`,
+        `Set SHIPYARD_PATH to the factory-core repo root.`,
     );
     return 3;
   }

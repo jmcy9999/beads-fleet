@@ -36,8 +36,8 @@ Commands:
   reason <epic-id>   On-demand coherence reasoning for a stuck epic.
 
 Environment:
-  SHIPYARD_PATH      Path to fleet-core-improved (default:
-                     /Users/janemckay/dev/fleet/fleet-core-improved).
+  SHIPYARD_PATH      Path to factory-core (default:
+                     /Users/janemckay/dev/fleet/factory-core).
 EOF
     [[ -z "${CMD}" ]] && exit 64 || exit 0
     ;;
