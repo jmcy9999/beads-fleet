@@ -68,6 +68,27 @@ export async function register() {
     });
   }, 2_000);
 
+  // beads_web-6pf: self-fetch the dolt-lifecycle init endpoint to register
+  // SIGTERM/SIGINT shutdown handlers in Node-runtime context. On beads_web
+  // exit, these handlers kill all Dolt sql-server processes spawned by bd
+  // for registry repos — preventing orphaned Dolts on restart.
+  //
+  // Same self-fetch pattern as the reconciler-status boot above (Q2b
+  // decision 2026-04-30). Slightly longer delay to avoid contention with
+  // the reconciler bootstrap at 2s. The route handler at
+  // /api/fleet/dolt-lifecycle/init calls ensureDoltLifecycleRegistered()
+  // which is idempotent — safe across hot-reloads.
+  setTimeout(() => {
+    const port = process.env.PORT ?? "3000";
+    const url = `http://localhost:${port}/api/fleet/dolt-lifecycle/init`;
+    fetch(url, { method: "GET" }).catch((err) => {
+      console.warn(
+        `[instrumentation] boot self-fetch to ${url} failed (dolt lifecycle handlers not registered):`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }, 3_000);
+
   // beads_web-8wh redesign: collision scan is folded into getAllProjectsPlan
   // (bv-client.ts) via a first-run flag. The plan-prewarm path already calls
   // getAllProjectsPlan at boot via the reconciler-status self-fetch above,
