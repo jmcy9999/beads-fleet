@@ -14,6 +14,7 @@ import {
   stopAgent,
   getWaveStatus,
   listOpenWaveBeads,
+  listOpenWaveBeadsAllRepos,
   groupBeadsByFileConflict,
   isAgentActive,
 } from "@/lib/agent-launcher";
@@ -26,7 +27,7 @@ import {
   formatBuilderStandingOrdersDirective,
   formatAgentStandingOrdersDirective,
 } from "@/lib/bead-prompt";
-import { getRepos } from "@/lib/repo-config";
+import { getRepos, findRepoForIssue } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import { extractAppName } from "@/lib/extract-app-name";
 import { resolveRepoPath } from "@/lib/repo-path-resolver";
@@ -1785,17 +1786,34 @@ export async function POST(request: NextRequest) {
           ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
           : "Bash,Read,Write,Edit,Glob,Grep,Task";
 
-        // factory-core-z9h.9: listOpenWaveBeads now throws on bd failure
-        // rather than silently returning an empty list. A bd outage must
-        // surface as a 500 so the auto-chain registers the failure — we
-        // must not fall through to the legacy wave-session branch with an
-        // incomplete bead set (that masks unclosed work).
+        // beads_web-4jb (AC 1): Bounding-rule gate — only fleet-core-improved
+        // epics get cross-repo enumeration. Product epics use the existing
+        // single-repo fast path.
+        const isCrossRepoEpic = path.basename(waveRepoPath) === "fleet-core-improved";
+
+        // beads_web-4jb (AC 7, emission point 1): log the bounding-rule decision.
+        console.info(
+          `[cross-repo] Epic ${epicId} resolved to ${waveRepoPath} (isCrossRepoEpic: ${isCrossRepoEpic})`,
+        );
+
+        // factory-core-z9h.9: listOpenWaveBeads / listOpenWaveBeadsAllRepos
+        // now throws on bd failure rather than silently returning an empty
+        // list. A bd outage must surface as a 500 so the auto-chain
+        // registers the failure — we must not fall through to the legacy
+        // wave-session branch with an incomplete bead set (that masks
+        // unclosed work).
+        //
+        // beads_web-4jb (AC 2 + AC 3): cross-repo epics use the all-repos
+        // enumerator; product epics use the existing single-repo call
+        // (zero change in behaviour).
         let openBeads;
         try {
-          openBeads = await listOpenWaveBeads(epicId as string, wave, waveRepoPath);
+          openBeads = isCrossRepoEpic
+            ? await listOpenWaveBeadsAllRepos(epicId as string, wave)
+            : await listOpenWaveBeads(epicId as string, wave, waveRepoPath);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          console.error(`[start-wave] listOpenWaveBeads failed for ${epicId} wave ${wave}: ${message}`);
+          console.error(`[start-wave] ${isCrossRepoEpic ? "listOpenWaveBeadsAllRepos" : "listOpenWaveBeads"} failed for ${epicId} wave ${wave}: ${message}`);
           return NextResponse.json(
             {
               error: `Failed to enumerate open wave beads: ${message}`,
@@ -1803,6 +1821,83 @@ export async function POST(request: NextRequest) {
               waveNumber: wave,
             },
             { status: 500 },
+          );
+        }
+
+        // beads_web-4jb (AC 4): Request-lifetime cache — resolve each bead's
+        // home repo via parallelised findRepoForIssue before the dispatch
+        // loop. The cache ensures per-bead dispatch uses the correct cwd.
+        //
+        // RISK: if findRepoForIssue rejects for any bead, the cache has a
+        // missing entry and `cache.get(beadId) ?? waveRepoPath` silently
+        // falls back to the wrong repo. We must NOT swallow failures —
+        // propagate as 500 (same pattern as the z9h.9 contract above).
+        const beadRepoCache = new Map<string, string>();
+        if (openBeads.length > 0) {
+          try {
+            const cacheResults = await Promise.all(
+              openBeads.map(async (bead) => {
+                const resolvedRepo = await findRepoForIssue(bead.id);
+                return { beadId: bead.id, repoPath: resolvedRepo };
+              }),
+            );
+
+            for (const { beadId, repoPath: resolvedRepo } of cacheResults) {
+              if (resolvedRepo) {
+                beadRepoCache.set(beadId, resolvedRepo);
+                // beads_web-4jb (AC 7, emission point 2): log each cache entry.
+                console.info(
+                  `[cross-repo] Bead ${beadId} resolved to ${resolvedRepo} (cache: miss)`,
+                );
+              } else {
+                // findRepoForIssue returned null — bead not found in any repo.
+                // Fall back to waveRepoPath (the epic's repo).
+                beadRepoCache.set(beadId, waveRepoPath);
+                console.info(
+                  `[cross-repo] Bead ${beadId} resolved to ${waveRepoPath} (cache: miss, fallback to waveRepoPath)`,
+                );
+              }
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(
+              `[start-wave] Cache pre-populate failed for ${epicId} wave ${wave}: ${message}`,
+            );
+            return NextResponse.json(
+              {
+                error: `Failed to resolve bead repos (cache pre-populate): ${message}`,
+                epicId,
+                waveNumber: wave,
+              },
+              { status: 500 },
+            );
+          }
+
+          // beads_web-4jb (AC 6): Bounding-rule runtime assertion — if a
+          // product epic (isCrossRepoEpic === false) has any bead whose
+          // home repo is NOT waveRepoPath, the handler throws. This catches
+          // misconfigured product epics loudly rather than silently
+          // dispatching a builder to the wrong cwd.
+          if (!isCrossRepoEpic) {
+            for (const [beadId, beadRepo] of beadRepoCache) {
+              if (beadRepo !== waveRepoPath) {
+                const msg = `Bounding-rule violation: product epic ${epicId} has cross-repo child ${beadId} (resolved to ${beadRepo}, expected ${waveRepoPath}). Product epics must not have cross-repo children — this indicates operator misconfiguration or a planner bug.`;
+                console.error(`[cross-repo] ${msg}`);
+                return NextResponse.json(
+                  {
+                    error: msg,
+                    epicId,
+                    waveNumber: wave,
+                  },
+                  { status: 500 },
+                );
+              }
+            }
+          }
+
+          // beads_web-4jb (AC 7, emission point 3): bounding rule check passed.
+          console.info(
+            `[cross-repo] Bounding rule check passed for epic ${epicId}`,
           );
         }
 
@@ -1861,12 +1956,18 @@ export async function POST(request: NextRequest) {
             }
             const head = group[0];
 
+            // beads_web-4jb (AC 5): resolve the bead's home repo from the
+            // request-lifetime cache. Falls back to waveRepoPath when the
+            // cache has no entry (defensive — the cache should always be
+            // populated for every bead in openBeads).
+            const beadRepoPath = beadRepoCache.get(head.id) ?? waveRepoPath;
+
             // factory-core-z9h.6: when start-wave is re-invoked by the
             // auto-chain (e.g. after a per-bead agent closes its bead),
             // skip heads that already have a live agent. This keeps the
             // re-invocation idempotent for already-launched heads while
             // still picking up any newly-unblocked tail beads.
-            if (isAgentActive(waveRepoPath, head.id)) {
+            if (isAgentActive(beadRepoPath, head.id)) {
               skipped.push({
                 beadId: head.id,
                 group: g,
@@ -1879,21 +1980,27 @@ export async function POST(request: NextRequest) {
             // Any failure in bd show / fs read degrades gracefully to a
             // generic prompt so a single broken bead doesn't break the
             // whole wave launch.
+            //
+            // beads_web-4jb (AC 5): all repo-path-dependent calls use
+            // beadRepoPath (from cache) instead of waveRepoPath — this
+            // ensures cross-repo beads load detail, checkpoint entries,
+            // and build_prompt overrides from their home repo, not the
+            // epic's repo.
             let perBeadPrompt: string;
             try {
-              const detail = loadBeadDetail(head.id, waveRepoPath);
+              const detail = loadBeadDetail(head.id, beadRepoPath);
               const testScenarios = await loadBeadTestScenarios(
                 waveTestScenariosPath,
                 head.id,
               );
               const priorProgress = await loadCheckpointEntries(
-                waveRepoPath,
+                beadRepoPath,
                 epicId as string,
                 wave,
                 head.id,
               );
               const buildPromptOverride = await loadBuildPromptOverride(
-                waveRepoPath,
+                beadRepoPath,
                 head.id,
               );
               if (buildPromptOverride) {
@@ -1911,7 +2018,7 @@ export async function POST(request: NextRequest) {
                 epicTitle: epicTitle as string,
                 shipType,
                 waveNumber: wave,
-                repoPath: waveRepoPath,
+                repoPath: beadRepoPath,
                 fleetCorePath,
                 researchPath: waveResearchPath,
                 planPath: wavePlanPath,
@@ -1925,11 +2032,11 @@ export async function POST(request: NextRequest) {
             } catch (err) {
               // Fallback to a simple prompt; log so we can investigate.
               console.error(`[start-wave] Failed to build per-bead prompt for ${head.id}:`, err);
-              perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)} ONLY work bead ${head.id}. Do not start any other bead.`;
+              perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${beadRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)} ONLY work bead ${head.id}. Do not start any other bead.`;
             }
 
             const beadSession = await launchAgent({
-              repoPath: waveRepoPath,
+              repoPath: beadRepoPath,
               repoName: waveRepoName,
               prompt: perBeadPrompt,
               model: "opus",

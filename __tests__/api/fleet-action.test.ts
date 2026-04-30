@@ -104,25 +104,41 @@ const mockGroupBeadsByFileConflict = jest.fn((beads: Array<{ id: string; files: 
 // that already have a live agent (tail-bead launch idempotency).
 const mockIsAgentActive = jest.fn().mockReturnValue(false);
 
+// beads_web-4jb (AC 2): cross-repo enumeration via listOpenWaveBeadsAllRepos.
+// Default mock returns empty array (same as single-repo default).
+const mockListOpenWaveBeadsAllRepos = jest.fn().mockResolvedValue([]);
+
 jest.mock("@/lib/agent-launcher", () => ({
   launchAgent: (...args: unknown[]) => mockLaunchAgent(...args),
   stopAgent: () => mockStopAgent(),
   getWaveStatus: (...args: unknown[]) => mockGetWaveStatus(...args),
   listOpenWaveBeads: (...args: unknown[]) => mockListOpenWaveBeads(...args),
+  listOpenWaveBeadsAllRepos: (...args: unknown[]) => mockListOpenWaveBeadsAllRepos(...args),
   groupBeadsByFileConflict: (...args: unknown[]) => mockGroupBeadsByFileConflict(...(args as [Array<{ id: string; files: string[] }>])),
   isAgentActive: (...args: unknown[]) => mockIsAgentActive(...args),
 }));
 
+// beads_web-4jb (AC 4): mock findRepoForIssue for cache pre-populate.
+// Default: returns the fleet-core path (matching the default resolveRepoPath
+// return for internal ship-type). Tests override per-call via
+// mockResolvedValueOnce or mockImplementation.
+const mockFindRepoForIssue = jest.fn().mockResolvedValue(
+  "/Users/janemckay/dev/fleet/fleet-core",
+);
+
 // Mock repo-config module
+const mockGetRepos = jest.fn().mockResolvedValue({
+  repos: [
+    {
+      name: "fleet-core",
+      path: "/Users/janemckay/dev/fleet/fleet-core",
+    },
+  ],
+});
+
 jest.mock("@/lib/repo-config", () => ({
-  getRepos: jest.fn().mockResolvedValue({
-    repos: [
-      {
-        name: "fleet-core",
-        path: "/Users/janemckay/dev/fleet/fleet-core",
-      },
-    ],
-  }),
+  getRepos: (...args: unknown[]) => mockGetRepos(...args),
+  findRepoForIssue: (...args: unknown[]) => mockFindRepoForIssue(...args),
 }));
 
 // Mock bv-client invalidateCache (factory-core-ppx.8: the sweep migrated
@@ -171,13 +187,34 @@ const mockBuildPerBeadPrompt = jest.fn((inputs: {
   ].join("\n");
 });
 
+// beads_web-4jb: mock loadCheckpointEntries + loadBuildPromptOverride +
+// formatBuilderStandingOrdersDirective + formatAgentStandingOrdersDirective
+// (previously missing from mock factory, causing per-bead dispatch tests
+// to fall into the catch branch).
+const mockLoadCheckpointEntries = jest.fn().mockResolvedValue(null);
+const mockLoadBuildPromptOverride = jest.fn().mockResolvedValue(null);
+const mockFormatBuilderStandingOrders = jest.fn().mockReturnValue(
+  "Read and follow the standing orders at /mock/fleet-core/standards.",
+);
+const mockFormatAgentStandingOrders = jest.fn().mockReturnValue(
+  "Read and follow the agent standing orders.",
+);
+
 jest.mock("@/lib/bead-prompt", () => ({
   loadBeadDetail: (...args: unknown[]) =>
     mockLoadBeadDetail(...(args as [string, string])),
   loadBeadTestScenarios: (...args: unknown[]) =>
     mockLoadBeadTestScenarios(...args),
+  loadCheckpointEntries: (...args: unknown[]) =>
+    mockLoadCheckpointEntries(...args),
+  loadBuildPromptOverride: (...args: unknown[]) =>
+    mockLoadBuildPromptOverride(...args),
   buildPerBeadPrompt: (...args: unknown[]) =>
     mockBuildPerBeadPrompt(...(args as [{ beadId: string; beadTitle: string; epicId: string; epicTitle: string; waveNumber: number }])),
+  formatBuilderStandingOrdersDirective: (...args: unknown[]) =>
+    mockFormatBuilderStandingOrders(...args),
+  formatAgentStandingOrdersDirective: (...args: unknown[]) =>
+    mockFormatAgentStandingOrders(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -2496,6 +2533,465 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
       expect(data.error).toContain("bd list failed");
       expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    // ---------------------------------------------------------------------
+    // beads_web-4jb — cross-repo dispatch with bounding rule
+    //
+    // AC 1: Bounding-rule gate (isCrossRepoEpic = basename === "fleet-core-improved")
+    // AC 2: Cross-repo epics call listOpenWaveBeadsAllRepos
+    // AC 3: Product epics call single-repo listOpenWaveBeads (zero change)
+    // AC 4: Cache pre-populate via parallel findRepoForIssue
+    // AC 5: Per-bead dispatch uses cached repo for loadBeadDetail + launchAgent
+    // AC 6: Bounding-rule assertion throws for product epic with cross-repo child
+    // AC 7: Structured logging (3 emission points)
+    // AC 8: z9h.9 throwing contract preserved for listOpenWaveBeadsAllRepos
+    // AC 9: Kill-switch passthrough (A.1 internal, no route.ts logic needed)
+    // AC 10: Integration test scaffolded for A.8
+    // ---------------------------------------------------------------------
+
+    it("4jb AC 1+3: product epic (basename !== fleet-core-improved) uses single-repo listOpenWaveBeads", async () => {
+      // Default getRepos returns fleet-core (basename "fleet-core"), so
+      // isCrossRepoEpic = false. The handler should call single-repo
+      // listOpenWaveBeads, NOT listOpenWaveBeadsAllRepos.
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.A", title: "Alpha", files: ["src/a.ts"] },
+      ]);
+      mockFindRepoForIssue.mockResolvedValueOnce(
+        "/Users/janemckay/dev/fleet/fleet-core",
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 1,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      // Single-repo path called, not all-repos.
+      expect(mockListOpenWaveBeads).toHaveBeenCalled();
+      expect(mockListOpenWaveBeadsAllRepos).not.toHaveBeenCalled();
+    });
+
+    it("4jb AC 1+2: cross-repo epic (basename === fleet-core-improved) uses listOpenWaveBeadsAllRepos", async () => {
+      // Override getRepos to return fleet-core-improved path so basename
+      // matches the bounding-rule gate.
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [
+          {
+            name: "fleet-core-improved",
+            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+          },
+        ],
+      });
+      mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
+        { id: "so74.A", title: "Cross-repo bead A", files: ["src/a.ts"] },
+      ]);
+      mockFindRepoForIssue.mockResolvedValueOnce(
+        "/Users/janemckay/dev/fleet/fleet-core-improved",
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      // All-repos path called, not single-repo.
+      expect(mockListOpenWaveBeadsAllRepos).toHaveBeenCalledWith(
+        "factory-core-so74",
+        2,
+      );
+      expect(mockListOpenWaveBeads).not.toHaveBeenCalled();
+    });
+
+    it("4jb AC 4: cache pre-populates via parallel findRepoForIssue before dispatch", async () => {
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [
+          {
+            name: "fleet-core-improved",
+            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+          },
+        ],
+      });
+      mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
+        { id: "so74.A", title: "Fleet bead", files: ["src/a.ts"] },
+        { id: "so74.B", title: "Beads web bead", files: ["src/b.ts"] },
+      ]);
+      // Bead A lives in fleet-core-improved, bead B lives in beads_web-improved
+      mockFindRepoForIssue
+        .mockResolvedValueOnce("/Users/janemckay/dev/fleet/fleet-core-improved")
+        .mockResolvedValueOnce("/Users/janemckay/dev/claude_projects/beads_web-improved");
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      // findRepoForIssue called once per bead.
+      expect(mockFindRepoForIssue).toHaveBeenCalledTimes(2);
+      expect(mockFindRepoForIssue).toHaveBeenCalledWith("so74.A");
+      expect(mockFindRepoForIssue).toHaveBeenCalledWith("so74.B");
+    });
+
+    it("4jb AC 5: per-bead dispatch uses cached repo for loadBeadDetail and launchAgent", async () => {
+      const fleetCorePath = "/Users/janemckay/dev/fleet/fleet-core-improved";
+      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web-improved";
+
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [{ name: "fleet-core-improved", path: fleetCorePath }],
+      });
+      mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
+        { id: "so74.A", title: "Fleet bead", files: ["src/a.ts"] },
+        { id: "so74.B", title: "Beads web bead", files: ["src/b.ts"] },
+      ]);
+      mockFindRepoForIssue
+        .mockResolvedValueOnce(fleetCorePath)
+        .mockResolvedValueOnce(beadsWebPath);
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("per-bead");
+      expect(data.launched).toHaveLength(2);
+
+      // loadBeadDetail called with each bead's resolved repo path
+      expect(mockLoadBeadDetail).toHaveBeenCalledWith("so74.A", fleetCorePath);
+      expect(mockLoadBeadDetail).toHaveBeenCalledWith("so74.B", beadsWebPath);
+
+      // launchAgent called with each bead's resolved repo path
+      const launchCalls = mockLaunchAgent.mock.calls;
+      const callA = launchCalls.find(
+        (c: unknown[]) => (c[0] as { beadId: string }).beadId === "so74.A",
+      );
+      const callB = launchCalls.find(
+        (c: unknown[]) => (c[0] as { beadId: string }).beadId === "so74.B",
+      );
+      expect(callA).toBeDefined();
+      expect(callB).toBeDefined();
+      expect((callA![0] as { repoPath: string }).repoPath).toBe(fleetCorePath);
+      expect((callB![0] as { repoPath: string }).repoPath).toBe(beadsWebPath);
+    });
+
+    it("4jb AC 6: bounding-rule assertion throws for product epic with cross-repo child", async () => {
+      // Product epic (basename "fleet-core", NOT "fleet-core-improved")
+      // has a bead that findRepoForIssue resolves to a different repo.
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.X", title: "Misplaced bead", files: ["src/x.ts"] },
+      ]);
+      // The bead resolves to a different repo — bounding-rule violation!
+      mockFindRepoForIssue.mockResolvedValueOnce(
+        "/Users/janemckay/dev/claude_projects/beads_web-improved",
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 1,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("Bounding-rule violation");
+      expect(data.error).toContain("z9h.X");
+      expect(data.error).toContain("beads_web-improved");
+      expect(data.error).toContain("fleet-core");
+
+      // No agent launched — the handler returned 500 before dispatch.
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("4jb AC 7: structured logging emits at three points", async () => {
+      const infoSpy = jest.spyOn(console, "info").mockImplementation();
+
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [
+          {
+            name: "fleet-core-improved",
+            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+          },
+        ],
+      });
+      mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
+        { id: "so74.A", title: "Bead A", files: ["src/a.ts"] },
+      ]);
+      mockFindRepoForIssue.mockResolvedValueOnce(
+        "/Users/janemckay/dev/fleet/fleet-core-improved",
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      await POST(req);
+
+      const infoMessages = infoSpy.mock.calls.map((c) => c[0] as string);
+
+      // Emission point 1: bounding-rule decision
+      expect(infoMessages).toContainEqual(
+        expect.stringContaining("[cross-repo] Epic factory-core-so74 resolved to"),
+      );
+      expect(infoMessages).toContainEqual(
+        expect.stringContaining("isCrossRepoEpic: true"),
+      );
+
+      // Emission point 2: cache entry
+      expect(infoMessages).toContainEqual(
+        expect.stringContaining("[cross-repo] Bead so74.A resolved to"),
+      );
+
+      // Emission point 3: bounding rule check passed
+      expect(infoMessages).toContainEqual(
+        expect.stringContaining("[cross-repo] Bounding rule check passed for epic factory-core-so74"),
+      );
+
+      infoSpy.mockRestore();
+    });
+
+    it("4jb AC 8: listOpenWaveBeadsAllRepos failure returns 500 (z9h.9 contract preserved)", async () => {
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [
+          {
+            name: "fleet-core-improved",
+            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+          },
+        ],
+      });
+      mockListOpenWaveBeadsAllRepos.mockRejectedValueOnce(
+        new Error(
+          "listOpenWaveBeadsAllRepos: bd failed in 1 repo(s) for epic factory-core-so74 wave 2: /bad/repo",
+        ),
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("Failed to enumerate open wave beads");
+      expect(data.error).toContain("bd failed in 1 repo(s)");
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("4jb AC 4 risk: cache pre-populate failure returns 500 (no silent fallback)", async () => {
+      // If findRepoForIssue rejects during the parallel fanout, the handler
+      // must return 500 — NOT silently fall back to waveRepoPath.
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [
+          {
+            name: "fleet-core-improved",
+            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+          },
+        ],
+      });
+      mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
+        { id: "so74.A", title: "Bead A", files: ["src/a.ts"] },
+      ]);
+      mockFindRepoForIssue.mockRejectedValueOnce(
+        new Error("findRepoForIssue: dolt connection refused"),
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(500);
+
+      const data = await res.json();
+      expect(data.error).toContain("cache pre-populate");
+      expect(mockLaunchAgent).not.toHaveBeenCalled();
+    });
+
+    it("4jb AC 9: kill-switch passthrough — no special-case logic in route.ts", async () => {
+      // When CROSS_REPO_DISPATCH_ENABLED=false, listOpenWaveBeadsAllRepos
+      // internally falls through to single-repo behaviour. The route
+      // handler calls it without checking the kill-switch — the gate is
+      // entirely inside A.1's implementation. This test verifies that the
+      // cross-repo code path in route.ts does NOT check the env var
+      // itself — it delegates to listOpenWaveBeadsAllRepos unconditionally
+      // when isCrossRepoEpic is true.
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [
+          {
+            name: "fleet-core-improved",
+            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+          },
+        ],
+      });
+      mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([]);
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      // listOpenWaveBeadsAllRepos called (not listOpenWaveBeads) —
+      // the kill-switch is handled inside listOpenWaveBeadsAllRepos.
+      expect(mockListOpenWaveBeadsAllRepos).toHaveBeenCalledWith(
+        "factory-core-so74",
+        2,
+      );
+    });
+
+    it("4jb AC 6: bounding rule passes when all product-epic beads resolve to the same repo", async () => {
+      // Product epic (basename "fleet-core") where all beads resolve to
+      // fleet-core. The bounding-rule assertion should NOT fire.
+      mockListOpenWaveBeads.mockResolvedValueOnce([
+        { id: "z9h.A", title: "Alpha", files: ["src/a.ts"] },
+        { id: "z9h.B", title: "Beta", files: ["src/b.ts"] },
+      ]);
+      mockFindRepoForIssue
+        .mockResolvedValueOnce("/Users/janemckay/dev/fleet/fleet-core")
+        .mockResolvedValueOnce("/Users/janemckay/dev/fleet/fleet-core");
+
+      const req = makeRequest({
+        epicId: "factory-core-z9h",
+        epicTitle: "Fully autonomous pipeline",
+        action: "start-wave",
+        waveNumber: 1,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      // Agents launched — bounding rule passed.
+      const data = await res.json();
+      expect(data.dispatched).toBe("per-bead");
+      expect(data.launched).toHaveLength(2);
+    });
+
+    it("4jb AC 5: isAgentActive uses cached repo path (cross-repo bead-ID check)", async () => {
+      const fleetCorePath = "/Users/janemckay/dev/fleet/fleet-core-improved";
+      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web-improved";
+
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [{ name: "fleet-core-improved", path: fleetCorePath }],
+      });
+      mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
+        { id: "so74.A", title: "Fleet bead", files: ["src/a.ts"] },
+        { id: "so74.B", title: "Beads web bead", files: ["src/b.ts"] },
+      ]);
+      mockFindRepoForIssue
+        .mockResolvedValueOnce(fleetCorePath)
+        .mockResolvedValueOnce(beadsWebPath);
+      // so74.A is already active at its resolved repo; so74.B is not.
+      mockIsAgentActive.mockImplementation(
+        (repo: string, beadId?: string) => {
+          return repo === fleetCorePath && beadId === "so74.A";
+        },
+      );
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      // so74.A skipped (active), so74.B launched.
+      expect(data.skipped).toHaveLength(1);
+      expect(data.skipped[0].beadId).toBe("so74.A");
+      expect(data.launched).toHaveLength(1);
+      expect(data.launched[0].beadId).toBe("so74.B");
+
+      // isAgentActive was called with the CACHED repo path, not waveRepoPath.
+      expect(mockIsAgentActive).toHaveBeenCalledWith(fleetCorePath, "so74.A");
+      expect(mockIsAgentActive).toHaveBeenCalledWith(beadsWebPath, "so74.B");
+
+      mockIsAgentActive.mockImplementation(() => false);
+    });
+
+    // AC 10: integration test scaffold for A.8 — the structure is ready
+    // (listOpenWaveBeadsAllRepos, beadRepoCache, per-bead repo dispatch)
+    // for A.8 to exercise end-to-end. This test documents the intended
+    // integration scenario.
+    it("4jb AC 10: integration test scaffold — cross-repo epic dispatches beads to correct cwds", async () => {
+      const fleetCorePath = "/Users/janemckay/dev/fleet/fleet-core-improved";
+      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web-improved";
+
+      mockGetRepos.mockResolvedValueOnce({
+        repos: [{ name: "fleet-core-improved", path: fleetCorePath }],
+      });
+      mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
+        { id: "so74.fleet", title: "Fleet-core bead", files: ["src/fleet.ts"] },
+        { id: "so74.web", title: "Beads-web bead", files: ["src/web.ts"] },
+      ]);
+      mockFindRepoForIssue
+        .mockResolvedValueOnce(fleetCorePath)
+        .mockResolvedValueOnce(beadsWebPath);
+
+      const req = makeRequest({
+        epicId: "factory-core-so74",
+        epicTitle: "Aspirational Pipeline Phase 2",
+        action: "start-wave",
+        waveNumber: 2,
+        currentLabels: ["ship-type:internal"],
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+
+      const data = await res.json();
+      expect(data.dispatched).toBe("per-bead");
+      expect(data.launched).toHaveLength(2);
+
+      // Both beads dispatched to their correct cwd.
+      const launchCalls = mockLaunchAgent.mock.calls;
+      const fleetCall = launchCalls.find(
+        (c: unknown[]) => (c[0] as { beadId: string }).beadId === "so74.fleet",
+      );
+      const webCall = launchCalls.find(
+        (c: unknown[]) => (c[0] as { beadId: string }).beadId === "so74.web",
+      );
+      expect((fleetCall![0] as { repoPath: string }).repoPath).toBe(fleetCorePath);
+      expect((webCall![0] as { repoPath: string }).repoPath).toBe(beadsWebPath);
+
+      // This is the scaffold for A.8's integration test — A.8 will add
+      // real bd/agent lifecycle assertions on top of this dispatch shape.
     });
   });
 
