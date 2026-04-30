@@ -616,7 +616,10 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:research-complete", "plan:pending", "plan:approved"], expect.any(String));
+      // zsjv.4 fix: pipeline:* labels are cleared via removeAllPipelineLabels;
+      // removeLabelsFromEpic only handles plan:* labels.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-1", expect.any(Array), expect.any(String));
+      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["plan:pending", "plan:approved"], expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith("epic-1", ["pipeline:research", "agent:running"], expect.any(String));
     });
 
@@ -1147,7 +1150,9 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith("epic-1", ["pipeline:submission-prep"], expect.any(String));
+      // zsjv.4 fix: pipeline:* labels (incl. pipeline:submission-prep) are
+      // cleared via removeAllPipelineLabels rather than a targeted call.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-1", expect.any(Array), expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:research-complete", "agent:running"],
@@ -1407,9 +1412,11 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
+      // zsjv.4 fix: pipeline:* via removeAllPipelineLabels; plan:* only via removeLabelsFromEpic.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-1", expect.any(Array), expect.any(String));
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-1",
-        ["pipeline:research-complete", "plan:pending"],
+        ["plan:pending"],
         expect.any(String),
       );
       expect(mockAddLabels).toHaveBeenCalledWith(
@@ -1499,11 +1506,8 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
-        "epic-1",
-        ["pipeline:development"],
-        expect.any(String),
-      );
+      // zsjv.4 fix: pipeline:* labels are cleared via removeAllPipelineLabels.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-1", expect.any(Array), expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:build-review", "agent:running"],
@@ -1561,11 +1565,8 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
-        "epic-1",
-        ["pipeline:qa"],
-        expect.any(String),
-      );
+      // zsjv.4 fix: pipeline:* labels cleared via removeAllPipelineLabels.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-1", expect.any(Array), expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:ux-polish", "agent:running"],
@@ -1667,11 +1668,8 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
-        "epic-1",
-        ["pipeline:research-complete"],
-        expect.any(String),
-      );
+      // zsjv.4 fix: pipeline:* labels cleared via removeAllPipelineLabels.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-1", expect.any(Array), expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:product-spec", "agent:running"],
@@ -1715,11 +1713,8 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
-        "epic-1",
-        ["pipeline:product-spec"],
-        expect.any(String),
-      );
+      // zsjv.4 fix: pipeline:* labels cleared via removeAllPipelineLabels.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-1", expect.any(Array), expect.any(String));
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:architecture", "agent:running"],
@@ -3426,11 +3421,12 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
+      // zsjv.4 fix: pipeline:* via removeAllPipelineLabels; plan:* labels via removeLabelsFromEpic.
       // Chain path strips reviewing + reviewed + needs-revision — not pending.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-ab-chain", expect.any(Array), expect.any(String));
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-ab-chain",
         [
-          "pipeline:research-complete",
           "plan:reviewing",
           "plan:reviewed",
           "plan:needs-revision",
@@ -3449,9 +3445,11 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
+      // zsjv.4 fix: pipeline:* via removeAllPipelineLabels; plan:* via removeLabelsFromEpic.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-ab-owner", expect.any(Array), expect.any(String));
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-ab-owner",
-        ["pipeline:research-complete", "plan:pending"],
+        ["plan:pending"],
         expect.any(String),
       );
     });
@@ -3466,9 +3464,11 @@ describe("POST /api/fleet/action", () => {
       });
       await POST(req);
 
+      // zsjv.4 fix: pipeline:* via removeAllPipelineLabels; plan:* via removeLabelsFromEpic.
+      expect(mockRemoveAllPipeline).toHaveBeenCalledWith("epic-ab-false", expect.any(Array), expect.any(String));
       expect(mockRemoveLabels).toHaveBeenCalledWith(
         "epic-ab-false",
-        ["pipeline:research-complete", "plan:pending"],
+        ["plan:pending"],
         expect.any(String),
       );
     });
