@@ -1,0 +1,22 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-2gc",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T21:00:00Z",
+  "exited_at": "2026-05-01T22:00:00Z",
+  "what_was_done": "Added stale-marker cleanup step to launchAgent in src/lib/agent-launcher.ts (lines ~3205-3228). Before spawning the tmux session, derive markerId using the same pattern as detectAgentDone (epicId+pipelineStage tuple, or beadId fallback) and unlink the marker file at .beads/markers/<markerId>.json. ENOENT is silently ignored (expected on first launch). Complementary to hs5's runtime filesystem-walk orphan-recovery rule (commit dfe3d6f) — this bead handles the FRESH-LAUNCH side, hs5 handles the RUNTIME-RECOVERY side. Test coverage added in __tests__/lib/agent-launcher-marker-cleanup.test.ts (6 tests, all passing): verifies unlink is called before tmux spawn, verifies markerId derivation matches detectAgentDone, verifies ENOENT tolerance, verifies beadId fallback path.",
+  "what_was_tested": "Empirical: ran 'npx jest __tests__/lib/agent-launcher --silent'. All 8 launcher test suites pass (177 tests total). New marker-cleanup test suite has 6 tests, all passing. Worker-process force-exit warning is pre-existing and unrelated (timer-leak in unrelated test). No new failures introduced.",
+  "deviations_from_ac": "None. All 5 ACs satisfied: (1) launchAgent deletes marker before spawn; (2) test case verifies double-launch behavior; (3) ENOENT-tolerant per try/catch; (4) all existing launcher tests pass; (5) marker written LAST before commit per operator directive 2026-05-01.",
+  "surprises_or_findings": [
+    {
+      "flag": "PRIOR-AGENT-STREAM-TIMEOUT",
+      "detail": "The original builder agent's stream timed out at ~17 minutes (during test run or report generation). Code + test file were already written but uncommitted. Operator picked up via SendMessage-style continuation, ran tests to verify (all green), wrote this marker, and committed. No work was lost; agent did real work before timeout."
+    }
+  ],
+  "verification_evidence": "$ npx jest __tests__/lib/agent-launcher --silent\nTest Suites: 8 passed, 8 total\nTests:       177 passed, 177 total\nTime:        2.6 s\n\n$ npx jest __tests__/lib/agent-launcher-marker-cleanup.test.ts --silent\nTest Suites: 1 passed, 1 total\nTests:       6 passed, 6 total\nTime:        0.137 s",
+  "files_changed": [
+    "src/lib/agent-launcher.ts",
+    "__tests__/lib/agent-launcher-marker-cleanup.test.ts"
+  ]
+}

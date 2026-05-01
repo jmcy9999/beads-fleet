@@ -3202,6 +3202,31 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
   const projectDir = path.join(os.homedir(), ".claude", "projects", safeCwd);
   session.transcriptFile = path.join(projectDir, `${claudeSessionId}.jsonl`);
 
+  // ---------------------------------------------------------------------------
+  // beads_web-2gc: Delete any stale marker from a prior run of this agent.
+  // Without this, detectAgentDone reads the OLD marker (>5s stale) and
+  // immediately marks the agent as done, causing dispatchChainAction to route
+  // incorrectly (e.g. coherence fallback instead of fresh planner run).
+  // Uses the same markerId derivation as detectAgentDone (lines 529-532).
+  // Complementary to hs5's runtime filesystem-walk orphan recovery.
+  // ---------------------------------------------------------------------------
+  const markerId = options.epicId && options.pipelineStage
+    ? `${options.epicId}-${options.pipelineStage}`
+    : options.beadId ?? null;
+  if (markerId) {
+    const markerPath = path.join(
+      options.repoPath,
+      ".beads",
+      "markers",
+      `${markerId}.json`,
+    );
+    try {
+      await fs.unlink(markerPath);
+    } catch {
+      // ENOENT expected on first launch — no prior marker to clean up
+    }
+  }
+
   // Launch in tmux with --session-id so the transcript file is predictable
   const tmuxCmd = `export PATH="/opt/homebrew/bin:$PATH" && cd ${session.repoPath} && unset ANTHROPIC_API_KEY && unset CLAUDECODE && /Users/janemckay/.local/bin/claude ${agentFlag} --session-id ${claudeSessionId} --max-turns ${maxTurns} --model ${model} --dangerously-skip-permissions --allowedTools ${allowedTools}`;
   await execAsync(`/opt/homebrew/bin/tmux new-session -d -s "${tmuxSession}" "${tmuxCmd}"`);
