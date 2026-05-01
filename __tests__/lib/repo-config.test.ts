@@ -25,22 +25,33 @@ jest.mock("@/lib/dolt-health", () => ({
   clearProbeCache: jest.fn(),
 }));
 
-// Mock fs.promises.readFile to control the registry contents
+// Mock fs — readFile for existing tests; existsSync, copyFile, writeFile,
+// readdir, unlink for beads_web-u67 backup-before-write tests.
 jest.mock("fs", () => {
   const actual = jest.requireActual("fs");
   return {
     ...actual,
+    existsSync: jest.fn(actual.existsSync),
     promises: {
       ...actual.promises,
       readFile: jest.fn(),
+      copyFile: jest.fn(),
+      writeFile: jest.fn(),
+      readdir: jest.fn(),
+      unlink: jest.fn(),
     },
   };
 });
 
 import { promises as fsPromises } from "fs";
 const mockReadFile = fsPromises.readFile as jest.MockedFunction<typeof fsPromises.readFile>;
+const mockCopyFile = fsPromises.copyFile as jest.MockedFunction<typeof fsPromises.copyFile>;
+const mockWriteFile = fsPromises.writeFile as jest.MockedFunction<typeof fsPromises.writeFile>;
+const mockReaddir = fsPromises.readdir as jest.MockedFunction<typeof fsPromises.readdir>;
+const mockUnlink = fsPromises.unlink as jest.MockedFunction<typeof fsPromises.unlink>;
+const mockExistsSync = (fs.existsSync as jest.MockedFunction<typeof fs.existsSync>);
 
-import { getAllRepoPaths, getRepos } from "@/lib/repo-config";
+import { getAllRepoPaths, getRepos, setActiveRepo, addRepo } from "@/lib/repo-config";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -141,5 +152,151 @@ describe("getRepos — registry shape (beads_web-cnr A.8 cross-cutting)", () => 
 
     const store = await getRepos();
     expect(store.watchDirs).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// beads_web-u67: writeConfig — backup-before-write tests
+// ---------------------------------------------------------------------------
+
+describe("writeConfig — backup-before-write (beads_web-u67)", () => {
+  const CONFIG_PATH = path.join(os.homedir(), ".beads-web.json");
+  const mockStore = {
+    repos: [
+      { name: "factory-core", path: "/repos/factory-core" },
+      { name: "beads_web", path: "/repos/beads_web" },
+    ],
+    activeRepo: "/repos/factory-core",
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Default: readFile returns a valid store (readConfig succeeds)
+    mockReadFile.mockResolvedValue(JSON.stringify(mockStore));
+    // Default: writeFile succeeds
+    mockWriteFile.mockResolvedValue(undefined);
+    // Default: copyFile succeeds
+    mockCopyFile.mockResolvedValue(undefined);
+    // Default: readdir returns no backups (nothing to prune)
+    mockReaddir.mockResolvedValue([] as unknown as Awaited<ReturnType<typeof fsPromises.readdir>>);
+    // Default: unlink succeeds
+    mockUnlink.mockResolvedValue(undefined);
+  });
+
+  // --- AC 3: Backup filename format ---
+  it("creates backup with correct compact ISO timestamp filename (AC 3)", async () => {
+    mockExistsSync.mockReturnValue(true);
+
+    // Trigger writeConfig via setActiveRepo (which reads then writes)
+    await setActiveRepo("/repos/factory-core");
+
+    expect(mockCopyFile).toHaveBeenCalledTimes(1);
+    const backupPath = mockCopyFile.mock.calls[0][1] as string;
+    const backupFilename = path.basename(backupPath);
+    // Strict regex per bead AC 3 / FYI 5
+    expect(backupFilename).toMatch(/^\.beads-web\.json\.bak\.\d{8}T\d{6}Z$/);
+    // Source should be CONFIG_PATH
+    expect(mockCopyFile.mock.calls[0][0]).toBe(CONFIG_PATH);
+  });
+
+  // --- AC 4: Abort on backup failure ---
+  it("aborts write and throws when backup fails (AC 4)", async () => {
+    mockExistsSync.mockReturnValue(true);
+    const enospc = new Error("ENOSPC: no space left on device");
+    (enospc as NodeJS.ErrnoException).code = "ENOSPC";
+    mockCopyFile.mockRejectedValue(enospc);
+
+    await expect(setActiveRepo("/repos/factory-core")).rejects.toThrow(
+      /Backup failed before registry write.*ENOSPC/,
+    );
+    // writeFile must NEVER be called when backup fails
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  // --- AC 5: First-run bootstrap (no backup when registry doesn't exist) ---
+  it("skips backup when registry does not exist — first-run (AC 5)", async () => {
+    // readConfig returns empty (file doesn't exist — simulates first run)
+    mockReadFile.mockRejectedValue(new Error("ENOENT"));
+    mockExistsSync.mockReturnValue(false);
+
+    // getRepos seeds from env var on first run; we need to trigger writeConfig
+    // without getRepos's env-var logic. Use addRepo which always calls writeConfig.
+    // But addRepo calls fs.access — we need to mock that too.
+    // Simpler: directly test via setActiveRepo path after seeding readConfig.
+    // Actually — for the first-run case, existsSync(CONFIG_PATH) returns false.
+    // The cleanest path: mock readConfig to return a store with repos,
+    // mock existsSync to return false (registry file doesn't exist yet),
+    // then call setActiveRepo.
+    mockReadFile.mockResolvedValue(JSON.stringify(mockStore));
+    mockExistsSync.mockReturnValue(false);
+
+    await setActiveRepo("/repos/factory-core");
+
+    expect(mockCopyFile).not.toHaveBeenCalled();
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+  });
+
+  // --- AC 2: Pruning logic (keep last 5) ---
+  it("prunes oldest backups when more than 5 exist (AC 2)", async () => {
+    mockExistsSync.mockReturnValue(true);
+
+    // Simulate 7 existing backups after the new one is written
+    const backupNames = [
+      ".beads-web.json.bak.20260501T120000Z",
+      ".beads-web.json.bak.20260501T120100Z",
+      ".beads-web.json.bak.20260501T120200Z",
+      ".beads-web.json.bak.20260501T120300Z",
+      ".beads-web.json.bak.20260501T120400Z",
+      ".beads-web.json.bak.20260501T120500Z",
+      ".beads-web.json.bak.20260501T120600Z",
+    ];
+    // Include non-matching files to verify regex strictness (FYI 5)
+    const allEntries = [
+      ".beads-web.json.bak-k7gy-11",
+      ".beads-web.json.bak.pre-rename-20260430-154453",
+      ".beads-web.json.bak.wipe-recovery-2026-04-29",
+      ...backupNames,
+      ".zshrc",
+    ];
+    mockReaddir.mockResolvedValue(allEntries as unknown as Awaited<ReturnType<typeof fsPromises.readdir>>);
+
+    await setActiveRepo("/repos/factory-core");
+
+    // Should delete the 2 oldest (indices 0 and 1)
+    expect(mockUnlink).toHaveBeenCalledTimes(2);
+    expect(mockUnlink).toHaveBeenCalledWith(
+      path.join(os.homedir(), ".beads-web.json.bak.20260501T120000Z"),
+    );
+    expect(mockUnlink).toHaveBeenCalledWith(
+      path.join(os.homedir(), ".beads-web.json.bak.20260501T120100Z"),
+    );
+  });
+
+  // --- AC 2 edge: Pruning is best-effort (unlink failure doesn't throw) ---
+  it("does not throw when pruning fails — best-effort (AC 2 edge)", async () => {
+    mockExistsSync.mockReturnValue(true);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+    const backupNames = [
+      ".beads-web.json.bak.20260501T120000Z",
+      ".beads-web.json.bak.20260501T120100Z",
+      ".beads-web.json.bak.20260501T120200Z",
+      ".beads-web.json.bak.20260501T120300Z",
+      ".beads-web.json.bak.20260501T120400Z",
+      ".beads-web.json.bak.20260501T120500Z",
+      ".beads-web.json.bak.20260501T120600Z",
+    ];
+    mockReaddir.mockResolvedValue(backupNames as unknown as Awaited<ReturnType<typeof fsPromises.readdir>>);
+
+    const eacces = new Error("EACCES: permission denied");
+    mockUnlink.mockRejectedValueOnce(eacces).mockResolvedValueOnce(undefined);
+
+    // Should NOT throw despite unlink failure
+    await expect(setActiveRepo("/repos/factory-core")).resolves.toBeDefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to prune old backup"),
+    );
+
+    warnSpy.mockRestore();
   });
 });

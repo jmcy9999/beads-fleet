@@ -37,7 +37,58 @@ async function readConfig(): Promise<RepoStore> {
 }
 
 async function writeConfig(store: RepoStore): Promise<void> {
+  // beads_web-u67: Backup-before-write — create timestamped backup of existing
+  // registry before overwriting. Abort on backup failure (fail-safe).
+  if (existsSync(CONFIG_PATH)) {
+    const ts = new Date()
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d+Z$/, "Z");
+    const backupPath = `${CONFIG_PATH}.bak.${ts}`;
+    try {
+      await fs.copyFile(CONFIG_PATH, backupPath);
+    } catch (err) {
+      throw new Error(
+        `Backup failed before registry write: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   await fs.writeFile(CONFIG_PATH, JSON.stringify(store, null, 2), "utf-8");
+
+  // Best-effort pruning: keep last 5 backups, delete older ones.
+  await pruneOldBackups();
+}
+
+/**
+ * Prune old registry backups, keeping only the 5 most recent.
+ * Best-effort: individual deletion failures are logged but do not throw.
+ * Only prunes files matching the strict backup naming convention
+ * (`.beads-web.json.bak.YYYYMMDDTHHMMSSZ`) — operator's ad-hoc backups
+ * are never touched.
+ */
+async function pruneOldBackups(): Promise<void> {
+  const BACKUP_REGEX = /^\.beads-web\.json\.bak\.\d{8}T\d{6}Z$/;
+  try {
+    const entries = await fs.readdir(os.homedir());
+    const backups = entries.filter((f) => BACKUP_REGEX.test(f)).sort();
+    if (backups.length <= 5) return;
+
+    const toDelete = backups.slice(0, -5);
+    for (const name of toDelete) {
+      try {
+        await fs.unlink(path.join(os.homedir(), name));
+      } catch (unlinkErr) {
+        console.warn(
+          `[repo-config] Failed to prune old backup ${name}: ${unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr)}`,
+        );
+      }
+    }
+  } catch (readdirErr) {
+    console.warn(
+      `[repo-config] Failed to enumerate backups for pruning: ${readdirErr instanceof Error ? readdirErr.message : String(readdirErr)}`,
+    );
+  }
 }
 
 /**
