@@ -1,0 +1,15 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-9k9",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T21:10:00Z",
+  "exited_at": "2026-05-01T21:15:00Z",
+  "what_was_done": "Changed test expectation at __tests__/lib/agent-launcher.atomic-state.test.ts:517 from \"pipeline:submission-prep\" to \"pipeline:deploying\". This aligns the test with runtime behaviour for internal ship type (DEPLOY_TAIL_AUTO_CHAIN per pipeline-routes.ts:290). The prior expectation was ios-app's submission-prep tail, not internal's deploying tail.",
+  "what_was_tested": "npx jest __tests__/lib/agent-launcher.atomic-state.test.ts: 15 passed, 0 failed, 1 suite. The specific test 'uses chainLock (not epicLock) -- internal addLabelsToEpic does not deadlock (ADR-002)' now passes with the corrected expectation.",
+  "deviations_from_ac": "None. All 4 ACs satisfied: (1) line 517 expects pipeline:deploying, (2) test passes, (3) no runtime change, (4) marker written last before commit.",
+  "surprises_or_findings": [],
+  "files_changed": [
+    "__tests__/lib/agent-launcher.atomic-state.test.ts"
+  ]
+}

@@ -514,7 +514,7 @@ describe("handleChainAction atomic state + chainLock (factory-core-ppx.6)", () =
     expect(removeOps[0].labels).toEqual(["pipeline:qa"]);
     expect(addOps).toHaveLength(1);
     expect(addOps[0].labels).toEqual([
-      "pipeline:submission-prep",
+      "pipeline:deploying",
       "qa:needs-review",
     ]);
   }, 5000);
