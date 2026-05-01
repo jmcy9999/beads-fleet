@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# beads_web post-commit hook
+# Rebuilds the prod bundle after every commit, then restarts the prod
+# server if no agents are running (idle), or logs a warning if busy.
+# Non-blocking: build failures log to terminal but never block commits.
+# Concurrency: flock serializes concurrent builds (60s timeout).
+
+BEADS_WEB_DIR="/Users/janemckay/dev/claude_projects/beads_web"
+LOCK_FILE="/tmp/beads-web-rebuild.lock"
+LOCK_TIMEOUT=60
+
+# --- flock dependency check (AC 3.4) ---
+if ! command -v flock >/dev/null 2>&1; then
+    echo ""
+    echo "======================================"
+    echo "[beads_web post-commit] ERROR: flock not found"
+    echo "======================================"
+    echo "flock is required for build serialization."
+    echo "Install: brew install util-linux && brew link util-linux --force"
+    echo ""
+    exit 1
+fi
+
+# --- Acquire lock (AC 3) ---
+exec 200>"$LOCK_FILE"
+if ! flock -w "$LOCK_TIMEOUT" 200; then
+    echo ""
+    echo "[beads_web post-commit] ERROR: Could not acquire build lock within ${LOCK_TIMEOUT}s."
+    echo "Another build may be hung. Check $LOCK_FILE and kill hung process if needed."
+    echo ""
+    exit 1
+fi
+
+# --- Build (AC 1.2) ---
+echo "[beads_web post-commit] Rebuilding prod bundle..."
+if ! (cd "$BEADS_WEB_DIR" && npm run build); then
+    echo ""
+    echo "======================================"
+    echo "[beads_web post-commit] BUILD FAILED"
+    echo "======================================"
+    echo "Prod bundle is STALE (still serving last successful build)."
+    echo "Fix the error above and commit again to rebuild."
+    echo ""
+    # Release lock (fd 200 closes on script exit)
+    exit 0
+fi
+
+echo "[beads_web post-commit] Build succeeded."
+
+# --- Idle-check (AC 2.1) ---
+# grep -c exits 1 when count is 0 (no matches). Capture separately to
+# avoid || echo 0 appending a second "0" after the count output.
+AGENT_COUNT=0
+if tmux list-sessions 2>/dev/null | grep -q '^shipyard-'; then
+    AGENT_COUNT=$(tmux list-sessions 2>/dev/null | grep -c '^shipyard-')
+fi
+
+if [ "$AGENT_COUNT" -eq 0 ]; then
+    # Idle: restart prod (AC 2.2)
+    echo "[beads_web post-commit] No active agents. Restarting prod server..."
+    pkill -f "next-server" || true
+    # Close the flock fd before spawning the server so the lock doesn't
+    # leak into the child. Use nohup + redirect + disown to fully
+    # detach the server from the hook's process group (git waits for
+    # all hook children before returning).
+    exec 200>&-
+    cd "$BEADS_WEB_DIR" && nohup npm start > /tmp/beads-web-prod.log 2>&1 &
+    disown
+    echo "[beads_web post-commit] Prod server restarted in background (log: /tmp/beads-web-prod.log)."
+else
+    # Busy: warn + skip restart (AC 2.3)
+    echo ""
+    echo "[beads_web post-commit] BUILD SUCCEEDED."
+    echo "Active agents detected ($AGENT_COUNT tmux sessions matching shipyard-*)."
+    echo "Prod NOT restarted to avoid dropping in-flight requests."
+    echo "Manual restart when agents finish:"
+    echo "  cd $BEADS_WEB_DIR && pkill -f \"next-server\" || true; npm start &"
+    echo ""
+fi
