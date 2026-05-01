@@ -548,8 +548,10 @@ export function ensureReconcilerRunning(): void {
     // depth complement to kvn's inline fast path. Catches cases where
     // inline branch didn't fire (agent exited outside normal chain,
     // orchestrator restarted, etc.).
-    // factory-core-3akh.2: marker routing is event-driven (agent-exited);
-    // 1-min poll fine for defense-in-depth.
+    // beads_web-hs5: extended with filesystem-walk fallback for orphaned
+    // markers (markers with no agent-exited event). Throttle increased
+    // from 60s to 300s (5 min) per ADR-hs5 Q3 — filesystem walk over
+    // all registered repos is expensive (~400ms per walk).
     rec.registerRule(
       throttled(buildMarkerDrivenRoutingRule({
         readMarker: async (rp: string, markerId: string) => {
@@ -571,7 +573,61 @@ export function ensureReconcilerRunning(): void {
           };
         },
         repoPath,
-      }), 60_000),
+        // --- hs5 filesystem-walk fallback callbacks ---
+        listRegisteredRepos: () => {
+          try {
+            const configPath = path.join(os.homedir(), ".beads-web.json");
+            const raw = require("fs").readFileSync(configPath, "utf-8");
+            const config = JSON.parse(raw);
+            if (!Array.isArray(config.repos)) return [];
+            return config.repos
+              .filter((r: { name?: string; path?: string }) => r.name && r.path)
+              .map((r: { name: string; path: string }) => ({
+                name: r.name,
+                path: r.path,
+              }));
+          } catch (err) {
+            console.warn(
+              "[xfc] listRegisteredRepos: failed to read ~/.beads-web.json —",
+              err instanceof Error ? err.message : err,
+            );
+            return [];
+          }
+        },
+        listMarkerFiles: (rp: string) => {
+          try {
+            const markersDir = path.join(rp, ".beads", "markers");
+            return readdirSync(markersDir).filter((f) => f.endsWith(".json"));
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code !== "ENOENT") {
+              console.warn(
+                `[xfc] listMarkerFiles: error reading ${rp}/.beads/markers/ — ${code}`,
+              );
+            }
+            return [];
+          }
+        },
+        readBeadStatus: (beadId: string, rp: string) => {
+          try {
+            const bd = getBdPath();
+            const env = getBdEnv();
+            const out = execSync(`${bd} show ${beadId} --json`, {
+              cwd: rp,
+              encoding: "utf-8",
+              env,
+              timeout: 10_000,
+            });
+            const parsed = JSON.parse(out);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              return (parsed[0].status as string) ?? null;
+            }
+            return null;
+          } catch {
+            return null; // bd failure — tolerate, skip marker
+          }
+        },
+      }), 300_000), // beads_web-hs5: 5-min throttle per ADR-hs5 Q3
     );
 
     rec.start();

@@ -1,0 +1,29 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-hs5",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T19:15:00Z",
+  "exited_at": "2026-05-01T19:28:35Z",
+  "what_was_done": "Extended marker-driven-routing reconciler rule (xfc) with hybrid event-first / filesystem-walk-fallback discovery (beads_web-hs5). Modified src/lib/reconciler-rules/marker-driven-routing.ts to add filesystem-walk fallback in matches() when event-based discovery returns zero matches. Added listRegisteredRepos, listMarkerFiles, readBeadStatus callbacks to MarkerDrivenRoutingRuleOptions. Updated reconciler-bootstrap.ts throttle from 60_000 to 300_000 ms (5 min per ADR-hs5 Q3) and wired filesystem-walk callbacks. Created orphan-recovery test suite with 6 unit tests + 1 integration test.",
+  "what_was_tested": "13 marker-driven-routing tests pass (6 original xfc + 7 new hs5). Full suite: 1927 passed, 11 failed (all pre-existing failures in fleet-config.auto-chain, pipeline-routes, agent-launcher.atomic-state — unrelated to hs5, confirmed by reproducing failures on clean main). Test command: npx jest --testPathPattern=marker-driven-routing — 13 passed, 0 failed.",
+  "deviations_from_ac": "None. All 8 ACs satisfied. readBeadStatus implemented via bd show --json (clean API available, no STOP needed per risk flag). Cross-repo bd-query convention works cleanly.",
+  "recommendation_for_next": "Ship to prod, monitor lmxb auto-route on first reconciler tick after deploy. The filesystem-walk fallback will discover factory-core-lmxb-planner.json within 5 min of the reconciler starting with this code.",
+  "surprises_or_findings": [
+    {
+      "flag": "BD-SHOW-JSON-CLEAN",
+      "detail": "bd show --json cleanly returns status field ('open'/'closed') — build plan risk flag for CROSS-REPO-QUERY-GAP did not materialize. readBeadStatus implemented as bd show <id> --json parse."
+    },
+    {
+      "flag": "PRE-EXISTING-TEST-FAILURES",
+      "detail": "11 pre-existing test failures in 3 suites (fleet-config.auto-chain.test.ts x2, pipeline-routes.test.ts x1, agent-launcher.atomic-state.test.ts x8). All reference old fleet-core path or have drifted pipeline label assertions. Confirmed pre-existing by reproducing on clean main (git stash + run). Not caused by hs5."
+    }
+  ],
+  "verification_evidence": "$ npx jest --testPathPattern=marker-driven-routing\nTest Suites: 2 passed, 2 total\nTests: 13 passed, 13 total\nTime: 0.193s\n\n$ npm test (full suite)\nTest Suites: 3 failed, 92 passed, 95 total\nTests: 11 failed, 1 skipped, 1927 passed, 1939 total\n(11 failures confirmed pre-existing on clean main)",
+  "files_changed": [
+    "src/lib/reconciler-rules/marker-driven-routing.ts",
+    "src/lib/reconciler-bootstrap.ts",
+    "__tests__/lib/reconciler-rules/marker-driven-routing.orphan-recovery.test.ts",
+    ".beads/markers/beads_web-hs5.json"
+  ]
+}
