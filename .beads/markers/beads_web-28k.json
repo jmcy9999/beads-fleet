@@ -1,0 +1,30 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-28k",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T16:35:00Z",
+  "exited_at": "2026-05-01T15:39:40Z",
+  "what_was_done": [
+    {
+      "action": "Implemented marker-reader module",
+      "result": "New file src/lib/marker-reader.ts exports readMarker(repoPath, markerId): Promise<MarkerData | null> with MarkerData type covering all schema fields (required + optional + routing-aware + QA-specific + index signature for forward compat)",
+      "evidence": "src/lib/marker-reader.ts; ~120 lines"
+    },
+    {
+      "action": "Wrote 8 unit tests covering all ACs",
+      "result": "All 8 pass; full test suite: 87 passed suites, 1889 passed tests (vs baseline 86/1881 — delta is exactly +1 suite +8 tests). 3 pre-existing failing suites / 11 pre-existing failed tests unchanged.",
+      "evidence": "__tests__/lib/marker-reader.test.ts; npx jest __tests__/lib/marker-reader.test.ts --verbose: 8/8 pass"
+    },
+    {
+      "action": "Verified build passes",
+      "result": "npm run build: PASS (Next.js production build completes successfully)",
+      "evidence": "npm run build output shows all routes compiled"
+    }
+  ],
+  "what_was_tested": "All 8 AC items verified. AC1 (readMarker export): function exists with correct signature. AC2 (MarkerData type): interface has required fields, optional fields, routing-aware fields, QA-specific fields, and index signature. AC3 (missing file): test 3 — ENOENT returns null. AC4 (malformed JSON): test 4 — syntax error returns null + console.warn. AC5 (missing required fields): tests 5-6 — missing status/version return null + console.warn. AC6 (8 tests): all 8 pass, zero new failures vs baseline. AC7 (single commit): commit includes marker per NEW ORDERING directive.",
+  "deviations_from_ac": "None. All 8 AC items met. AC7 commit subject uses 'beads_web-28k: Add marker-reader module + tests' per build prompt section 8.",
+  "surprises_or_findings": "Pre-existing test failures (3 suites / 11 tests) observed in baseline before any code changes: fleet-config.auto-chain.test.ts (fleet.json readFileSync), agent-launcher.atomic-state.test.ts (pipeline:deploying vs pipeline:submission-prep label mismatch — likely from beads_web-aiq close-routing change). Not related to marker-reader scope. NEW MARKER ORDERING precedent: this commit (beads_web-28k) is the second bead to ship under the 2026-05-01 operator directive (after factory-core-o4lx.1 commit ed9d3b4). Marker file is staged + committed alongside work files.",
+  "recommendation_for_next": "Ready for Wave 1 completion. Marker-reader ships; next Wave 1 bead is beads_web-dvm (detectAgentDone marker-first patch — imports readMarker). Wave 2 beads (beads_web-gc2, beads_web-kvn, beads_web-xfc) depend on this. Reviewer should verify: (1) MarkerData type matches marker-schema.md field set, (2) required-field validation order matches schema doc priority, (3) loose schema discipline preserves unknown fields without stripping.",
+  "ac_items_NOT_verified": []
+}
