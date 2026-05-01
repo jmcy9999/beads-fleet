@@ -146,6 +146,20 @@ export function interpretMarkerForRouting(
     };
   }
 
+  // Precedence 2.5: status=blocked with no blocker_class → coherence safety net
+  // Pre-mortem IF2: when an agent writes status=blocked but forgets blocker_class,
+  // the epic must NOT advance via default progression. Route to coherence as the
+  // safest fallback — coherence can reason about the marker context and decide
+  // the correct next action. (Per marker-protocol.md § 2 commit 8eb9fca.)
+  if (marker.status === "blocked") {
+    return {
+      override: true,
+      nextAgent: "coherence",
+      reason:
+        "status=blocked with no blocker_class, fallback to coherence safety net",
+    };
+  }
+
   // Precedence 3: status=needs-decision + BLOCKER in whats_open
   // Existing 2m5z pattern: route to coherence for reasoning.
   if (marker.status === "needs-decision") {

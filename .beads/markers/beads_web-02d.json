@@ -1,0 +1,16 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-02d",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T23:00:00Z",
+  "exited_at": "2026-05-01T23:30:00Z",
+  "what_was_done": "Added Precedence 2.5 block in interpretMarkerForRouting (src/lib/marker-routing.ts) that catches status=blocked when blocker_class is unset (undefined, null, or empty string). Returns {override: true, nextAgent: 'coherence', reason: 'status=blocked with no blocker_class, fallback to coherence safety net'}. This prevents the blocked marker from falling through to default pipeline progression (override=false), which would incorrectly advance the epic. Pre-mortem IF2 fix. Added 7 new test cases in __tests__/lib/marker-routing.test.ts (tests 12-18): blocker_class absent, null, undefined, empty string, plus regression guards for existing blocked+blocker_class routing, status=success fallthrough, and existing whats_open test renumbered.",
+  "what_was_tested": "Targeted: npx jest marker-routing --silent — 2 suites, 25 tests, all pass. Full suite: npx jest --silent — 97 suites, 1952 passed, 1 skipped, 0 failures. No new failures. Pre-existing worker force-exit warning (timer leak) unchanged. All 5 AC items verified: (1) blocked+no-blocker_class returns coherence override, (2) test added, (3) lmxb fixture verifies routing, (4) all existing tests pass, (5) marker written LAST before commit.",
+  "deviations_from_ac": "None. All 5 AC items satisfied.",
+  "recommendation_for_next": "No further action needed for this bead. The lmxb canary scenario (blocked + design-question + next_agent=architect) continues to route correctly via Precedence 1 (next_agent wins). The fix only affects the specific case where blocker_class is missing. No other routing edge cases were revealed.",
+  "files_changed": [
+    "src/lib/marker-routing.ts",
+    "__tests__/lib/marker-routing.test.ts"
+  ]
+}

@@ -234,7 +234,123 @@ describe("marker-routing (beads_web-gc2)", () => {
     expect(result.reason).toContain("invalid marker");
   });
 
-  // Test 12: whats_open present but no BLOCKER prefix → fall through (AC 5 test 12)
+  // Test 12: status=blocked with no blocker_class → coherence safety net (beads_web-02d AC 1-2)
+  test("status=blocked, blocker_class absent → coherence safety net", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      // blocker_class intentionally absent
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("coherence");
+    expect(result.reason).toContain("no blocker_class");
+    expect(result.reason).toContain("coherence");
+  });
+
+  // Test 13: status=blocked, blocker_class=null → coherence safety net (beads_web-02d AC 2)
+  test("status=blocked, blocker_class=null → coherence safety net", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      blocker_class: null as unknown as string,
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("coherence");
+    expect(result.reason).toContain("no blocker_class");
+  });
+
+  // Test 14: status=blocked, blocker_class=undefined → coherence safety net (beads_web-02d AC 2)
+  test("status=blocked, blocker_class=undefined → coherence safety net", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      blocker_class: undefined,
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("coherence");
+    expect(result.reason).toContain("no blocker_class");
+  });
+
+  // Test 15: status=blocked, blocker_class="" (empty string) → coherence safety net (beads_web-02d)
+  test("status=blocked, blocker_class=empty-string → coherence safety net", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      blocker_class: "",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    // empty string is falsy — Precedence 2 skipped, Precedence 2.5 catches it
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("coherence");
+    expect(result.reason).toContain("no blocker_class");
+  });
+
+  // Test 16: Verify existing blocked+blocker_class still works after fix (beads_web-02d verification)
+  test("status=blocked, blocker_class=design-question still routes to architect (regression guard)", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      blocker_class: "design-question",
+      next_agent: "architect",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    // next_agent wins (Precedence 1)
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("architect");
+    expect(result.reason).toContain("explicit next_agent field");
+  });
+
+  // Test 17: Verify status=success with no next_agent still falls through (beads_web-02d non-blocked guard)
+  test("status=success, no next_agent → still override=false (no regression from blocked fix)", () => {
+    const marker: MarkerData = {
+      version: "1",
+      bead_id: "factory-core-a4tx.15",
+      status: "success",
+      stage: "builder",
+      started_at: "2026-05-01T14:00:00Z",
+      exited_at: "2026-05-01T15:00:00Z",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(false);
+    expect(result.reason).toContain("fallback to pipeline-routes");
+  });
+
+  // Test 18: whats_open present but no BLOCKER prefix → fall through (AC 5 test 12, renumbered)
   test("whats_open present but no BLOCKER prefix → fall through to status-based logic", () => {
     const marker: MarkerData = {
       version: "1",
