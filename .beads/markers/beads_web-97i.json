@@ -1,0 +1,23 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-97i",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T19:05:00Z",
+  "exited_at": "2026-05-01T19:15:00Z",
+  "what_was_done": "Fixed bd-cross-repo.ts default URL from :3010 to :3000 (line 42 code default + line 10 comment). Updated test fixture in __tests__/api/cross-repo-list.test.ts:70 to align with new default. Updated build prompt .beads/prompts/beads_web-xjn.md:18 to reflect correct default. Sweep classified 6 beads_web occurrences: 4 FIX (applied), 1 KEEP-AS-OVERRIDE-EXAMPLE (src/lib/orchestrator-url.ts:12 — legitimate non-default port example), 1 KEEP (beads_web-1nm.md:34 — 'otelEnv:3010' is a line-number reference in agent-launcher.ts, not a port).",
+  "what_was_tested": "Empirical verification: unset BEADS_WEB_URL, ran 'node --experimental-strip-types scripts/bd-cross-repo.ts --label=ship-type:internal --status=open'. Tool connected to orchestrator on :3000, returned valid JSON with 104 issues, exit code 0. No ':3010' error. Confirmed no remaining :3010 references in code files except the intentional KEEP in orchestrator-url.ts:12.",
+  "deviations_from_ac": "None. All 5 AC items satisfied exactly as specified.",
+  "surprises_or_findings": [
+    {
+      "flag": "ROW-5-LINE-NUMBER-NOT-PORT",
+      "detail": ".beads/prompts/beads_web-1nm.md:34 contains 'otelEnv:3010' which is a reference to variable 'otelEnv' at line 3010 of agent-launcher.ts, not a port number. Classified as KEEP — unrelated to the :3010 port default bug."
+    }
+  ],
+  "verification_evidence": "$ unset BEADS_WEB_URL\n$ node --experimental-strip-types scripts/bd-cross-repo.ts --label=ship-type:internal --status=open\n(node:46716) ExperimentalWarning: Type Stripping is an experimental feature...\n{\n  \"label\": \"ship-type:internal\",\n  \"status\": \"open\",\n  \"count\": 104,\n  \"issues\": [\n    {\n      \"id\": \"factory-core-097v\",\n      \"title\": \"C2 deferred...\",\n      ...\nResult: exit 0, valid JSON, tool connects to :3000 without BEADS_WEB_URL.",
+  "files_changed": [
+    "scripts/bd-cross-repo.ts",
+    "__tests__/api/cross-repo-list.test.ts",
+    ".beads/prompts/beads_web-xjn.md"
+  ]
+}

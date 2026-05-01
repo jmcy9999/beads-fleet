@@ -7,7 +7,7 @@
  *   node scripts/bd-cross-repo.ts --label=epic:factory-core-so74 --status=all
  *
  * Env vars:
- *   BEADS_WEB_URL — orchestrator base URL (default: http://localhost:3010)
+ *   BEADS_WEB_URL — orchestrator base URL (default: http://localhost:3000)
  *
  * Exits 0 on success (JSON to stdout), 1 on error (message to stderr).
  *
@@ -39,7 +39,7 @@ function parseArgs(argv: string[]): { label: string; status: string } {
 
 async function main(): Promise<void> {
   const { label, status } = parseArgs(process.argv);
-  const baseUrl = process.env.BEADS_WEB_URL ?? "http://localhost:3010";
+  const baseUrl = process.env.BEADS_WEB_URL ?? "http://localhost:3000";
   const url = `${baseUrl}/api/cross-repo/list?label=${encodeURIComponent(label)}&status=${encodeURIComponent(status)}`;
 
   let response: Response;

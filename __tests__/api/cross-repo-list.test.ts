@@ -67,7 +67,7 @@ function makePlan(issues: PlanIssue[]): RobotPlan {
 }
 
 function makeGetRequest(params: Record<string, string>): NextRequest {
-  const url = new URL("http://localhost:3010/api/cross-repo/list");
+  const url = new URL("http://localhost:3000/api/cross-repo/list");
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, v);
   }
