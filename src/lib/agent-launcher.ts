@@ -29,6 +29,7 @@ import {
 } from "./fleet-config";
 import { getAllRepoPaths } from "./repo-config";
 import { FLEET_CORE_PATH } from "./repo-path-resolver";
+import { readMarker } from "./marker-reader";
 import type { ShipType, FleetStage } from "./pipeline-router";
 
 const execAsync = promisify(exec);
@@ -495,16 +496,81 @@ async function tmuxSessionAlive(sessionName: string): Promise<boolean> {
 }
 
 /**
- * Detect whether Claude Code has finished its turn by reading the agent's
- * specific transcript JSONL file. Looks for the last assistant message with
- * stop_reason: "end_turn" — this means Claude completed its response and is
- * waiting for user input.
+ * Detect whether Claude Code has finished its turn.
+ *
+ * beads_web-dvm (factory-core-o4lx Wave 1): Marker-first completion detection.
+ * 1. Check marker file BEFORE transcript heuristic. If marker exists with
+ *    terminal status (success/failure/needs-decision/blocked), return true
+ *    immediately — completion detected via marker.
+ * 2. Fall back to transcript heuristic if marker missing, too fresh (<5s),
+ *    non-terminal, or read fails.
+ *
+ * Marker becomes authoritative completion signal; transcript heuristic
+ * becomes fallback. Catches both false negatives (marker written before
+ * transcript end_turn) and false positives (transcript shows end_turn but
+ * agent didn't actually complete).
+ *
+ * Transcript heuristic (original logic): reads the agent's specific
+ * transcript JSONL file, looks for the last assistant message with
+ * stop_reason: "end_turn".
  *
  * Uses the transcript file detected at launch (session.transcriptFile) to
  * avoid reading the wrong session's transcript in a shared project directory.
  */
 async function detectAgentDone(session: AgentSession): Promise<boolean> {
   try {
+    // -----------------------------------------------------------------------
+    // Phase 1: Marker-first completion detection (beads_web-dvm)
+    // -----------------------------------------------------------------------
+    // Derive markerId from session fields:
+    //   - Per-bead agents: session.beadId (e.g., "beads_web-dvm")
+    //   - Epic-scope agents: "${epicId}-${pipelineStage}" (e.g., "factory-core-o4lx-planner")
+    const markerId = session.beadId
+      ?? (session.epicId && session.pipelineStage
+        ? `${session.epicId}-${session.pipelineStage}`
+        : null);
+
+    if (session.repoPath && markerId) {
+      try {
+        const markerPath = path.join(
+          session.repoPath,
+          ".beads",
+          "markers",
+          `${markerId}.json`,
+        );
+
+        // Check marker file staleness BEFORE reading (same 5-second check
+        // as transcript). If file was modified within the last 5 seconds, it
+        // might still be in the process of being written — skip marker check
+        // and fall through to transcript heuristic.
+        const markerStat = await fs.stat(markerPath);
+        if (Date.now() - markerStat.mtimeMs >= 5000) {
+          // Marker file is stable (>5s since last modification). Read it.
+          const marker = await readMarker(session.repoPath, markerId);
+
+          if (marker && marker.status) {
+            const terminalStatuses = [
+              "success",
+              "failure",
+              "needs-decision",
+              "blocked",
+            ];
+            if (terminalStatuses.includes(marker.status)) {
+              return true; // Agent done per marker
+            }
+          }
+        }
+        // If marker is too fresh (<5s) or status non-terminal,
+        // fall through to transcript heuristic.
+      } catch {
+        // Marker file stat failed (file doesn't exist or other error).
+        // Fall through to transcript heuristic.
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2: Transcript heuristic fallback (original logic, UNCHANGED)
+    // -----------------------------------------------------------------------
     const filePath = session.transcriptFile;
     if (!filePath) return false;
 
@@ -543,6 +609,14 @@ async function detectAgentDone(session: AgentSession): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Test-only export of detectAgentDone for unit testing marker-first
+ * completion detection (beads_web-dvm).
+ *
+ * @internal — not part of the public API. Use only in tests.
+ */
+export const _testOnlyDetectAgentDone = detectAgentDone;
 
 /**
  * Run the full Langfuse flush + exit sequence for a pipeline agent.
