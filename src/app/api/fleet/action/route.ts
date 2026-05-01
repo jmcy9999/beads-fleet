@@ -30,7 +30,7 @@ import {
 import { getRepos, findRepoForIssue } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import { extractAppName } from "@/lib/extract-app-name";
-import { resolveRepoPath } from "@/lib/repo-path-resolver";
+import { FLEET_CORE_PATH, resolveRepoPath } from "@/lib/repo-path-resolver";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -129,7 +129,7 @@ const VALID_ACTIONS = new Set<PipelineAction>([
 // dispatch. See docs/aspirational-pipeline/a8-deferred-fixes.md (architect's
 // design originally targeted only repo-path-resolver.ts and agent-launcher.ts;
 // this third location was discovered during retest).
-const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
+// FLEET_CORE_PATH now imported from @/lib/repo-path-resolver (beads_web-63g).
 
 /**
  * Derive the app name from the epic title. Strips common suffixes and extracts

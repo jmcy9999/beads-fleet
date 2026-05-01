@@ -28,6 +28,7 @@ import {
   type AutoChainStage,
 } from "./fleet-config";
 import { getAllRepoPaths } from "./repo-config";
+import { FLEET_CORE_PATH } from "./repo-path-resolver";
 
 const execAsync = promisify(exec);
 
@@ -1553,11 +1554,8 @@ export async function listOpenWaveBeadsAllRepos(
 // Chain actions -- when an agent exits, optionally trigger the next step
 // ---------------------------------------------------------------------------
 
-// Resolve fleet-core path: env var > hardcoded fallback.
-// factory-core-so74 A.8 deferred-AC fix: fallback updated to factory-core
-// (the active fork). See repo-path-resolver.ts for full context and
-// docs/aspirational-pipeline/a8-deferred-fixes.md.
-const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
+// FLEET_CORE_PATH now imported from ./repo-path-resolver (beads_web-63g).
+// See repo-path-resolver.ts for env-var resolution and fallback context.
 
 /**
  * factory-core-lfcf.3: emit a `stage-dispatched` event to pair with the

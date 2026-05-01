@@ -15,6 +15,8 @@
 import { promises as fs } from "fs";
 import path from "path";
 
+export const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
+
 export interface RepoPathResult {
   /** Absolute path to the repository where work happens */
   repoPath: string;
