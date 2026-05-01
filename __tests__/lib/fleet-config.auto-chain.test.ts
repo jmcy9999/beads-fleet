@@ -184,7 +184,7 @@ describe("drift — fleet.json keys match AutoChainStage union (guardrail 7)", (
     // a future edit that adds a stage in one surface but not the other
     // fails CI rather than silently drifts in production.
     const fleetCorePath =
-      process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
+      process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
     const fleetJsonPath = path.join(fleetCorePath, "fleet.json");
 
     const raw = readFileSync(fleetJsonPath, "utf-8");
@@ -206,7 +206,7 @@ describe("drift — fleet.json keys match AutoChainStage union (guardrail 7)", (
 
   it("committed fleet.json ships all four stages as boolean false (F9 bake-in)", () => {
     const fleetCorePath =
-      process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
+      process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
     const fleetJsonPath = path.join(fleetCorePath, "fleet.json");
 
     const raw = readFileSync(fleetJsonPath, "utf-8");

@@ -50,7 +50,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const FLEET_CORE_PATH =
-  process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/fleet-core";
+  process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";
 
 // ---------------------------------------------------------------------------
 // Complete list of ship types, sourced from the registry itself. Typed as

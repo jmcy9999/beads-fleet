@@ -1,0 +1,30 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-ywj",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T20:30:00Z",
+  "exited_at": "2026-05-01T20:35:00Z",
+  "what_was_done": "Updated test default FLEET_CORE_PATH from legacy /Users/janemckay/dev/fleet/fleet-core to canonical /Users/janemckay/dev/fleet/factory-core in 2 test files (3 lines total): __tests__/lib/pipeline-routes.test.ts:53 (1 occurrence) and __tests__/lib/fleet-config.auto-chain.test.ts (2 occurrences at lines 187, 209). Live code default at src/lib/repo-path-resolver.ts:18 was already factory-core post-41x8 rename; tests had drifted. The fix aligns test defaults with live-code defaults.",
+  "what_was_tested": "Empirical: ran 'npx jest __tests__/lib/pipeline-routes.test.ts __tests__/lib/fleet-config.auto-chain.test.ts'. Result: 70 passed / 0 failed (39+31). Pre-fix baseline (with FLEET_CORE_PATH env var override) confirmed same outcome — proves the env var is what was missing. Without env var or fix, baseline was 10 failed. This fix shipped 10 of the 11 pre-mortem-identified test failures (CF2 + CF3). Remaining 1 failure (CF4 at agent-launcher.atomic-state.test.ts:516) is tracked under beads_web-9k9 — separate test-bug, not addressed here.",
+  "deviations_from_ac": "None. All 4 ACs satisfied.",
+  "surprises_or_findings": [
+    {
+      "flag": "PRE-MORTEM-MISFRAMING",
+      "detail": "The architect's pre-mortem memo (docs/research/pre-mortem-pipeline-readiness-2026-05-01.md) framed CF2 + CF3 as 'fleet.json missing' and 'closure checklists missing'. Both files actually exist at /Users/janemckay/dev/fleet/factory-core/. The architect took test-code default paths at face value rather than empirically verifying file presence. Discipline lesson banked in factory-core state-doc: future pre-mortem-style work must ls paths claimed missing."
+    },
+    {
+      "flag": "RT2O-1-AND-2-SUPERSEDED",
+      "detail": "factory-core-rt2o.1 (create 8 closure checklists) and factory-core-rt2o.2 (create fleet.json) are both phantom. The 8 checklists exist (epic-game.md, epic-internal.md, epic-ios-app.md, epic-macos-app.md, epic-python-tool.md, epic-venture.md, epic-web-app.md, epic-wordpress-plugin.md, plus epic-generic.md as a 9th). fleet.json exists (11475 bytes, dated Apr 30). Both rt2o beads should close as superseded with reason citing this commit."
+    },
+    {
+      "flag": "169-LEGACY-REFERENCES-DEFERRED",
+      "detail": "There are 169 'fleet-core' string references across beads_web src/ + __tests__/ + docs/. Most are stale comments and dead-fallback lookup code (e.g. store.repos.find((r) => r.name.includes('fleet-core')) — never matches because the registry has only 'factory-core'). Functional impact today is zero — not bead-blocking. Worth a P3 hygiene sweep bead under epic:factory-core-rt2o, can defer."
+    }
+  ],
+  "verification_evidence": "$ npx jest __tests__/lib/pipeline-routes.test.ts __tests__/lib/fleet-config.auto-chain.test.ts\nPASS server __tests__/lib/fleet-config.auto-chain.test.ts\nPASS server __tests__/lib/pipeline-routes.test.ts\nTest Suites: 2 passed, 2 total\nTests:       70 passed, 70 total\nTime:        0.296 s",
+  "files_changed": [
+    "__tests__/lib/pipeline-routes.test.ts",
+    "__tests__/lib/fleet-config.auto-chain.test.ts"
+  ]
+}
