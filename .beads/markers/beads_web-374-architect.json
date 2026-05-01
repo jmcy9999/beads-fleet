@@ -1,0 +1,61 @@
+{
+  "version": "1",
+  "epic_id": "beads_web-374",
+  "status": "success",
+  "stage": "architect",
+  "started_at": "2026-05-02T00:30:00Z",
+  "exited_at": "2026-05-02T01:15:00Z",
+  "what_was_done": [
+    {
+      "action": "Read inputs",
+      "result": "bead description (de-facto functional spec — no separate spec file generated; spec content embedded in beads_web-374 description), supplementary research at docs/research/o4lx-marker-driven-routing-investigation.md, and existing source files marker-routing.ts/marker-reader.ts/agent-action-map.ts/agent-launcher.ts excerpt/FleetCard.tsx (1192 lines)/AttentionBanner.tsx/api/research route handler",
+      "evidence": "All sections of the bead's Description, Scope, Visual Treatment, Acceptance Criteria, Cross-references, Out of scope quoted in architecture doc"
+    },
+    {
+      "action": "Mapped layer responsibilities",
+      "result": "Domain (MarkerData/RoutingDecision/AgentType reused; MarkerCtaIntent + deriveMarkerId NEW); Application (readMarker/interpretMarkerForRouting/getActionForAgent reused; /api/markers/[epicId]/[stage] route handler NEW); Presentation (FleetCard.tsx modified additively; useEpicMarker hook + MarkerAwareCtaBlock component NEW)",
+      "evidence": "Architecture doc § Layer Mapping; doc total ~720 lines"
+    },
+    {
+      "action": "Specified file structure + count",
+      "result": "12 files (5 new production + 6 new tests + 1 modified FleetCard.tsx). Comparable to peer features (factory-core-509: 4 prod + 4 tests; factory-core-o4lx Wave 2: 5 prod + 5 tests). Within Architecture Simplicity Gate budget for an internal feature.",
+      "evidence": "Architecture doc § File Structure Plan and § Simplicity Assessment"
+    },
+    {
+      "action": "Wrote 7 ADRs with genuine alternatives",
+      "result": "ADR-001 reuse interpretMarkerForRouting; ADR-002 Node-runtime API route (vs edge/Server Component/WebSocket); ADR-003 single MarkerAwareCtaBlock component (vs three components or inline-in-FleetCard); ADR-004 deriveMarkerCtaIntent pure function (vs inline or in-hook); ADR-005 stale-marker filter in hook (vs in derivation or route); ADR-006 per-bead markers out-of-scope; ADR-007 marker-suggested badge inline (vs separate banner or border colour)",
+      "evidence": "Architecture doc § Architecture Decision Records — each ADR has at least one substantive rejected alternative with reasoning"
+    },
+    {
+      "action": "Specified failure modes at integration seams",
+      "result": "Browser↔/api/markers (HTTP): network failure→fail-degraded to default CTAs; missing/malformed file→200 null body→defaults; repo path wrong→null→defaults; partial-failure N/A (single read); transactions N/A (read-only). MarkerAwareCtaBlock↔onPipelineAction (in-process): reuses existing CTA infrastructure; no new failure surface. useEpicMarker↔TanStack Query (in-process): stale-marker is documented semantics (isStale=true), not a fault.",
+      "evidence": "Architecture doc § Component Boundaries — Failure modes at integration seams"
+    },
+    {
+      "action": "Wrote planner handoff section",
+      "result": "5-bead decomposition recommendation across 3 waves; integration seam concentration on .5 (only bead touching FleetCard.tsx, minimising merge-conflict surface with cross-referenced beads_web-5nv); test-spec watchfors (a6o defence scenario, 5 precedence branches); builder watchfors (Edge Runtime trap, exhaustive switch, queryKey must include repoPath)",
+      "evidence": "Architecture doc § Handoff to Planner"
+    }
+  ],
+  "what_was_tested": "Architect's 'tested' is simplicity gate + spec-coverage cross-check. Simplicity gate: 12 files in line with peer features (factory-core-509, o4lx Wave 2); 1 protocol (MarkerCtaIntent) genuinely needed for exhaustive switch + testability; DTO chain MarkerData→MarkerCtaIntent→JSX is at the standing-order limit, not over; no spurious repositories, no event bus. Spec-coverage: every AC item in beads_web-374's bead description traces to a component (AC1 marker-driven CTA → MarkerAwareCtaBlock 'marker-driven' branch + getActionForAgent reuse; AC2 needs-decision banner → MarkerAwareCtaBlock 'needs-decision' branch + first-BLOCKER extraction; AC3 failure banner → MarkerAwareCtaBlock 'failure' branch + recommendation_for_next surfacing; AC4 default fallthrough → MarkerAwareCtaBlock returns null when intent.kind=default; AC5 a6o defence → useEpicMarker stale-marker filter; AC6 regression coverage of 5 precedence branches → derive-marker-cta-intent.test.ts covers each).",
+  "deviations_from_ac": "None. Bead description's 'Out of scope' explicitly excludes marker schema changes (covered by factory-core-sy3d), reconciler-side changes, and per-bead marker reads — architecture observes all three exclusions (ADR-006 documents per-bead-marker exclusion). Architecture preserves the 'fall back to existing pipeline-routes CTAs' behaviour byte-for-byte (FleetCard.tsx modifications are additive only — new component renders ABOVE the existing stage-default JSX, returns null for intent.kind=default, leaving existing JSX unchanged).",
+  "surprises_or_findings": "1) The user-supplied 'functional spec path' (/Users/janemckay/dev/fleet/factory-core/docs/research/marker-aware-ctas-in-fleetcard-bead-card-functional-spec.md) and 'recon brief path' (same dir, no -functional-spec suffix) do NOT exist on disk. The bead description itself is structured as a functional spec (Scope, Visual Treatment, Acceptance Criteria, Cross-references, Why P2, Effort estimate, Out of scope) — this is the de-facto spec for an internal pipeline:architecture-labelled bead. The supplementary research at docs/research/o4lx-marker-driven-routing-investigation.md provided the canonical context. Architect proceeded with the bead description + o4lx memo as the authoritative inputs, with the path discrepancy documented in the architecture doc's 'Based on' header. 2) The orchestrator-side dispatchChainAction already implements the precedence rule this bead asks the dashboard to mirror (agent-launcher.ts lines ~2017-2060, observed during investigation). The cleanest architecture is to REUSE interpretMarkerForRouting directly from the dashboard rather than introduce a second precedence implementation — which is what ADR-001 establishes. 3) FleetCard.tsx is 1192 lines as bead description says; AttentionBanner.tsx (~136 lines) is the precedent for extracting card-internal attention UI when FleetCard size becomes a concern. The architecture follows the same extraction pattern (ADR-003).",
+  "whats_open": [
+    "FOLLOW-ON: per-bead marker UI on /issue/<id> bead-detail page (out of scope for 374; ADR-006 names this as the natural follow-on; planner can file this as a sibling bead if desired)",
+    "FOLLOW-ON: client-side telemetry for marker_overrode_default_chain events. Server-side already emits via agent-launcher.ts; dashboard rendering is a passive consequence. Adding client telemetry would duplicate the audit trail — deferred unless operator wants it",
+    "FOLLOW-ON: when beads_web-85f (reconciler stale-marker re-dispatch) lands and adopts a different filter shape, useEpicMarker's stale-marker check (ADR-005) should adopt the same shape. One-place edit; no architecture re-work needed"
+  ],
+  "recommendation_for_next": "Hand off direct to planner. The architecture doc § Handoff to Planner section recommends 5 child beads across 3 waves with explicit dependencies. Planner should pay closest attention to: (a) keeping all FleetCard.tsx edits in a single bead (.5) to minimise merge-conflict surface with cross-referenced beads_web-5nv (which the bead description explicitly flags); (b) the Edge Runtime trap on the route handler (force runtime='nodejs'; no other module in the React tree may import marker-reader.ts directly); (c) the test-spec agent will need to validate AC #5 (a6o defence) with a scenario where the epic has BOTH pipeline:plan-review and pipeline:architecture labels and a marker overrides — that's the regression-shape this bead exists to prevent.",
+  "dispatch_context": {
+    "architecture_doc_path": "/Users/janemckay/dev/fleet/factory-core/docs/research/marker-aware-ctas-in-fleetcard-bead-card-architecture.md",
+    "architecture_doc_repo": "factory-core",
+    "marker_repo": "beads_web",
+    "bead_repo": "beads_web",
+    "cross_repo_note": "architecture doc lives in factory-core/docs/research/ per internal ship-type convention; marker lives in beads_web/.beads/markers/ per marker-protocol § 1 (marker goes in the bead's home repo); these are two separate commits in two separate repos by design",
+    "adr_count": 7,
+    "file_count_planned": 12,
+    "file_count_breakdown": "5 new production + 6 new tests + 1 modified FleetCard.tsx",
+    "recommended_wave_count": 3,
+    "recommended_child_bead_count": 5
+  }
+}
