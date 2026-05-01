@@ -338,7 +338,6 @@ const LOG_DIR = path.join(os.tmpdir(), "beads-web-agent-logs");
 const SESSIONS_DIR = path.join(os.tmpdir(), "beads-web-agent-sessions");
 const STATUS_DIR = path.join(os.tmpdir(), "beads-web-agent-status");
 const LAUNCHER_DIR = path.join(os.tmpdir(), "beads-web-launchers");
-const TMUX_SESSION = "shipyard";
 
 // Backwards-compat: old single-session file (cleaned up on first use)
 const LEGACY_SESSION_FILE = path.join(os.tmpdir(), "beads-web-agent-session.json");
@@ -482,42 +481,6 @@ async function recoverSessions(): Promise<AgentSession[]> {
 // ---------------------------------------------------------------------------
 
 /**
- * Ensure the Shipyard tmux session exists.
- */
-async function ensureTmuxSession(): Promise<void> {
-  try {
-    await execAsync(`/opt/homebrew/bin/tmux has-session -t ${TMUX_SESSION} 2>/dev/null`);
-  } catch {
-    // Session doesn't exist, create it
-    await execAsync(`/opt/homebrew/bin/tmux new-session -d -s ${TMUX_SESSION}`);
-  }
-}
-
-/**
- * Check if a tmux window exists.
- */
-async function tmuxWindowExists(windowName: string): Promise<boolean> {
-  try {
-    await execAsync(`/opt/homebrew/bin/tmux list-windows -t ${TMUX_SESSION} -F '#{window_name}' 2>/dev/null | grep -q '^${windowName}$'`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Read the status file written by the launcher script on exit.
- */
-async function readStatusFile(statusFile: string): Promise<{exitCode: number} | null> {
-  try {
-    const data = await fs.readFile(statusFile, "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Check if a tmux session exists by name (not window — each agent gets its own session).
  */
 async function tmuxSessionAlive(sessionName: string): Promise<boolean> {
@@ -642,15 +605,6 @@ async function runFlushAndExit(
   log5.end();
 }
 
-/**
- * Send /exit to a tmux session to trigger clean Claude Code shutdown.
- * This fires the Stop hook (which sends Langfuse traces) before the process exits.
- */
-async function sendTmuxExit(sessionName: string): Promise<void> {
-  const tmux = "/opt/homebrew/bin/tmux";
-  await execAsync(`${tmux} send-keys -t "${sessionName}" "/exit" Enter`);
-}
-
 // Timing constants
 const EXIT_TIMEOUT_MS = 30000; // Force-kill 30s after /exit if session won't die
 const RECOVERY_DEBOUNCE_MS = 10000; // Don't attempt recovery more than once per 10s
@@ -674,7 +628,7 @@ function startPollLoop(
   session: AgentSession,
   repoKey: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  langfuseSpan?: any,
+  _langfuseSpan?: any,
 ): NodeJS.Timeout {
   const logFile = session.logFile;
   const tmuxSession = session.tmuxSessionName!;
@@ -809,56 +763,6 @@ async function attemptRecovery(): Promise<void> {
     activeAgents.set(key, { session, pollInterval });
     console.log(`[recovery] Recovered agent session for ${session.repoName} (tmux: ${session.tmuxSessionName})`);
   }
-}
-
-/**
- * Generate the launcher script that runs in the tmux window.
- */
-function generateLauncherScript(
-  session: AgentSession,
-  otelEnv: Record<string, string>,
-  options: LaunchOptions,
-): string {
-  const model = options.model ?? "sonnet";
-  const maxTurns = options.maxTurns ?? 200;
-  const allowedTools = options.allowedTools ?? "Bash,Read,Write,Edit,Glob,Grep";
-
-  // Build env var exports
-  const envExports = Object.entries(otelEnv)
-    .map(([key, value]) => `export ${key}="${value}"`)
-    .join("\n");
-
-  // Escape single quotes in prompt for shell
-  const escapedPrompt = options.prompt.replace(/'/g, "'\\''");
-
-  const agentArg = options.agentName ? `--agent ${options.agentName}` : "";
-
-  return `#!/bin/bash
-# Keep it simple — match the Terminal.app approach that's proven to work.
-# Claude Code finds settings.local.json by walking up the directory tree,
-# which injects TRACE_TO_LANGFUSE and Langfuse keys into the process.
-# Hooks then inherit these env vars and send traces to Langfuse.
-
-cd "${session.repoPath}"
-unset ANTHROPIC_API_KEY
-unset CLAUDECODE
-
-/Users/janemckay/.local/bin/claude \\
-  ${agentArg} \\
-  --max-turns ${maxTurns} \\
-  --model ${model} \\
-  --dangerously-skip-permissions \\
-  --allowedTools ${allowedTools} \\
-  --append-system-prompt '${escapedPrompt}'
-
-EXIT_CODE=$?
-
-# Write status file so beads_web can detect exit
-mkdir -p "${STATUS_DIR}"
-cat > "${session.statusFile}" << STATUSEOF
-{"exitCode": $EXIT_CODE, "exitedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "epicId": "${session.epicId || ""}", "pipelineStage": "${session.pipelineStage || ""}", "repoPath": "${session.repoPath}"}
-STATUSEOF
-`;
 }
 
 // ---------------------------------------------------------------------------
@@ -3004,15 +2908,6 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
 
   // Ensure cwd exists (planning agents run in app repos that may not exist yet)
   await fs.mkdir(options.repoPath, { recursive: true });
-
-  // Build OTEL env vars for Langfuse observability (factory-core-75e)
-  // Returns empty object if Langfuse credentials are not configured (graceful degradation)
-  const otelEnv = buildOtelEnv({
-    epicId: options.epicId,
-    agentType: options.agentName,
-    pipelineStage: options.pipelineStage,
-    repoName,
-  });
 
   // Build Langfuse trace URL and session ID (factory-core-75e)
   const langfuseTraceUrl = options.epicId ? buildLangfuseTraceUrl(options.epicId) : undefined;

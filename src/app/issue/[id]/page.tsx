@@ -1359,7 +1359,7 @@ export default function IssueDetailPage() {
             </div>
 
             {/* Labels */}
-            <LabelSection issueId={issue.id} labels={labels} allIssues={allIssues?.issues ?? []} />
+            <LabelSection issueId={issue.id} labels={labels} allIssues={allIssues ?? []} />
 
             {/* Epic */}
             {issue.epic && (

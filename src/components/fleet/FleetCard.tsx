@@ -111,7 +111,7 @@ const BTN_RED = `${BTN_PRIMARY} text-red-400 hover:text-red-300 bg-red-500/10 ho
 /** Green action button (approve/complete). */
 const BTN_GREEN = `${BTN_PRIMARY} text-green-400 hover:text-green-300 bg-green-500/10 hover:bg-green-500/20 border border-green-500/30`;
 
-export function FleetCard({ app, cost, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrl, attentionItems }: FleetCardProps) {
+export function FleetCard({ app, cost, onPipelineAction, pendingEpicId, langfuseTraceUrl, attentionItems }: FleetCardProps) {
   const { epic, children, progress } = app;
 
   const inProgress = children.filter(

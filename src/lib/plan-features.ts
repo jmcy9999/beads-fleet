@@ -37,7 +37,6 @@ export function extractFeaturesFromPlan(markdown: string): PlanFeature[] {
     const headingMatch = line.match(/^(#{2,3})\s+(.+)/);
     if (headingMatch) {
       const depth = headingMatch[1].length;
-      const title = headingMatch[2].trim();
 
       if (sectionPattern.test(line)) {
         inFeatureSection = true;

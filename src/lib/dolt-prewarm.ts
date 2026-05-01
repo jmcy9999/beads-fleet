@@ -30,6 +30,7 @@
 
 import { execFile as execFileCb } from "child_process";
 import { existsSync } from "fs";
+import path from "path";
 import { promisify } from "util";
 
 const execFile = promisify(execFileCb);

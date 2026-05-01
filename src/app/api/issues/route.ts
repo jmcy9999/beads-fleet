@@ -46,7 +46,10 @@ async function cleanupTitleAndEstimate(
         {
           traceName: "issue-title-cleanup",
           tags: ["quick-create", "haiku"],
-          metadata: { issueType, priority },
+          metadata: {
+            ...(issueType ? { issueType } : {}),
+            ...(priority !== undefined ? { priority: String(priority) } : {}),
+          },
         },
         () =>
           client.messages.create({

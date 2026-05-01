@@ -31,10 +31,13 @@ export type PipelineActionType =
   | "start-wave"
   | "review-wave"
   | "resume-build"
+  | "send-for-review"
+  | "send-for-polish"
   | "run-pm"
   | "run-architect"
   | "revise-spec"
   | "revise-architecture"
+  | "run-test-spec"
   | "human-approve"
   | "human-dismiss";
 

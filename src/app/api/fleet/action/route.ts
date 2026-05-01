@@ -848,7 +848,7 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:architecture", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
-        const { repoPath: archRepoPath, repoName: archRepoName, researchPath: archResearchPath, specPath: archSpecPath } = resolveRepoPath(
+        const { researchPath: archResearchPath, specPath: archSpecPath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -1192,7 +1192,7 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:plan-review", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
-        const { repoPath, repoName, researchPath, specPath, architecturePath } = resolveRepoPath(
+        const { repoPath, researchPath, specPath, architecturePath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -1273,7 +1273,7 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["plan:approved", "pipeline:test-spec", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
-        const { repoPath: aabRepoPath, repoName: aabRepoName, researchPath: aabResearchPath, specPath: aabSpecPath, architecturePath: aabArchPath } = resolveRepoPath(
+        const { repoPath: aabRepoPath, researchPath: aabResearchPath, specPath: aabSpecPath, architecturePath: aabArchPath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -1309,7 +1309,7 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
-        const { repoPath, repoName } = resolveRepoPath(
+        const { repoPath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,
@@ -1392,7 +1392,7 @@ export async function POST(request: NextRequest) {
         await addLabelsToEpic(epicId, ["pipeline:research-complete", "agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
-        const { repoPath, repoName } = resolveRepoPath(
+        const { repoPath } = resolveRepoPath(
           shipType,
           epicTitle as string,
           appName,

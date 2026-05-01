@@ -25,12 +25,6 @@ function getMonthLabel(startDate: string, monthOffset: number): string {
   return d.toLocaleDateString(undefined, { month: "short", year: "2-digit" });
 }
 
-function getMonthDate(startDate: string, monthOffset: number): Date {
-  const d = new Date(startDate);
-  d.setMonth(d.getMonth() + monthOffset);
-  return d;
-}
-
 function getCurrentMonth(startDate: string): number {
   const start = new Date(startDate);
   const now = new Date();

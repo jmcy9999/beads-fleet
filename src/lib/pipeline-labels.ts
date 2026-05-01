@@ -24,7 +24,7 @@
 import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import { findRepoForIssue } from "./repo-config";
-import { getBdPath, getBdEnv } from "./bd-path";
+import { getBdPath } from "./bd-path";
 import { withLock, epicLock, LockTimeoutError } from "./locks";
 
 const execFile = promisify(execFileCb);

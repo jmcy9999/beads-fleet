@@ -29,7 +29,7 @@ export function getBdPath(): string {
  * Strips BEADS_NO_DAEMON to ensure bd uses daemon RPC (not direct Dolt access).
  */
 export function getBdEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env, NO_COLOR: "1" };
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
   delete env.BEADS_NO_DAEMON;
   return env;
 }
