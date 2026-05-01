@@ -130,12 +130,33 @@ export interface PlanTrack {
   issues: PlanIssue[];
 }
 
+/**
+ * Per-repo offline marker emitted by `getAllProjectsPlan` when a fan-out
+ * `getPlan(p)` rejects (e.g., stale Dolt server, ECONNREFUSED). Surfaced to
+ * the renderer so offline repos appear in the dashboard rather than silently
+ * disappearing. See architect memo § ADR-001 / ADR-002 (lmxb-dashboard-stale-
+ * dolt-routing.md): additive optional field, captured at the aggregator
+ * boundary — NOT a discriminated union, NOT inside `getPlan`.
+ */
+export interface OfflineRepoInfo {
+  repoName: string; // basename of repoPath; matches the `project:<repoName>` label scheme
+  repoPath: string;
+  reason: string; // e.g., "connect ECONNREFUSED 127.0.0.1:3306" — verbatim mysql2 message; redacted only for credential-bearing variants
+}
+
 export interface RobotPlan {
   timestamp: string;
   project_path: string;
   summary: PlanSummary;
   tracks: PlanTrack[];
   all_issues: PlanIssue[];
+  /**
+   * Optional. Populated by `getAllProjectsPlan` (the aggregator) with one
+   * entry per fan-out rejection. Single-repo `getPlan` callers do not set
+   * this field — they throw and surface the error directly. The aggregator
+   * always sets it explicitly (`[]` when all fan-outs fulfil).
+   */
+  offline_repos?: OfflineRepoInfo[];
 }
 
 // --- bv --robot-priority ---

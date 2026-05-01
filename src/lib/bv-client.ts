@@ -29,6 +29,7 @@ import type {
   DiffIssueChange,
   IssueStatus,
   IssueType,
+  OfflineRepoInfo,
   PlanIssue,
   PlanSummary,
   PlanTrack,
@@ -833,10 +834,39 @@ export function __resetCollisionScanForTests(): void {
  * logged; the aggregator's primary contract is unaffected.
  */
 export async function getAllProjectsPlan(repoPaths: string[]): Promise<RobotPlan> {
+  // factory-core-lmxb.6: replaced the prior fulfilled-only filter with a
+  // parallel-walk loop that retains rejected paths. Per architect memo
+  // ADR-002, capture is at the aggregator boundary (this site, where
+  // `repoPaths` is in scope and pairing each rejection with its path is
+  // trivial). Do NOT add a second-level catch inside `getPlan` — single-
+  // repo callers must continue to throw on stale-Dolt repos so the
+  // existing HTTP-500-with-detail contract holds. See
+  // docs/architecture/lmxb-dashboard-stale-dolt-routing.md (factory-core).
   const results = await Promise.allSettled(repoPaths.map((p) => getPlan(p)));
-  const plans = results
-    .filter((r): r is PromiseFulfilledResult<RobotPlan> => r.status === "fulfilled")
-    .map((r) => r.value);
+  const plans: RobotPlan[] = [];
+  const offlineRepos: OfflineRepoInfo[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const p = repoPaths[i];
+    if (r.status === "fulfilled") {
+      plans.push(r.value);
+    } else {
+      // mysql2's default ECONNREFUSED message is
+      // `"connect ECONNREFUSED 127.0.0.1:<port>"` — no creds, no PII —
+      // and is surfaced verbatim per architect memo § Security Architecture.
+      // If a richer credential-bearing error appears upstream (e.g.,
+      // `"Access denied for user 'root'"`), the architect memo prescribes
+      // redaction at this site. The current implementation surfaces the
+      // raw `Error.message`; if such a richer error is observed, add a
+      // redaction guard here. See lmxb-dashboard-stale-dolt-routing.md.
+      const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      offlineRepos.push({
+        repoName: path.basename(p),
+        repoPath: p,
+        reason,
+      });
+    }
+  }
 
   const allIssues: PlanIssue[] = [];
   const allTracks: PlanTrack[] = [];
@@ -907,6 +937,7 @@ export async function getAllProjectsPlan(repoPaths: string[]): Promise<RobotPlan
     summary,
     tracks: allTracks,
     all_issues: allIssues,
+    offline_repos: offlineRepos,
   };
 }
 

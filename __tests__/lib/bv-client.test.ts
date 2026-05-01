@@ -7,6 +7,8 @@
 // (not just the 4-5 triage picks).
 // =============================================================================
 
+import path from "path";
+
 import type { BeadsIssue, IssueStatus, IssueType, Priority } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -131,8 +133,16 @@ jest.mock("@/lib/plan-builder", () => ({
   })),
 }));
 
+// Mock the startup-collision-scan side effect that getAllProjectsPlan triggers
+// on first call. The actual scan does cross-repo discovery; in tests we want
+// it inert so the aggregator's primary contract is exercised in isolation.
+// (The dynamic import inside getAllProjectsPlan resolves to this same module.)
+jest.mock("@/lib/startup-collision-scan", () => ({
+  scanForBeadIdCollisions: jest.fn(async () => undefined),
+}));
+
 // Import AFTER mocks are set up
-import { getPlan } from "@/lib/bv-client";
+import { getPlan, getAllProjectsPlan, __resetCollisionScanForTests } from "@/lib/bv-client";
 
 // ---------------------------------------------------------------------------
 // Test data helpers
@@ -512,5 +522,254 @@ describe("getPlan() — SQLite supplementation", () => {
     expect(mockReadIssuesFromDolt).toHaveBeenCalledWith(TEST_PROJECT_PATH);
     expect(mockIssuesToPlan).toHaveBeenCalledWith(FULL_ISSUES, TEST_PROJECT_PATH);
     expect(plan.all_issues.length).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// factory-core-lmxb.6 — getAllProjectsPlan rejection capture
+// ---------------------------------------------------------------------------
+//
+// These tests verify that `getAllProjectsPlan` retains rejected fan-out
+// targets in the new `offline_repos` field rather than silently dropping
+// them. Per architect memo (lmxb-dashboard-stale-dolt-routing.md):
+// - ADR-001: additive optional field, NOT a discriminated union.
+// - ADR-002: capture at the aggregator boundary, NOT inside `getPlan`.
+//
+// The fixture uses real `Promise.allSettled` semantics — getAllProjectsPlan
+// invokes the real allSettled internally; tests differentiate per-path
+// behaviour via `mockReadIssuesFromDolt.mockImplementation` keyed on the
+// path argument (and `execFileBehavior` keyed on `opts.cwd`).
+// ---------------------------------------------------------------------------
+
+describe("getAllProjectsPlan() — offline_repos rejection capture", () => {
+  // Use distinct, recognisable repo paths so basename matching is unambiguous.
+  const PATH_LIVE_A = "/tmp/repos/live-a";
+  const PATH_LIVE_B = "/tmp/repos/live-b";
+  const PATH_OFFLINE_C = "/tmp/repos/offline-c";
+  const PATH_OFFLINE_D = "/tmp/repos/offline-d";
+
+  // mysql2's surfaced ECONNREFUSED message shape. Pinned verbatim per AC so
+  // future drift in the upstream message format is caught by the test rather
+  // than silently rewritten. See architect memo § Security Architecture.
+  const ECONNREFUSED_MESSAGE = "connect ECONNREFUSED 127.0.0.1:3306";
+
+  /** Build an mysql2-style ECONNREFUSED error matching the production shape. */
+  function makeEconnRefusedError(): Error {
+    const err = new Error(ECONNREFUSED_MESSAGE) as NodeJS.ErrnoException;
+    err.code = "ECONNREFUSED";
+    err.errno = -61;
+    return err;
+  }
+
+  /**
+   * Build a minimal BeadsIssue array for fulfilled-path mocks. The aggregator
+   * does not depend on issue content for offline_repos behaviour — these are
+   * here to make `getPlan` resolve cleanly for the live paths.
+   */
+  function makeLiveIssues(prefix: string): BeadsIssue[] {
+    return [
+      makeBeadsIssue(`${prefix}-001`, "open"),
+      makeBeadsIssue(`${prefix}-002`, "in_progress"),
+    ];
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    __resetCollisionScanForTests();
+    process.env.BV_PATH = "/usr/local/bin/bv";
+
+    // Default execFile behaviour: bv returns a minimal valid plan envelope.
+    // Tests that need bv to fail per-path override this in the test body.
+    const minimalEnvelope = makeBvPlanEnvelope([
+      { id: "STUB-001", title: "Stub", priority: 2, status: "open" },
+    ]);
+    execFileBehavior = () => ({ stdout: JSON.stringify(minimalEnvelope) });
+
+    // Default issuesToPlan: simple pass-through that yields a valid RobotPlan.
+    mockIssuesToPlan.mockImplementation((issues: BeadsIssue[], projectPath: string) => ({
+      timestamp: "2026-01-15T00:00:00Z",
+      project_path: projectPath,
+      summary: { open_count: 0, in_progress_count: 0, blocked_count: 0, closed_count: 0 },
+      tracks: [],
+      all_issues: issues.map((i: BeadsIssue) => ({
+        id: i.id,
+        title: i.title,
+        status: i.status,
+        priority: i.priority,
+        issue_type: i.issue_type,
+        blocked_by: [],
+        blocks: [],
+      })),
+    }));
+  });
+
+  afterEach(() => {
+    delete process.env.BV_PATH;
+    __resetCollisionScanForTests();
+  });
+
+  it("populates offline_repos with one entry per rejected fan-out path", async () => {
+    // Live paths: readIssuesFromDolt resolves with issues.
+    // Offline path: readIssuesFromDolt throws an ECONNREFUSED error (the
+    // throw propagates through getPlan's try/catch — both the supplementation
+    // path and the catch's fallback call readIssuesFromDolt, so a uniformly-
+    // throwing mock causes getPlan to reject, exactly as a stale Dolt does).
+    mockReadIssuesFromDolt.mockImplementation((p: string) => {
+      if (p === PATH_OFFLINE_C) {
+        throw makeEconnRefusedError();
+      }
+      return Promise.resolve(makeLiveIssues(path.basename(p).toUpperCase()));
+    });
+
+    const plan = await getAllProjectsPlan([PATH_LIVE_A, PATH_OFFLINE_C, PATH_LIVE_B]);
+
+    expect(plan.offline_repos).toBeDefined();
+    expect(plan.offline_repos!).toHaveLength(1);
+    expect(plan.offline_repos![0]).toEqual({
+      repoName: "offline-c",
+      repoPath: PATH_OFFLINE_C,
+      reason: ECONNREFUSED_MESSAGE,
+    });
+  });
+
+  it("repoName matches path.basename(repoPath) for each rejected path", async () => {
+    mockReadIssuesFromDolt.mockImplementation((p: string) => {
+      if (p === PATH_OFFLINE_C || p === PATH_OFFLINE_D) {
+        throw makeEconnRefusedError();
+      }
+      return Promise.resolve(makeLiveIssues(path.basename(p).toUpperCase()));
+    });
+
+    const plan = await getAllProjectsPlan([PATH_LIVE_A, PATH_OFFLINE_C, PATH_OFFLINE_D]);
+
+    expect(plan.offline_repos!).toHaveLength(2);
+    const names = plan.offline_repos!.map((o) => o.repoName).sort();
+    expect(names).toEqual(["offline-c", "offline-d"]);
+    for (const offline of plan.offline_repos!) {
+      expect(offline.repoName).toBe(path.basename(offline.repoPath));
+    }
+  });
+
+  it("reason is captured verbatim from Error.message (mysql2 ECONNREFUSED shape)", async () => {
+    // Pinned message-shape assertion per AC: drift in mysql2's error format
+    // (or in our wrapping logic) surfaces here instead of silently producing
+    // a different reason string. If this test breaks, check the upstream
+    // node/mysql2 version against the architect memo before rewriting.
+    mockReadIssuesFromDolt.mockImplementation((p: string) => {
+      if (p === PATH_OFFLINE_C) {
+        throw makeEconnRefusedError();
+      }
+      return Promise.resolve(makeLiveIssues("LIVE"));
+    });
+
+    const plan = await getAllProjectsPlan([PATH_LIVE_A, PATH_OFFLINE_C]);
+
+    const offline = plan.offline_repos!.find((o) => o.repoPath === PATH_OFFLINE_C);
+    expect(offline).toBeDefined();
+    expect(offline!.reason).toBe(ECONNREFUSED_MESSAGE);
+    expect(offline!.reason).toContain("connect ECONNREFUSED");
+    expect(offline!.reason.length).toBeGreaterThan(0);
+  });
+
+  it("falls back to String(reason) when reason is not an Error", async () => {
+    // A non-Error rejection is unusual but possible (e.g., `throw "string"`
+    // from a misbehaving downstream). Per ADR-002's reason capture, the
+    // fallback path is `String(r.reason)` — verify it does not crash and
+    // produces a non-empty reason.
+    mockReadIssuesFromDolt.mockImplementation((p: string) => {
+      if (p === PATH_OFFLINE_C) {
+        // Reject with a non-Error value (string). Used to verify the
+        // `String(r.reason)` fallback path in getAllProjectsPlan.
+        return Promise.reject("raw-string-rejection-from-stale-dolt");
+      }
+      return Promise.resolve(makeLiveIssues("LIVE"));
+    });
+
+    const plan = await getAllProjectsPlan([PATH_LIVE_A, PATH_OFFLINE_C]);
+
+    const offline = plan.offline_repos!.find((o) => o.repoPath === PATH_OFFLINE_C);
+    expect(offline).toBeDefined();
+    expect(offline!.reason).toBe("raw-string-rejection-from-stale-dolt");
+  });
+
+  it("offline_repos is [] (empty array, not undefined) when all fan-outs fulfil", async () => {
+    mockReadIssuesFromDolt.mockImplementation((p: string) =>
+      Promise.resolve(makeLiveIssues(path.basename(p).toUpperCase())),
+    );
+
+    const plan = await getAllProjectsPlan([PATH_LIVE_A, PATH_LIVE_B]);
+
+    // Per AC: within getAllProjectsPlan we always set offline_repos
+    // explicitly. The optional `?:` is for external callers (single-repo
+    // plans don't populate the field at all).
+    expect(plan.offline_repos).toBeDefined();
+    expect(plan.offline_repos).toEqual([]);
+    expect(Array.isArray(plan.offline_repos)).toBe(true);
+  });
+
+  it("when all fan-outs reject, all_issues is [] and offline_repos.length === N", async () => {
+    mockReadIssuesFromDolt.mockImplementation(() => {
+      throw makeEconnRefusedError();
+    });
+
+    const repoPaths = [PATH_OFFLINE_C, PATH_OFFLINE_D];
+    const plan = await getAllProjectsPlan(repoPaths);
+
+    expect(plan.all_issues).toEqual([]);
+    expect(plan.offline_repos).toBeDefined();
+    expect(plan.offline_repos!).toHaveLength(repoPaths.length);
+    expect(plan.offline_repos!.every((o) => o.reason === ECONNREFUSED_MESSAGE)).toBe(true);
+  });
+
+  it("fulfilled paths contribute their issues to all_issues; rejected paths do not", async () => {
+    mockReadIssuesFromDolt.mockImplementation((p: string) => {
+      if (p === PATH_OFFLINE_C) {
+        throw makeEconnRefusedError();
+      }
+      return Promise.resolve(makeLiveIssues(path.basename(p).toUpperCase()));
+    });
+
+    const plan = await getAllProjectsPlan([PATH_LIVE_A, PATH_OFFLINE_C, PATH_LIVE_B]);
+
+    // Live A and Live B each contribute issues; offline C contributes none.
+    // Default issuesToPlan returns one issue per BeadsIssue; live mock returns
+    // 2 issues per live path => 4 issues total across two live paths.
+    expect(plan.all_issues.length).toBeGreaterThan(0);
+    const issueIds = plan.all_issues.map((i) => i.id);
+    // No issue from offline-c should appear (rejected path contributes zero).
+    expect(issueIds.some((id) => id.startsWith("OFFLINE-C"))).toBe(false);
+    // Live paths' issues are present.
+    const hasLiveAIssues = issueIds.some((id) => id.startsWith("LIVE-A"));
+    const hasLiveBIssues = issueIds.some((id) => id.startsWith("LIVE-B"));
+    expect(hasLiveAIssues).toBe(true);
+    expect(hasLiveBIssues).toBe(true);
+  });
+
+  it("uses real Promise.allSettled — concurrent rejections do not abort fulfilled fan-outs", async () => {
+    // This test exists to guard against the regression where an early
+    // rejection short-circuits the aggregation (which would happen if
+    // `Promise.all` were used instead of `Promise.allSettled`). The fixture
+    // exercises the REAL allSettled path — no mock of allSettled itself.
+    let liveAResolved = false;
+    let liveBResolved = false;
+    mockReadIssuesFromDolt.mockImplementation((p: string) => {
+      if (p === PATH_OFFLINE_C) {
+        // Synchronous throw — fastest possible rejection.
+        throw makeEconnRefusedError();
+      }
+      // Live paths resolve via microtask after a tick.
+      return Promise.resolve().then(() => {
+        if (p === PATH_LIVE_A) liveAResolved = true;
+        if (p === PATH_LIVE_B) liveBResolved = true;
+        return makeLiveIssues(path.basename(p).toUpperCase());
+      });
+    });
+
+    const plan = await getAllProjectsPlan([PATH_OFFLINE_C, PATH_LIVE_A, PATH_LIVE_B]);
+
+    expect(liveAResolved).toBe(true);
+    expect(liveBResolved).toBe(true);
+    expect(plan.offline_repos!).toHaveLength(1);
+    expect(plan.offline_repos![0].repoPath).toBe(PATH_OFFLINE_C);
   });
 });
