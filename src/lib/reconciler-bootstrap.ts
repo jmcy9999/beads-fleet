@@ -246,7 +246,7 @@ export function ensureReconcilerRunning(): void {
   if (getGlobalReconciler()) return;
   try {
     // factory-core-so74 A.8 deferred-AC fix: fallback updated to
-    // fleet-core-improved (the active fork). Architect's design at
+    // factory-core (the active fork). Architect's design at
     // docs/aspirational-pipeline/a8-deferred-fixes.md missed this third
     // FLEET_CORE_PATH location and the one in route.ts; without these
     // updates the reconciler boots against the legacy fleet-core dir.

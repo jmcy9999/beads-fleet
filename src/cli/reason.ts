@@ -11,7 +11,7 @@
  * the auto-escalation would feed it, returning a recommendation, reasoning,
  * and a confidence score — so the operator can decide whether to wait or act.
  *
- * Invocation: `npx shipyard reason <epic-id>` from the beads_web-improved
+ * Invocation: `npx shipyard reason <epic-id>` from the beads_web
  * repo root (after `npm install`). The `bin/shipyard` dispatcher routes to
  * this file via tsx.
  *

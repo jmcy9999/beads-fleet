@@ -1650,7 +1650,7 @@ export async function listOpenWaveBeadsAllRepos(
 // ---------------------------------------------------------------------------
 
 // Resolve fleet-core path: env var > hardcoded fallback.
-// factory-core-so74 A.8 deferred-AC fix: fallback updated to fleet-core-improved
+// factory-core-so74 A.8 deferred-AC fix: fallback updated to factory-core
 // (the active fork). See repo-path-resolver.ts for full context and
 // docs/aspirational-pipeline/a8-deferred-fixes.md.
 const FLEET_CORE_PATH = process.env.FLEET_CORE_PATH || "/Users/janemckay/dev/fleet/factory-core";

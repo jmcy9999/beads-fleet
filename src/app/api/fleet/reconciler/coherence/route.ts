@@ -16,7 +16,7 @@ export async function GET() {
   try {
     const { readEvents } = await import("@/lib/event-log");
     // factory-core-so74 A.8 deferred-AC fix: fallback updated to
-    // fleet-core-improved (the active fork). See
+    // factory-core (the active fork). See
     // docs/aspirational-pipeline/a8-deferred-fixes.md.
     const repoPath =
       process.env.FLEET_CORE_PATH ?? "/Users/janemckay/dev/fleet/factory-core";

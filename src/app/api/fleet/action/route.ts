@@ -122,10 +122,10 @@ const VALID_ACTIONS = new Set<PipelineAction>([
 
 // Resolve fleet-core path: env var > hardcoded fallback.
 // factory-core-so74 A.8 deferred-AC fix: fallback updated to
-// fleet-core-improved (the active fork). Without this, the registry-fallback
+// factory-core (the active fork). Without this, the registry-fallback
 // `find` at lines 416-419 hits the legacy fleet-core entry first when the env
 // var is unset, and the bounding rule at line 1792 (path.basename ===
-// "fleet-core-improved") silently returns false, disabling cross-repo
+// "factory-core") silently returns false, disabling cross-repo
 // dispatch. See docs/aspirational-pipeline/a8-deferred-fixes.md (architect's
 // design originally targeted only repo-path-resolver.ts and agent-launcher.ts;
 // this third location was discovered during retest).
@@ -488,7 +488,7 @@ export async function POST(request: NextRequest) {
   // then fall back to name substring. Without splitting the predicate, find()
   // returns the first match regardless of branch, which means a substring hit
   // on STABLE's "fleet-core" entry wins over an env-var pointed at
-  // fleet-core-improved.
+  // factory-core.
   const fleetCoreRepo =
     store.repos.find((r) => r.path === FLEET_CORE_PATH) ??
     store.repos.find((r) => r.name.includes("fleet-core"));
@@ -2057,7 +2057,7 @@ export async function POST(request: NextRequest) {
           ? "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch"
           : "Bash,Read,Write,Edit,Glob,Grep,Task";
 
-        // beads_web-4jb (AC 1): Bounding-rule gate — only fleet-core-improved
+        // beads_web-4jb (AC 1): Bounding-rule gate — only factory-core
         // epics get cross-repo enumeration. Product epics use the existing
         // single-repo fast path.
         const isCrossRepoEpic = path.basename(waveRepoPath) === "factory-core";

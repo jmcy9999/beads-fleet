@@ -10,7 +10,7 @@
 // every render.
 //
 // Source pattern: ported from migration/scripts/probe-dolt-reachability.ts
-// in fleet-core-improved. The category enum is the contract; preserved for
+// in factory-core. The category enum is the contract; preserved for
 // callers that want a discriminated union.
 //
 // Cache: per-(host, port) for 30s. Within a single dashboard render, multiple
