@@ -26,9 +26,8 @@ import type { MarkerData } from "./marker-reader";
  * 10-agent set per architect memo § 4 + bead ADDENDUM resolution:
  * includes product-manager (PM owns spec interpretation for spec-ambiguity).
  *
- * Note: factory-core schema docs (marker-protocol.md + marker-schema.md)
- * currently list 9 agents (missing product-manager). Sibling bead
- * factory-core-o4lx.2 will sync the docs to include product-manager.
+ * Canonical 10-agent list is documented in factory-core schema docs
+ * (marker-protocol.md § 2 + marker-schema.md), synced by factory-core-o4lx.2.
  */
 export type AgentType =
   | "architect"

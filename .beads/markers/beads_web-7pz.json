@@ -1,0 +1,12 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-7pz",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T14:00:00Z",
+  "exited_at": "2026-05-01T14:05:00Z",
+  "what_was_done": "Updated JSDoc comment on AgentType in src/lib/marker-routing.ts. Removed stale note claiming factory-core schema docs list 9 agents (missing product-manager) and that sibling bead factory-core-o4lx.2 will sync. Replaced with factual statement that canonical 10-agent list is documented in marker-protocol.md and marker-schema.md, synced by factory-core-o4lx.2.",
+  "what_was_tested": "npx tsc --noEmit confirms zero type/syntax errors in marker-routing.ts. Comment-only change; no logic affected. AC 1 verified: comment no longer says 'currently list 9 agents (missing product-manager)'. AC 2 verified: comment no longer says 'sibling bead ... will sync'. AC 3 verified: existing tests unaffected (comment-only). AC 4 verified: marker written LAST before commit, included in commit.",
+  "deviations_from_ac": "None. All 4 AC items met exactly.",
+  "recommendation_for_next": "No follow-up needed. Stale comment removed. The code and docs are now consistent."
+}
