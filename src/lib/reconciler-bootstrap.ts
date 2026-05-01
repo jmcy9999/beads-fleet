@@ -40,6 +40,7 @@ import {
 } from "./reconciler-rules/repeat-dispatch-escalation";
 import { probeActiveDispatch } from "./reconciler-rules/active-dispatch-probe";
 import { buildLivenessCheckRule } from "./reconciler-rules/liveness-check";
+import { buildMarkerDrivenRoutingRule } from "./reconciler-rules/marker-driven-routing";
 import { readEpicState } from "./agent-launcher";
 import { removeLabelsFromEpic } from "./pipeline-labels";
 import { appendEvent, readEvents } from "./event-log";
@@ -541,6 +542,36 @@ export function ensureReconcilerRunning(): void {
           });
         },
       }), 60_000), // factory-core-3akh.2: label leaks don't need 10s reactivity
+    );
+
+    // beads_web-xfc — marker-driven-routing reconciler rule: defense-in-
+    // depth complement to kvn's inline fast path. Catches cases where
+    // inline branch didn't fire (agent exited outside normal chain,
+    // orchestrator restarted, etc.).
+    // factory-core-3akh.2: marker routing is event-driven (agent-exited);
+    // 1-min poll fine for defense-in-depth.
+    rec.registerRule(
+      throttled(buildMarkerDrivenRoutingRule({
+        readMarker: async (rp: string, markerId: string) => {
+          const { readMarker } = await import("./marker-reader");
+          return readMarker(rp, markerId);
+        },
+        readEpicSnapshot: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          const pipelineLabel = snap.labels.find((l) =>
+            l.startsWith("pipeline:"),
+          );
+          const currentStage = pipelineLabel
+            ? pipelineLabel.replace("pipeline:", "")
+            : null;
+          return {
+            currentStage,
+            labels: snap.labels,
+            title: readEpicTitle(epicId, repoPath),
+          };
+        },
+        repoPath,
+      }), 60_000),
     );
 
     rec.start();
