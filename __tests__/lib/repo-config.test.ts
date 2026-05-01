@@ -55,8 +55,8 @@ describe("getAllRepoPaths (beads_web-cnr A.8 cross-cutting)", () => {
     mockReadFile.mockResolvedValue(
       JSON.stringify({
         repos: [
-          { name: "fleet-core-improved", path: "/repos/fleet-core-improved" },
-          { name: "beads_web-improved", path: "/repos/beads_web-improved" },
+          { name: "factory-core", path: "/repos/factory-core" },
+          { name: "beads_web", path: "/repos/beads_web" },
           { name: "StudyCycle", path: "/repos/StudyCycle" },
         ],
         activeRepo: "__all__",
@@ -65,8 +65,8 @@ describe("getAllRepoPaths (beads_web-cnr A.8 cross-cutting)", () => {
 
     const paths = await getAllRepoPaths();
     expect(paths).toEqual([
-      "/repos/fleet-core-improved",
-      "/repos/beads_web-improved",
+      "/repos/factory-core",
+      "/repos/beads_web",
       "/repos/StudyCycle",
     ]);
   });
@@ -115,8 +115,8 @@ describe("getRepos — registry shape (beads_web-cnr A.8 cross-cutting)", () => 
     mockReadFile.mockResolvedValue(
       JSON.stringify({
         repos: [
-          { name: "fleet-core-improved", path: "/repos/fleet-core-improved" },
-          { name: "beads_web-improved", path: "/repos/beads_web-improved" },
+          { name: "factory-core", path: "/repos/factory-core" },
+          { name: "beads_web", path: "/repos/beads_web" },
         ],
         activeRepo: "__all__",
       }),

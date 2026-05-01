@@ -245,7 +245,7 @@ describe("AC 8d: .repo field populated from project:<repoName> label", () => {
     const issue = makePlanIssue({
       id: "repo-test-1",
       title: "Issue with project label",
-      labels: ["epic:test-epic", "project:fleet-core-improved"],
+      labels: ["epic:test-epic", "project:factory-core"],
       status: "open",
     });
     mockGetAllProjectsPlan.mockResolvedValue(makePlan([issue]));
@@ -255,7 +255,7 @@ describe("AC 8d: .repo field populated from project:<repoName> label", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
 
-    expect(body.issues[0].repo).toBe("fleet-core-improved");
+    expect(body.issues[0].repo).toBe("factory-core");
   });
 
   it("sets .repo to undefined when no project: label exists", async () => {
@@ -286,7 +286,7 @@ describe("AC 8d: .repo field populated from project:<repoName> label", () => {
     const issue2 = makePlanIssue({
       id: "multi-2",
       title: "From beads_web",
-      labels: ["epic:test-epic", "project:beads_web-improved"],
+      labels: ["epic:test-epic", "project:beads_web"],
       status: "open",
     });
     mockGetAllProjectsPlan.mockResolvedValue(makePlan([issue1, issue2]));
@@ -298,7 +298,7 @@ describe("AC 8d: .repo field populated from project:<repoName> label", () => {
 
     expect(body.count).toBe(2);
     const repos = body.issues.map((i: { repo: string }) => i.repo).sort();
-    expect(repos).toEqual(["beads_web-improved", "fleet-core"]);
+    expect(repos).toEqual(["beads_web", "fleet-core"]);
   });
 });
 
@@ -358,13 +358,13 @@ describe("A.8 cross-cutting: multi-repo response shape", () => {
       makePlanIssue({
         id: "fleet-1",
         title: "Fleet issue",
-        labels: ["epic:test-cross", "project:fleet-core-improved"],
+        labels: ["epic:test-cross", "project:factory-core"],
         status: "open",
       }),
       makePlanIssue({
         id: "web-1",
         title: "Web issue",
-        labels: ["epic:test-cross", "project:beads_web-improved"],
+        labels: ["epic:test-cross", "project:beads_web"],
         status: "open",
       }),
       makePlanIssue({
@@ -383,14 +383,14 @@ describe("A.8 cross-cutting: multi-repo response shape", () => {
 
     expect(body.count).toBe(3);
     const repos = body.issues.map((i: { repo: string }) => i.repo).sort();
-    expect(repos).toEqual(["StudyCycle", "beads_web-improved", "fleet-core-improved"]);
+    expect(repos).toEqual(["StudyCycle", "beads_web", "factory-core"]);
   });
 
   it("getAllRepoPaths is called to resolve repo paths for the aggregation", async () => {
     mockGetAllProjectsPlan.mockResolvedValue(makePlan([]));
     mockGetAllRepoPaths.mockResolvedValue([
-      "/repos/fleet-core-improved",
-      "/repos/beads_web-improved",
+      "/repos/factory-core",
+      "/repos/beads_web",
     ]);
 
     const req = makeGetRequest({ label: "epic:test" });

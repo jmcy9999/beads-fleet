@@ -921,12 +921,12 @@ describe("A.8 AC 6: bounding-rule assertion via primitives (unit-level, mocked c
   });
 
   it("bounding rule is NOT enforced for cross-repo epics (isCrossRepoEpic=true)", async () => {
-    // Cross-repo epics (fleet-core-improved) are EXPECTED to have children
+    // Cross-repo epics (factory-core) are EXPECTED to have children
     // in multiple repos. The bounding rule only fires for product epics.
     const deps: CrossRepoBeadListDeps = {
-      getRepoPaths: async () => ["/repo/fleet-core-improved", "/repo/beads-web"],
+      getRepoPaths: async () => ["/repo/factory-core", "/repo/beads-web"],
       listBeads: async (_epicId, _wave, repoPath) => {
-        if (repoPath === "/repo/fleet-core-improved") return [bead("so74.1")];
+        if (repoPath === "/repo/factory-core") return [bead("so74.1")];
         if (repoPath === "/repo/beads-web") return [bead("so74.2")];
         return [];
       },
@@ -934,11 +934,11 @@ describe("A.8 AC 6: bounding-rule assertion via primitives (unit-level, mocked c
     const result = await listOpenWaveBeadsAllRepos("factory-core-so74", 2, deps);
 
     const beadRepoCache = new Map<string, string>();
-    beadRepoCache.set("so74.1", "/repo/fleet-core-improved");
+    beadRepoCache.set("so74.1", "/repo/factory-core");
     beadRepoCache.set("so74.2", "/repo/beads-web");
 
     const isCrossRepoEpic = true;
-    const waveRepoPath = "/repo/fleet-core-improved";
+    const waveRepoPath = "/repo/factory-core";
 
     // For cross-repo epics, the bounding rule is skipped.
     let violationCount = 0;

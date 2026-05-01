@@ -375,7 +375,7 @@ function makeDeps(state: MockState): ReasonDeps {
 }
 
 function makeState(overrides: Partial<MockState> = {}): MockState {
-  const SHIPYARD_PATH = "/fake/fleet-core-improved";
+  const SHIPYARD_PATH = "/fake/factory-core";
   return {
     files: {
       [`${SHIPYARD_PATH}/.claude/agents/coherence.md`]:
@@ -401,7 +401,7 @@ function makeState(overrides: Partial<MockState> = {}): MockState {
   };
 }
 
-const SHIPYARD_PATH = "/fake/fleet-core-improved";
+const SHIPYARD_PATH = "/fake/factory-core";
 
 describe("runReason — happy path", () => {
   it("returns 0, prints recommendation/reasoning/confidence", async () => {

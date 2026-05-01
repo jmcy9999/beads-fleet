@@ -2243,7 +2243,7 @@ describe("POST /api/fleet/action", () => {
     // ---------------------------------------------------------------------
     // beads_web-4jb — cross-repo dispatch with bounding rule
     //
-    // AC 1: Bounding-rule gate (isCrossRepoEpic = basename === "fleet-core-improved")
+    // AC 1: Bounding-rule gate (isCrossRepoEpic = basename === "factory-core")
     // AC 2: Cross-repo epics call listOpenWaveBeadsAllRepos
     // AC 3: Product epics call single-repo listOpenWaveBeads (zero change)
     // AC 4: Cache pre-populate via parallel findRepoForIssue
@@ -2255,7 +2255,7 @@ describe("POST /api/fleet/action", () => {
     // AC 10: Integration test scaffolded for A.8
     // ---------------------------------------------------------------------
 
-    it("4jb AC 1+3: product epic (basename !== fleet-core-improved) uses single-repo listOpenWaveBeads", async () => {
+    it("4jb AC 1+3: product epic (basename !== factory-core) uses single-repo listOpenWaveBeads", async () => {
       // Default getRepos returns fleet-core (basename "fleet-core"), so
       // isCrossRepoEpic = false. The handler should call single-repo
       // listOpenWaveBeads, NOT listOpenWaveBeadsAllRepos.
@@ -2281,14 +2281,14 @@ describe("POST /api/fleet/action", () => {
       expect(mockListOpenWaveBeadsAllRepos).not.toHaveBeenCalled();
     });
 
-    it("4jb AC 1+2: cross-repo epic (basename === fleet-core-improved) uses listOpenWaveBeadsAllRepos", async () => {
-      // Override getRepos to return fleet-core-improved path so basename
+    it("4jb AC 1+2: cross-repo epic (basename === factory-core) uses listOpenWaveBeadsAllRepos", async () => {
+      // Override getRepos to return factory-core path so basename
       // matches the bounding-rule gate.
       mockGetRepos.mockResolvedValueOnce({
         repos: [
           {
-            name: "fleet-core-improved",
-            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+            name: "factory-core",
+            path: "/Users/janemckay/dev/fleet/factory-core",
           },
         ],
       });
@@ -2296,7 +2296,7 @@ describe("POST /api/fleet/action", () => {
         { id: "so74.A", title: "Cross-repo bead A", files: ["src/a.ts"] },
       ]);
       mockFindRepoForIssue.mockResolvedValueOnce(
-        "/Users/janemckay/dev/fleet/fleet-core-improved",
+        "/Users/janemckay/dev/fleet/factory-core",
       );
 
       const req = makeRequest({
@@ -2321,8 +2321,8 @@ describe("POST /api/fleet/action", () => {
       mockGetRepos.mockResolvedValueOnce({
         repos: [
           {
-            name: "fleet-core-improved",
-            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+            name: "factory-core",
+            path: "/Users/janemckay/dev/fleet/factory-core",
           },
         ],
       });
@@ -2330,10 +2330,10 @@ describe("POST /api/fleet/action", () => {
         { id: "so74.A", title: "Fleet bead", files: ["src/a.ts"] },
         { id: "so74.B", title: "Beads web bead", files: ["src/b.ts"] },
       ]);
-      // Bead A lives in fleet-core-improved, bead B lives in beads_web-improved
+      // Bead A lives in factory-core, bead B lives in beads_web
       mockFindRepoForIssue
-        .mockResolvedValueOnce("/Users/janemckay/dev/fleet/fleet-core-improved")
-        .mockResolvedValueOnce("/Users/janemckay/dev/claude_projects/beads_web-improved");
+        .mockResolvedValueOnce("/Users/janemckay/dev/fleet/factory-core")
+        .mockResolvedValueOnce("/Users/janemckay/dev/claude_projects/beads_web");
 
       const req = makeRequest({
         epicId: "factory-core-so74",
@@ -2352,11 +2352,11 @@ describe("POST /api/fleet/action", () => {
     });
 
     it("4jb AC 5: per-bead dispatch uses cached repo for loadBeadDetail and launchAgent", async () => {
-      const fleetCorePath = "/Users/janemckay/dev/fleet/fleet-core-improved";
-      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web-improved";
+      const fleetCorePath = "/Users/janemckay/dev/fleet/factory-core";
+      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web";
 
       mockGetRepos.mockResolvedValueOnce({
-        repos: [{ name: "fleet-core-improved", path: fleetCorePath }],
+        repos: [{ name: "factory-core", path: fleetCorePath }],
       });
       mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
         { id: "so74.A", title: "Fleet bead", files: ["src/a.ts"] },
@@ -2399,14 +2399,14 @@ describe("POST /api/fleet/action", () => {
     });
 
     it("4jb AC 6: bounding-rule assertion throws for product epic with cross-repo child", async () => {
-      // Product epic (basename "fleet-core", NOT "fleet-core-improved")
+      // Product epic (basename "fleet-core", NOT "factory-core")
       // has a bead that findRepoForIssue resolves to a different repo.
       mockListOpenWaveBeads.mockResolvedValueOnce([
         { id: "z9h.X", title: "Misplaced bead", files: ["src/x.ts"] },
       ]);
       // The bead resolves to a different repo — bounding-rule violation!
       mockFindRepoForIssue.mockResolvedValueOnce(
-        "/Users/janemckay/dev/claude_projects/beads_web-improved",
+        "/Users/janemckay/dev/claude_projects/beads_web",
       );
 
       const req = makeRequest({
@@ -2422,7 +2422,7 @@ describe("POST /api/fleet/action", () => {
       const data = await res.json();
       expect(data.error).toContain("Bounding-rule violation");
       expect(data.error).toContain("z9h.X");
-      expect(data.error).toContain("beads_web-improved");
+      expect(data.error).toContain("beads_web");
       expect(data.error).toContain("fleet-core");
 
       // No agent launched — the handler returned 500 before dispatch.
@@ -2435,8 +2435,8 @@ describe("POST /api/fleet/action", () => {
       mockGetRepos.mockResolvedValueOnce({
         repos: [
           {
-            name: "fleet-core-improved",
-            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+            name: "factory-core",
+            path: "/Users/janemckay/dev/fleet/factory-core",
           },
         ],
       });
@@ -2444,7 +2444,7 @@ describe("POST /api/fleet/action", () => {
         { id: "so74.A", title: "Bead A", files: ["src/a.ts"] },
       ]);
       mockFindRepoForIssue.mockResolvedValueOnce(
-        "/Users/janemckay/dev/fleet/fleet-core-improved",
+        "/Users/janemckay/dev/fleet/factory-core",
       );
 
       const req = makeRequest({
@@ -2483,8 +2483,8 @@ describe("POST /api/fleet/action", () => {
       mockGetRepos.mockResolvedValueOnce({
         repos: [
           {
-            name: "fleet-core-improved",
-            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+            name: "factory-core",
+            path: "/Users/janemckay/dev/fleet/factory-core",
           },
         ],
       });
@@ -2516,8 +2516,8 @@ describe("POST /api/fleet/action", () => {
       mockGetRepos.mockResolvedValueOnce({
         repos: [
           {
-            name: "fleet-core-improved",
-            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+            name: "factory-core",
+            path: "/Users/janemckay/dev/fleet/factory-core",
           },
         ],
       });
@@ -2554,8 +2554,8 @@ describe("POST /api/fleet/action", () => {
       mockGetRepos.mockResolvedValueOnce({
         repos: [
           {
-            name: "fleet-core-improved",
-            path: "/Users/janemckay/dev/fleet/fleet-core-improved",
+            name: "factory-core",
+            path: "/Users/janemckay/dev/fleet/factory-core",
           },
         ],
       });
@@ -2607,11 +2607,11 @@ describe("POST /api/fleet/action", () => {
     });
 
     it("4jb AC 5: isAgentActive uses cached repo path (cross-repo bead-ID check)", async () => {
-      const fleetCorePath = "/Users/janemckay/dev/fleet/fleet-core-improved";
-      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web-improved";
+      const fleetCorePath = "/Users/janemckay/dev/fleet/factory-core";
+      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web";
 
       mockGetRepos.mockResolvedValueOnce({
-        repos: [{ name: "fleet-core-improved", path: fleetCorePath }],
+        repos: [{ name: "factory-core", path: fleetCorePath }],
       });
       mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
         { id: "so74.A", title: "Fleet bead", files: ["src/a.ts"] },
@@ -2656,11 +2656,11 @@ describe("POST /api/fleet/action", () => {
     // for A.8 to exercise end-to-end. This test documents the intended
     // integration scenario.
     it("4jb AC 10: integration test scaffold — cross-repo epic dispatches beads to correct cwds", async () => {
-      const fleetCorePath = "/Users/janemckay/dev/fleet/fleet-core-improved";
-      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web-improved";
+      const fleetCorePath = "/Users/janemckay/dev/fleet/factory-core";
+      const beadsWebPath = "/Users/janemckay/dev/claude_projects/beads_web";
 
       mockGetRepos.mockResolvedValueOnce({
-        repos: [{ name: "fleet-core-improved", path: fleetCorePath }],
+        repos: [{ name: "factory-core", path: fleetCorePath }],
       });
       mockListOpenWaveBeadsAllRepos.mockResolvedValueOnce([
         { id: "so74.fleet", title: "Fleet-core bead", files: ["src/fleet.ts"] },
