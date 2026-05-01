@@ -29,6 +29,7 @@ import {
 } from "./fleet-config";
 import { getAllRepoPaths } from "./repo-config";
 import { FLEET_CORE_PATH } from "./repo-path-resolver";
+import type { ShipType, FleetStage } from "./pipeline-router";
 
 const execAsync = promisify(exec);
 
@@ -783,12 +784,8 @@ async function attemptRecovery(): Promise<void> {
  *   research → exits to research-complete (human reviews, then clicks "Run PM")
  *   planning → exits with plan:pending (human reviews plan)
  */
-const NEXT_STAGE: Record<string, string> = {
-  // QA with no bugs falls through chain action → advances to submission-prep
-  qa: "pipeline:submission-prep",
-  "submission-prep": "pipeline:submitted",
-  "kit-management": "pipeline:completed",
-};
+// beads_web-aiq: NEXT_STAGE constant removed. Ship-type-aware fallback now
+// uses nextStage() from pipeline-router.ts (see handleAgentExit fallback).
 
 /**
  * Pipeline stages that get special label handling on agent exit rather
@@ -2436,7 +2433,7 @@ async function dispatchChainAction(
         const freshness = await checkSmokeTestFreshness(stShip, session.repoPath);
         if (!freshness.ok) {
           console.error(
-            `[smoke-test-freshness] blocking QA -> submission-prep for ${session.epicId}: ${freshness.reason}`,
+            `[smoke-test-freshness] blocking QA -> next stage for ${session.epicId}: ${freshness.reason}`,
           );
           // Stay at pipeline:qa until a fresh smoke-test is available.
           // The coherence agent (factory-core-zsjv, post-lfcf) will pick
@@ -2444,8 +2441,26 @@ async function dispatchChainAction(
           // then the epic sits here visibly rather than silently advancing.
           return true;
         }
-        await addQALabels(session.epicId!, ["pipeline:submission-prep", "qa:needs-review"]);
-        console.log(`QA passed for ${session.epicId} — advanced to submission-prep (no polish for ${stShip})`);
+
+        // beads_web-aiq: Ship-type-aware auto-chain from qa.
+        // For internal/web-app/python-tool/game: qa → deploying (DEPLOY_TAIL).
+        // For wordpress-plugin: qa → submission-prep (SUBMISSION_TAIL).
+        // Reference: DEPLOY_TAIL_AUTO_CHAIN / SUBMISSION_TAIL_AUTO_CHAIN in
+        // pipeline-routes.ts lines 190-195 / 184-186.
+        const { nextStage } = await import("./pipeline-router");
+        const targetStage = nextStage("qa", stShip as ShipType);
+
+        if (!targetStage) {
+          // Defense-in-depth: no auto-chain configured for this (shipType, qa).
+          // Stay at qa with qa:needs-review so operator is alerted.
+          await addQALabels(session.epicId!, ["pipeline:qa", "qa:needs-review"]);
+          console.warn(`QA passed for ${session.epicId} but no auto-chain configured for ship-type:${stShip} at qa — staying at qa with qa:needs-review`);
+          return true;
+        }
+
+        // Normal path: advance to target stage per registry.
+        await addQALabels(session.epicId!, [`pipeline:${targetStage}`, "qa:needs-review"]);
+        console.log(`QA passed for ${session.epicId} — advanced to ${targetStage} (ship-type:${stShip})`);
       }
       return true; // Handled
     } catch (err) {
@@ -2775,13 +2790,22 @@ async function handleAgentExit(
         // Check if a chain action handles the transition (e.g., dev -> QA loop)
         const chainHandled = await handleChainAction(session, exitCode);
 
-        // Advance to next pipeline stage only if no chain action took over
+        // beads_web-aiq: ship-type-aware fallback. When no chain action
+        // handled the transition, consult the pipeline registry via
+        // nextStage() rather than the hard-coded NEXT_STAGE map.
         if (!chainHandled) {
-          const nextStage = NEXT_STAGE[session.pipelineStage];
-          if (nextStage) {
+          const shipTypeLabel = (session.epicLabels ?? []).find((l) =>
+            l.startsWith("ship-type:"),
+          );
+          const stShip = shipTypeLabel ? shipTypeLabel.replace("ship-type:", "") : "";
+
+          const { nextStage: nextStageForFallback } = await import("./pipeline-router");
+          const targetStage = nextStageForFallback(session.pipelineStage as FleetStage, stShip as ShipType);
+
+          if (targetStage) {
             const currentLabel = `pipeline:${session.pipelineStage}`;
             await removeLabelsFromEpic(session.epicId, [currentLabel]);
-            await addLabelsToEpic(session.epicId, [nextStage]);
+            await addLabelsToEpic(session.epicId, [`pipeline:${targetStage}`]);
           }
         }
       }
