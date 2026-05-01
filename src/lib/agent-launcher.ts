@@ -30,6 +30,7 @@ import {
 import { getAllRepoPaths } from "./repo-config";
 import { FLEET_CORE_PATH } from "./repo-path-resolver";
 import { readMarker } from "./marker-reader";
+import { interpretMarkerForRouting } from "./marker-routing";
 import type { ShipType, FleetStage } from "./pipeline-router";
 
 const execAsync = promisify(exec);
@@ -1830,6 +1831,39 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
 }
 
 // ---------------------------------------------------------------------------
+// beads_web-kvn — Map AgentType to action name for /api/fleet/action dispatch.
+//
+// Marker-driven routing dispatches agents by name (e.g., "architect"),
+// but the fleet action route expects action names (e.g., "run-architect").
+// This mapping is derived from the canonical action type in
+// src/app/api/fleet/action/route.ts.
+//
+// Falls back to `run-${agentType}` for unknown agents (future-proofing).
+// ---------------------------------------------------------------------------
+function getActionForAgent(agentType: string): string {
+  const agentToAction: Record<string, string> = {
+    architect: "run-architect",
+    planner: "generate-plan",
+    builder: "start-wave",
+    reviewer: "review-wave",
+    qa: "send-for-qa",
+    polish: "send-for-polish",
+    "test-spec": "run-test-spec",
+    "product-manager": "run-pm",
+    operator: "send-for-review", // best-effort: flag for human review
+    coherence: "run-coherence-agent",
+  };
+
+  const action = agentToAction[agentType];
+  if (!action) {
+    console.warn(
+      `[marker-routing] unknown agent type '${agentType}' — falling back to run-${agentType}`,
+    );
+  }
+  return action || `run-${agentType}`;
+}
+
+// ---------------------------------------------------------------------------
 // factory-core-3yqr.4 — DRY helper for the four new auto-chain cases
 //
 // The four stages that 3yqr wires up (research → PM → Architect → Planner
@@ -1975,6 +2009,112 @@ async function dispatchChainAction(
   stage: string | undefined,
   snapshot: EpicStateSnapshot,
 ): Promise<boolean> {
+  // -------------------------------------------------------------------------
+  // beads_web-kvn — marker-driven routing (inline fast path)
+  //
+  // Hybrid approach per factory-core-o4lx architect memo § 5 Q3: check marker
+  // BEFORE falling through to pipeline-routes defaults. If marker signals
+  // override, dispatch immediately. If marker silent (override=false), fall
+  // through to existing per-stage branches below.
+  //
+  // Precedence (memo § 6 Q4):
+  //   1. checkpoint:after-<stage> label → skip marker routing entirely
+  //      (falls through to existing per-stage branches, which handle
+  //      checkpoint pause per factory-core-3yqr.4).
+  //   2. marker routing → if override=true, dispatch nextAgent.
+  //   3. pipeline-routes default → existing per-stage branches below.
+  //
+  // session.marker field does NOT exist on AgentSession (Risk Flag 6
+  // confirmed at build time). Read marker via readMarker() instead.
+  //
+  // Defense-in-depth: reconciler rule beads_web-xfc provides catch-up for
+  // cases where inline branch doesn't fire (agent exited outside normal
+  // chain, orchestrator restarted, etc.).
+  // -------------------------------------------------------------------------
+
+  // Check for checkpoint labels — if present, skip marker routing entirely.
+  // Checkpoint labels take precedence over marker routing (memo § 6 Q4).
+  // E1 implements the auto-reason logic; kvn just skips when checkpoint present.
+  const hasCheckpointLabel = snapshot.labels.some((label) =>
+    label.startsWith("checkpoint:after-"),
+  );
+
+  if (!hasCheckpointLabel && session.epicId) {
+    // Derive markerId from session fields (same pattern as detectAgentDone
+    // in beads_web-dvm): per-bead agents use beadId, epic-scope agents use
+    // "${epicId}-${pipelineStage}".
+    const markerId = session.beadId
+      ?? (session.pipelineStage
+        ? `${session.epicId}-${session.pipelineStage}`
+        : null);
+
+    if (markerId) {
+      const marker = await readMarker(session.repoPath, markerId);
+
+      if (marker) {
+        const routingDecision = interpretMarkerForRouting(marker, {
+          epicId: session.epicId,
+          currentStage: stage ?? "unknown",
+          labels: snapshot.labels,
+        });
+
+        if (routingDecision.override && routingDecision.nextAgent) {
+          const nextAgent = routingDecision.nextAgent;
+          const actionName = getActionForAgent(nextAgent);
+
+          // Logging discipline: emit marker-routing audit trail.
+          console.log(
+            `[marker-routing] ${session.epicId}: marker overrides default → ${nextAgent} (reason: ${routingDecision.reason})`,
+          );
+
+          // Emit structured event for orchestrator audit (AC 2).
+          console.log(JSON.stringify({
+            level: "INFO",
+            event: "marker_overrode_default_chain",
+            epicId: session.epicId,
+            stage,
+            marker_next_agent: nextAgent,
+            pipeline_routes_default: stage,
+            reason: routingDecision.reason,
+          }));
+
+          // Dispatch the next agent via /api/fleet/action.
+          try {
+            const res = await fetch(getDefaultActionUrl(), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: actionName,
+                epicId: session.epicId,
+                epicTitle: session.repoName,
+                currentLabels: session.epicLabels,
+              }),
+            });
+
+            if (!res.ok) {
+              console.error(
+                `[marker-routing] dispatch failed for ${session.epicId} → ${nextAgent}: HTTP ${res.status}`,
+              );
+              return false;
+            }
+
+            // Marker routing dispatched successfully.
+            return true;
+          } catch (err) {
+            console.error(
+              `[marker-routing] dispatch threw for ${session.epicId} → ${nextAgent}:`,
+              err,
+            );
+            return false;
+          }
+        }
+
+        // override=false: fall through to existing per-stage branches below.
+        // Marker says "use pipeline-routes default" — respect that.
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------
   // factory-core-3yqr.4 — four new auto-chain transitions (F2/F3/F4/F5).
   //

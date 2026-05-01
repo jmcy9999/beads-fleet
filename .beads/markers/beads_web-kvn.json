@@ -1,0 +1,22 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-kvn",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T18:20:00Z",
+  "exited_at": "2026-05-01T18:55:00Z",
+  "what_was_done": "Added marker-driven routing branch to dispatchChainAction at top of function (before existing per-stage branches). Since AgentSession does not have a marker field (Risk Flag 6 confirmed), reads marker via readMarker(repoPath, markerId) using the same derivation pattern as detectAgentDone (beads_web-dvm). Checkpoint labels (checkpoint:after-*) take precedence: if present, marker routing is skipped entirely and falls through to existing per-stage branches. If marker present and interpretMarkerForRouting returns override=true, dispatches nextAgent via /api/fleet/action with action name from getActionForAgent() mapping. Emits console.log audit trail and structured JSON event marker_overrode_default_chain. If override=false, falls through to existing per-stage branches. Added getActionForAgent() helper mapping canonical agent types to fleet action names (derived from src/app/api/fleet/action/route.ts PipelineAction type). Added 7 integration tests covering marker-aware routing scenarios + regression checks.",
+  "what_was_tested": "7 integration tests in __tests__/lib/agent-launcher-marker-routing.test.ts: (1) epic at plan-review with marker next_agent=architect -> architect dispatched (NOT default); (2) epic at plan-review with marker status=success, no next_agent -> falls through to pipeline-routes default (override=false); (3) epic with checkpoint label checkpoint:after-architecture AND marker next_agent=planner -> checkpoint takes precedence (interpretMarkerForRouting NOT called); (4) regression: architecture -> plan-review still works when marker absent; (5) regression: product-spec -> architecture still works when marker override=false; (6) regression: research -> product-spec still works when marker absent; (7) regression: test-spec -> development still works when marker absent. All 7 pass. Baseline: 3 suites / 11 tests pre-existing failures unchanged (93 suites total, 1926 tests, 1914 passed, 11 failed, 1 skipped). npm run build: PASS.",
+  "deviations_from_ac": "AC 2 references session.marker which does not exist on AgentSession. Used readMarker(repoPath, markerId) fallback per build prompt Phase 1 fallback guidance. AC 6 references 'coherence dispatched, NOT planner' but kvn's checkpoint precedence implementation skips marker routing entirely and falls through to existing per-stage branches (which handle checkpoint pause via chainToNextStage returning false). Coherence dispatch is E1 territory — kvn ensures marker routing does NOT fire when checkpoint label is present, which is the correct behavior per memo section 6 Q4 precedence.",
+  "recommendation_for_next": "Ready for Wave 2 completion. Marker-driven routing inline fast path ships. Next Wave 2 bead is beads_web-xfc (reconciler rule — defense-in-depth for cases where inline branch doesn't fire). xfc can start immediately.",
+  "surprises_or_findings": [
+    {
+      "flag": "SESSION-MARKER-FIELD-MISSING",
+      "detail": "AgentSession interface does not include a marker field. Used readMarker(repoPath, markerId) fallback per build prompt Phase 1 guidance. The markerId is derived using the same pattern as detectAgentDone (beads_web-dvm): session.beadId ?? `${epicId}-${pipelineStage}`."
+    },
+    {
+      "flag": "ACTION-NAME-MAPPING-REFINEMENTS",
+      "detail": "getActionForAgent() mapping refined from build prompt template based on actual PipelineAction type in src/app/api/fleet/action/route.ts. Key corrections: (1) coherence maps to 'run-coherence-agent' (not 'dispatch-coherence' as in prompt template — confirmed from factory-core-zsjv.4 action name in route.ts); (2) operator maps to 'send-for-review' as best-effort (no dedicated operator escalation action exists in the route); (3) builder maps to 'start-wave' and reviewer to 'review-wave' (wave-scoped actions). Falls back to run-${agentType} with a warning log for unknown agents."
+    }
+  ]
+}
