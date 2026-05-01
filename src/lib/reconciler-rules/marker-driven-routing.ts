@@ -50,6 +50,7 @@ import type { MarkerData } from "../marker-reader";
 import type { EpicStateSnapshot } from "../marker-routing";
 import { interpretMarkerForRouting } from "../marker-routing";
 import { getDefaultActionUrl } from "../orchestrator-url";
+import { getActionForAgent } from "../agent-action-map";
 
 export const MARKER_DRIVEN_ROUTING_RULE_NAME = "marker-driven-routing";
 
@@ -105,38 +106,9 @@ export interface MarkerDrivenRoutingRuleOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Agent-type to fleet action name mapping.
-//
-// Mirrors the canonical mapping at agent-launcher.ts:1843 (kvn commit
-// 399b7fa). Local copy here because getActionForAgent is a module-private
-// function in agent-launcher.ts — exporting it would require modifying
-// kvn's file (spillover edit). Operator directive says "import, don't
-// duplicate" but export is absent; local copy is the pragmatic choice
-// given operator offline. See marker surprises_or_findings.
+// getActionForAgent — extracted to src/lib/agent-action-map.ts (beads_web-qfd).
+// Import is at the top of this file.
 // ---------------------------------------------------------------------------
-
-function getActionForAgent(agentType: string): string {
-  const agentToAction: Record<string, string> = {
-    architect: "run-architect",
-    planner: "generate-plan",
-    builder: "start-wave",
-    reviewer: "review-wave",
-    qa: "send-for-qa",
-    polish: "send-for-polish",
-    "test-spec": "run-test-spec",
-    "product-manager": "run-pm",
-    operator: "send-for-review",
-    coherence: "run-coherence-agent",
-  };
-
-  const action = agentToAction[agentType];
-  if (!action) {
-    console.warn(
-      `[xfc] unknown agent type '${agentType}' — falling back to run-${agentType}`,
-    );
-  }
-  return action || `run-${agentType}`;
-}
 
 export function buildMarkerDrivenRoutingRule(
   opts: MarkerDrivenRoutingRuleOptions,

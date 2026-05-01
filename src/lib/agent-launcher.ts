@@ -31,6 +31,7 @@ import { getAllRepoPaths } from "./repo-config";
 import { FLEET_CORE_PATH } from "./repo-path-resolver";
 import { readMarker } from "./marker-reader";
 import { interpretMarkerForRouting } from "./marker-routing";
+import { getActionForAgent } from "./agent-action-map";
 import type { ShipType, FleetStage } from "./pipeline-router";
 
 const execAsync = promisify(exec);
@@ -1831,37 +1832,9 @@ export async function handleChainAction(session: AgentSession, exitCode: number 
 }
 
 // ---------------------------------------------------------------------------
-// beads_web-kvn — Map AgentType to action name for /api/fleet/action dispatch.
-//
-// Marker-driven routing dispatches agents by name (e.g., "architect"),
-// but the fleet action route expects action names (e.g., "run-architect").
-// This mapping is derived from the canonical action type in
-// src/app/api/fleet/action/route.ts.
-//
-// Falls back to `run-${agentType}` for unknown agents (future-proofing).
+// getActionForAgent — extracted to src/lib/agent-action-map.ts (beads_web-qfd).
+// Import is at the top of this file.
 // ---------------------------------------------------------------------------
-function getActionForAgent(agentType: string): string {
-  const agentToAction: Record<string, string> = {
-    architect: "run-architect",
-    planner: "generate-plan",
-    builder: "start-wave",
-    reviewer: "review-wave",
-    qa: "send-for-qa",
-    polish: "send-for-polish",
-    "test-spec": "run-test-spec",
-    "product-manager": "run-pm",
-    operator: "send-for-review", // best-effort: flag for human review
-    coherence: "run-coherence-agent",
-  };
-
-  const action = agentToAction[agentType];
-  if (!action) {
-    console.warn(
-      `[marker-routing] unknown agent type '${agentType}' — falling back to run-${agentType}`,
-    );
-  }
-  return action || `run-${agentType}`;
-}
 
 // ---------------------------------------------------------------------------
 // factory-core-3yqr.4 — DRY helper for the four new auto-chain cases
