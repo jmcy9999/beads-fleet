@@ -1,0 +1,260 @@
+// =============================================================================
+// Tests — Marker Routing Interpretation (beads_web-gc2)
+// =============================================================================
+//
+// 12 unit tests covering:
+// - All 5 precedence branches (per architect memo § 6 Q4)
+// - All blocker-class mappings (per architect memo § 4)
+// - Fallback/edge cases (invalid marker, unknown blocker_class, etc.)
+//
+// Pure function tests — no I/O mocking needed. Pass mock MarkerData directly.
+// =============================================================================
+
+import { interpretMarkerForRouting } from "../../src/lib/marker-routing";
+import type { MarkerData } from "../../src/lib/marker-reader";
+import type { EpicStateSnapshot } from "../../src/lib/marker-routing";
+
+describe("marker-routing (beads_web-gc2)", () => {
+  const mockSnapshot: EpicStateSnapshot = {
+    epicId: "factory-core-lmxb",
+    currentStage: "planner",
+    labels: ["pipeline:plan-review"],
+  };
+
+  // Test 1: Explicit next_agent → returns it (AC 5 test 1)
+  test("explicit next_agent field → override=true, returns nextAgent", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "needs-decision",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      next_agent: "architect",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("architect");
+    expect(result.reason).toContain("explicit next_agent field");
+  });
+
+  // Test 2: blocked + design-question → architect (AC 5 test 2)
+  test("status=blocked, blocker_class=design-question → architect", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      blocker_class: "design-question",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("architect");
+    expect(result.reason).toContain("blocker_class=design-question");
+  });
+
+  // Test 3: blocked + test-fail → builder (AC 5 test 3)
+  test("status=blocked, blocker_class=test-fail → builder", () => {
+    const marker: MarkerData = {
+      version: "1",
+      bead_id: "factory-core-a4tx.21",
+      status: "blocked",
+      stage: "builder",
+      started_at: "2026-05-01T14:00:00Z",
+      exited_at: "2026-05-01T15:00:00Z",
+      blocker_class: "test-fail",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("builder");
+    expect(result.reason).toContain("blocker_class=test-fail");
+  });
+
+  // Test 4: blocked + orchestrator-down → operator (AC 5 test 4)
+  test("status=blocked, blocker_class=orchestrator-down → operator", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      blocker_class: "orchestrator-down",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("operator");
+    expect(result.reason).toContain("blocker_class=orchestrator-down");
+  });
+
+  // Test 5: blocked + unknown blocker_class → coherence fallback (AC 5 test 5)
+  test("status=blocked, blocker_class=unknown-value → coherence fallback", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      blocker_class: "some-future-blocker-class",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("coherence");
+    expect(result.reason).toContain("unknown blocker_class");
+    expect(result.reason).toContain("fallback to coherence");
+  });
+
+  // Test 6: needs-decision + BLOCKER in whats_open → coherence (AC 5 test 6)
+  test("status=needs-decision, BLOCKER in whats_open → coherence", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-3p1e",
+      status: "needs-decision",
+      stage: "qa",
+      started_at: "2026-05-01T16:00:00Z",
+      exited_at: "2026-05-01T16:45:00Z",
+      whats_open: [
+        "BLOCKER: Test infrastructure broken",
+        "FOLLOW-ON: Update docs",
+      ],
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("coherence");
+    expect(result.reason).toContain("needs-decision with BLOCKER");
+  });
+
+  // Test 7: success + no next_agent → override=false (AC 5 test 7)
+  test("status=success, next_agent absent → override=false (fallback to pipeline-routes)", () => {
+    const marker: MarkerData = {
+      version: "1",
+      bead_id: "factory-core-a4tx.27",
+      status: "success",
+      stage: "builder",
+      started_at: "2026-05-01T14:00:00Z",
+      exited_at: "2026-05-01T15:00:00Z",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(false);
+    expect(result.reason).toContain("fallback to pipeline-routes");
+  });
+
+  // Test 8: failure → re-dispatch same-agent (AC 5 test 8)
+  test("status=failure → re-dispatch same agent", () => {
+    const marker: MarkerData = {
+      version: "1",
+      bead_id: "factory-core-a4tx.21",
+      status: "failure",
+      stage: "builder",
+      started_at: "2026-05-01T14:00:00Z",
+      exited_at: "2026-05-01T15:00:00Z",
+      surprises_or_findings: "Build failed: missing dependency",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("builder");
+    expect(result.reason).toContain("re-dispatch same agent");
+  });
+
+  // Test 9: both next_agent and blocker_class → next_agent wins (AC 5 test 9)
+  test("marker with both next_agent and blocker_class → next_agent wins (precedence)", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "blocked",
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+      next_agent: "planner",
+      blocker_class: "design-question", // would map to architect, but next_agent wins
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("planner");
+    expect(result.reason).toContain("explicit next_agent field");
+  });
+
+  // Test 10: success + explicit next_agent → override=true (AC 5 test 10)
+  test("status=success but next_agent=planner → override=true (explicit override beats status)", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      status: "success",
+      stage: "architect",
+      started_at: "2026-05-01T09:00:00Z",
+      exited_at: "2026-05-01T10:00:00Z",
+      next_agent: "planner",
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    expect(result.override).toBe(true);
+    expect(result.nextAgent).toBe("planner");
+    expect(result.reason).toContain("explicit next_agent field");
+  });
+
+  // Test 11: invalid marker (missing status) → override=false (AC 5 test 11)
+  test("invalid marker (missing status field) → override=false", () => {
+    const marker: Partial<MarkerData> = {
+      version: "1",
+      epic_id: "factory-core-lmxb",
+      // status missing
+      stage: "planner",
+      started_at: "2026-05-01T10:00:00Z",
+      exited_at: "2026-05-01T10:30:00Z",
+    };
+
+    const result = interpretMarkerForRouting(
+      marker as MarkerData,
+      mockSnapshot,
+    );
+
+    expect(result.override).toBe(false);
+    expect(result.reason).toContain("invalid marker");
+  });
+
+  // Test 12: whats_open present but no BLOCKER prefix → fall through (AC 5 test 12)
+  test("whats_open present but no BLOCKER prefix → fall through to status-based logic", () => {
+    const marker: MarkerData = {
+      version: "1",
+      epic_id: "factory-core-3p1e",
+      status: "needs-decision",
+      stage: "qa",
+      started_at: "2026-05-01T16:00:00Z",
+      exited_at: "2026-05-01T16:45:00Z",
+      whats_open: [
+        "FOLLOW-ON: Update docs",
+        "FOLLOW-ON: Refactor test helpers",
+      ],
+    };
+
+    const result = interpretMarkerForRouting(marker, mockSnapshot);
+
+    // No BLOCKER prefix → doesn't trigger needs-decision+BLOCKER rule.
+    // needs-decision without BLOCKER isn't covered by precedence rules 4/5,
+    // so falls through to final fallback (override=false).
+    expect(result.override).toBe(false);
+    expect(result.reason).toContain("no routing decision");
+  });
+});

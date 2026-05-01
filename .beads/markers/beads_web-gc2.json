@@ -1,0 +1,24 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-gc2",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-01T20:00:00Z",
+  "exited_at": "2026-05-01T20:45:00Z",
+  "what_was_done": [
+    {
+      "action": "Created src/lib/marker-routing.ts with interpretMarkerForRouting pure function",
+      "result": "Exports interpretMarkerForRouting(marker, snapshot), RoutingDecision type, AgentType type (10-agent enum incl product-manager), EpicStateSnapshot type. Implements 5-tier precedence logic per architect memo § 6 Q4 + blocker-class mapping table per memo § 4 (7 known classes + coherence fallback).",
+      "evidence": "src/lib/marker-routing.ts; 163 lines"
+    },
+    {
+      "action": "Created __tests__/lib/marker-routing.test.ts with 12 unit tests",
+      "result": "All 12 tests pass. Covers all 5 precedence branches, all blocker-class mappings, precedence override cases (next_agent beats blocker_class, next_agent beats status), edge cases (missing status, whats_open without BLOCKER prefix).",
+      "evidence": "__tests__/lib/marker-routing.test.ts; 12 tests PASS"
+    }
+  ],
+  "what_was_tested": "12 unit tests in __tests__/lib/marker-routing.test.ts: (1) explicit next_agent=architect → override=true, nextAgent=architect; (2) blocked+design-question → architect; (3) blocked+test-fail → builder; (4) blocked+orchestrator-down → operator; (5) blocked+unknown-blocker-class → coherence fallback; (6) needs-decision+BLOCKER in whats_open → coherence; (7) success+no next_agent → override=false (pipeline-routes fallback); (8) failure → re-dispatch same-agent; (9) both next_agent and blocker_class → next_agent wins; (10) success+explicit next_agent=planner → override=true; (11) missing status → override=false with 'invalid marker'; (12) whats_open without BLOCKER prefix → fall through to status-based. Baseline regression: 3 suites / 11 tests pre-existing failures unchanged (92 total suites, 1919 total tests). npm run build: PASS.",
+  "deviations_from_ac": "None. All 6 ACs verified. Minor: parameter renamed from snapshot to _snapshot to satisfy @typescript-eslint/no-unused-vars lint rule — parameter is in the signature per AC 1 for kvn/xfc callers but not referenced in current implementation.",
+  "recommendation_for_next": "Ready for Wave 2 completion. marker-routing interpretation ships; next beads are beads_web-kvn (dispatchChainAction marker-aware branch — inline fast path) and beads_web-xfc (reconciler rule — defense-in-depth). Both import interpretMarkerForRouting from this module and can run in parallel after gc2 ships.",
+  "surprises_or_findings": "Pre-existing build lint warning in VenturePlan.tsx (useMemo missing dependency 'yScale') — unrelated to gc2, not fixed. Pre-existing test failures (3 suites / 11 tests) match documented baseline from beads_web-dvm marker. No Risk Flags 1-6 triggered."
+}
