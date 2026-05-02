@@ -10,6 +10,7 @@ import {
   detectStage,
   isAgentRunning,
   buildFleetApps,
+  buildOfflineRepoEntries,
   computeEpicCosts,
   getWaveInfo,
   collectWaveNumbers,
@@ -23,7 +24,12 @@ import {
   type FleetStage,
 } from "@/components/fleet/fleet-utils";
 import type { FleetApp } from "@/components/fleet/fleet-utils";
-import type { PlanIssue, IssueTokenSummary } from "@/lib/types";
+import type {
+  PlanIssue,
+  IssueTokenSummary,
+  OfflineRepoInfo,
+  RobotPlan,
+} from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Helper: create a mock PlanIssue with sensible defaults
@@ -1212,5 +1218,171 @@ describe("detectStage — plan-review auto-chain mappings (k7gy.6 F8 AC5)", () =
       labels: ["pipeline:research-complete", "plan:approved"],
     });
     expect(detectStage(epic, [])).toBe("plan-review");
+  });
+});
+
+// =============================================================================
+// buildOfflineRepoEntries (factory-core-lmxb.7)
+// =============================================================================
+//
+// Defensive-projection helper that consumes RobotPlan.offline_repos and yields
+// a render-ready list. The renderer (FleetBoard's OfflineReposBanner) uses the
+// output to draw one row per offline repo. The contract is:
+//
+//   1. undefined input  → []  (single-repo plans, legacy aggregator responses)
+//   2. empty input      → []  (no rejected fan-outs)
+//   3. populated input  → same entries, in the same order, with the same shape
+//
+// Fixtures use the real OfflineRepoInfo type from @/lib/types, NOT a hand-rolled
+// stub — per the bead AC and the test-spec discipline that fixtures must match
+// the real shape so a production-side rename surfaces here as a compile error.
+// =============================================================================
+
+describe("buildOfflineRepoEntries (lmxb.7)", () => {
+  // Real-shape fixtures matching lmxb.6's OfflineRepoInfo interface.
+  const PATCHCYCLE: OfflineRepoInfo = {
+    repoName: "PatchCycle",
+    repoPath: "/Users/janemckay/dev/claude_projects/change_my_patch/PatchCycle",
+    reason: "connect ECONNREFUSED 127.0.0.1:54666",
+  };
+  const TEST_GOBLIN: OfflineRepoInfo = {
+    repoName: "test_goblin",
+    repoPath: "/Users/janemckay/dev/claude_projects/test_goblin",
+    reason: "connect ECONNREFUSED 127.0.0.1:62033",
+  };
+
+  it("returns [] when offlineRepos is undefined (single-repo plan path — AC: defensive consume per architect § ADR-001)", () => {
+    expect(buildOfflineRepoEntries(undefined)).toEqual([]);
+  });
+
+  it("returns [] when offlineRepos is an empty array (all fan-outs fulfilled — happy path)", () => {
+    expect(buildOfflineRepoEntries([])).toEqual([]);
+  });
+
+  it("returns one entry per OfflineRepoInfo, preserving shape and order", () => {
+    const input: OfflineRepoInfo[] = [PATCHCYCLE, TEST_GOBLIN];
+    const result = buildOfflineRepoEntries(input);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual(PATCHCYCLE);
+    expect(result[1]).toEqual(TEST_GOBLIN);
+  });
+
+  it("preserves the reason string verbatim (mysql2 ECONNREFUSED message-shape, per lmxb.6 ADR-001 / Security Architecture)", () => {
+    const result = buildOfflineRepoEntries([PATCHCYCLE]);
+    expect(result[0].reason).toBe("connect ECONNREFUSED 127.0.0.1:54666");
+  });
+
+  it("output entries are typed as OfflineRepoInfo (compile-time guarantee — pass-through)", () => {
+    // The TS type assertion below would fail at compile time if the helper
+    // dropped the type; the runtime check is just a sanity smoke.
+    const result: OfflineRepoInfo[] = buildOfflineRepoEntries([PATCHCYCLE]);
+    expect(result[0].repoName).toBe("PatchCycle");
+    expect(result[0].repoPath).toBe(
+      "/Users/janemckay/dev/claude_projects/change_my_patch/PatchCycle",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Mixed-fixture: a real-shape RobotPlan combining online entries (issues)
+  // with offline_repos covers AC item "Fixture matches the real RobotPlan
+  // shape; assertions cover all 3 cases (online entries, offline entries,
+  // mixed)" — buildFleetApps consumes plan.all_issues, buildOfflineRepoEntries
+  // consumes plan.offline_repos, and both helpers must compose without
+  // interference.
+  // -------------------------------------------------------------------------
+
+  function makePlan(
+    overrides: Partial<RobotPlan> = {},
+  ): RobotPlan {
+    return {
+      timestamp: "2026-05-02T00:00:00Z",
+      project_path: "/Users/janemckay/dev/claude_projects",
+      summary: {
+        open_count: 0,
+        in_progress_count: 0,
+        blocked_count: 0,
+        closed_count: 0,
+      },
+      tracks: [],
+      all_issues: [],
+      ...overrides,
+    };
+  }
+
+  it("Case 1 (online only): online apps build normally; offline list is []", () => {
+    const epic = makePlanIssue({
+      id: "epic-online",
+      issue_type: "epic",
+      labels: ["project:test_goblin"],
+    });
+    const plan = makePlan({ all_issues: [epic], offline_repos: [] });
+
+    const apps = buildFleetApps(plan.all_issues);
+    const offline = buildOfflineRepoEntries(plan.offline_repos);
+
+    expect(apps).toHaveLength(1);
+    expect(apps[0].epic.id).toBe("epic-online");
+    expect(offline).toEqual([]);
+  });
+
+  it("Case 2 (offline only): no epics build but offline list carries every entry with reason", () => {
+    const plan = makePlan({
+      all_issues: [],
+      offline_repos: [PATCHCYCLE, TEST_GOBLIN],
+    });
+
+    const apps = buildFleetApps(plan.all_issues);
+    const offline = buildOfflineRepoEntries(plan.offline_repos);
+
+    expect(apps).toEqual([]);
+    expect(offline).toHaveLength(2);
+    expect(offline.map((r) => r.repoName)).toEqual(["PatchCycle", "test_goblin"]);
+    expect(offline.every((r) => typeof r.reason === "string" && r.reason.length > 0)).toBe(
+      true,
+    );
+  });
+
+  it("Case 3 (mixed): online apps and offline entries coexist without cross-contamination", () => {
+    const onlineEpic = makePlanIssue({
+      id: "epic-mixed",
+      issue_type: "epic",
+      labels: ["project:test_goblin"],
+    });
+    const plan = makePlan({
+      all_issues: [onlineEpic],
+      offline_repos: [PATCHCYCLE],
+    });
+
+    const apps = buildFleetApps(plan.all_issues);
+    const offline = buildOfflineRepoEntries(plan.offline_repos);
+
+    expect(apps).toHaveLength(1);
+    expect(apps[0].epic.id).toBe("epic-mixed");
+    expect(offline).toHaveLength(1);
+    expect(offline[0].repoName).toBe("PatchCycle");
+
+    // Cross-contamination check: the offline repo path is NOT among the
+    // online apps' epic ids, and the online epic is NOT in the offline list.
+    expect(apps.some((a) => a.epic.id === PATCHCYCLE.repoPath)).toBe(false);
+    expect(offline.some((r) => r.repoPath === onlineEpic.id)).toBe(false);
+  });
+
+  it("Case (RobotPlan with omitted offline_repos field — legacy aggregator response path)", () => {
+    // Older getAllProjectsPlan responses (pre-lmxb.6) and getPlan single-repo
+    // responses do not include the field. The helper must still return [].
+    const plan = makePlan({ all_issues: [] }); // offline_repos: undefined
+
+    const offline = buildOfflineRepoEntries(plan.offline_repos);
+    expect(offline).toEqual([]);
+  });
+
+  it("Case (defensive — does not mutate input array)", () => {
+    const input: OfflineRepoInfo[] = [PATCHCYCLE];
+    const inputSnapshot = [...input];
+
+    buildOfflineRepoEntries(input);
+
+    expect(input).toEqual(inputSnapshot);
   });
 });

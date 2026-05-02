@@ -168,6 +168,11 @@ export default function FleetPage() {
           pendingEpicId={pendingEpicId}
           langfuseTraceUrls={langfuseTraceUrls}
           attentionByEpic={attention.countByEpic}
+          // factory-core-lmxb.7: surface aggregator-rejected fan-outs (e.g.
+          // stale Dolt servers) so offline repos appear with a status row
+          // rather than silently disappearing. May be undefined for legacy
+          // responses; FleetBoard defends with buildOfflineRepoEntries(?? []).
+          offlineRepos={data.offline_repos}
         />
       )}
 

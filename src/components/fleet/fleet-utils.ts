@@ -1,4 +1,8 @@
-import type { PlanIssue, IssueTokenSummary } from "@/lib/types";
+import type { PlanIssue, IssueTokenSummary, OfflineRepoInfo } from "@/lib/types";
+
+// Re-export for consumers of fleet-utils so callers don't need to reach
+// into @/lib/types just to type a prop on FleetBoard.
+export type { OfflineRepoInfo } from "@/lib/types";
 
 /** Pipeline stages for the fleet board view. */
 export type FleetStage =
@@ -537,6 +541,32 @@ export function buildFleetApps(allIssues: PlanIssue[]): FleetApp[] {
       progress: { closed, total: children.length },
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Offline-repo entries — surface aggregator-rejected fan-outs (factory-core-lmxb.7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Defensive helper: project a `RobotPlan.offline_repos` field into a list of
+ * render-ready entries. Returns `[]` when the field is `undefined` (single-repo
+ * plans never populate it; legacy aggregator responses pre-lmxb.6 also did
+ * not). Per architect memo § ADR-001 Consequences and § ADR-002, the renderer
+ * must consume `data.offline_repos ?? []` defensively — calling this helper
+ * captures that contract in one place so FleetBoard, tests, and any future
+ * consumers (e.g. Sidebar offline indicator) all share a single conversion
+ * point.
+ *
+ * The shape is currently a pass-through (`OfflineRepoInfo` already carries
+ * everything the renderer needs: repoName, repoPath, reason). Wrapping the
+ * pass-through behind a named helper means a future enrichment (e.g. derived
+ * status colour, sorted-by-name) lands in one place rather than spreading
+ * across renderer call-sites.
+ */
+export function buildOfflineRepoEntries(
+  offlineRepos: OfflineRepoInfo[] | undefined,
+): OfflineRepoInfo[] {
+  return offlineRepos ?? [];
 }
 
 /** Per-wave progress entry. */

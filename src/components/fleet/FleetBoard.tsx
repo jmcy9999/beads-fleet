@@ -8,6 +8,7 @@ import {
   IOS_ONLY_STAGES,
   VENTURE_ONLY_STAGES,
   buildFleetApps,
+  buildOfflineRepoEntries,
   collectWaveNumbers,
   appHasWave,
   type FleetStage,
@@ -15,7 +16,7 @@ import {
   type EpicCost,
   type AttentionItem,
 } from "./fleet-utils";
-import type { PlanIssue } from "@/lib/types";
+import type { PlanIssue, OfflineRepoInfo } from "@/lib/types";
 
 export type PipelineAction =
   | "start-research"
@@ -78,6 +79,16 @@ interface FleetBoardProps {
    * source of truth (factory-core-509.7).
    */
   attentionByEpic?: Map<string, AttentionItem[]>;
+  /**
+   * Per-repo offline markers from `getAllProjectsPlan` — one entry per
+   * fan-out rejection (e.g. stale Dolt server, ECONNREFUSED). The renderer
+   * surfaces each entry as a distinct row above the kanban so offline
+   * repos are visible rather than silently disappearing. May be `undefined`
+   * for single-repo plans or legacy aggregator responses (handled
+   * defensively via `buildOfflineRepoEntries`). See architect memo
+   * § Recommended Fix Shape Change 3 (factory-core-lmxb.7).
+   */
+  offlineRepos?: OfflineRepoInfo[];
 }
 
 const DEFAULT_SCALE = 1;
@@ -145,7 +156,92 @@ function saveVisibleColumns(columns: Set<FleetStage>) {
 const TOOLBAR_BTN =
   "p-1.5 rounded-md text-gray-400 hover:text-gray-200 hover:bg-surface-2 transition-colors";
 
-export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrls, attentionByEpic }: FleetBoardProps) {
+/**
+ * Banner section rendered above the kanban toolbar that surfaces offline
+ * repos (per factory-core-lmxb.7). One row per `OfflineRepoInfo`. Hidden
+ * entirely when there are no offline repos — the banner does not introduce
+ * empty chrome on the happy path. Each row carries:
+ *
+ *  - A non-color status icon (warning triangle) so the offline state is
+ *    conveyed by shape, not colour alone (WCAG 2.1 SC 1.4.1).
+ *  - A visible "Offline" text badge (a second non-color cue).
+ *  - The repo name (visible, in bold).
+ *  - The reason string (visible inline AND repeated in the row's
+ *    `aria-label` so screen-readers announce it as part of the status).
+ *
+ * Layout note: the banner sits OUTSIDE the kanban scroll region so offline
+ * indicators remain visible regardless of horizontal scroll position.
+ */
+function OfflineReposBanner({ offlineRepos }: { offlineRepos: OfflineRepoInfo[] }) {
+  if (offlineRepos.length === 0) return null;
+
+  const headingId = "fleet-offline-repos-heading";
+
+  return (
+    <section
+      aria-labelledby={headingId}
+      data-testid="offline-repos-banner"
+      className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2"
+    >
+      <h2
+        id={headingId}
+        className="px-1 mb-1.5 text-[10px] font-medium uppercase tracking-wide text-amber-300"
+      >
+        {offlineRepos.length} offline {offlineRepos.length === 1 ? "repo" : "repos"}
+      </h2>
+      <ul className="flex flex-wrap gap-1.5" data-testid="offline-repos-list">
+        {offlineRepos.map((repo) => {
+          const ariaLabel = `${repo.repoName} is offline: ${repo.reason}`;
+          return (
+            <li
+              key={repo.repoPath}
+              role="status"
+              aria-label={ariaLabel}
+              data-testid="offline-repo-entry"
+              data-repo-name={repo.repoName}
+              className="flex items-center gap-1.5 rounded border border-amber-500/40 bg-surface-1 px-2 py-1 text-xs"
+            >
+              {/* Warning triangle — non-color signal that the row is an offline state. */}
+              <svg
+                className="w-3.5 h-3.5 text-amber-400 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+                />
+              </svg>
+              <span
+                className="px-1 rounded bg-amber-500/20 text-amber-200 text-[10px] font-semibold uppercase tracking-wide"
+                aria-hidden="true"
+              >
+                Offline
+              </span>
+              <span className="font-semibold text-gray-100" data-testid="offline-repo-name">
+                {repo.repoName}
+              </span>
+              <span
+                className="text-gray-400 truncate max-w-[24rem]"
+                title={repo.reason}
+                data-testid="offline-repo-reason"
+              >
+                {repo.reason}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, pendingEpicId, langfuseTraceUrls, attentionByEpic, offlineRepos }: FleetBoardProps) {
   const [scale, setScale] = useState(DEFAULT_SCALE);
   const [visibleColumns, setVisibleColumns] = useState<Set<FleetStage>>(loadVisibleColumns);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -154,6 +250,9 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
   const filterRef = useRef<HTMLDivElement>(null);
 
   const allApps = buildFleetApps(issues);
+  // Defensively project offline_repos through the helper — undefined input is
+  // common (single-repo plans, legacy aggregator responses) and must not throw.
+  const offlineEntries = buildOfflineRepoEntries(offlineRepos);
 
   // Filter apps by ship type, then by wave
   let apps = shipTypeFilter === "all"
@@ -223,6 +322,13 @@ export function FleetBoard({ issues, epicCosts, onPipelineAction, agentRunning, 
 
   return (
     <div className="flex flex-col flex-1">
+      {/* Offline-repos banner — surfaces aggregator-rejected fan-outs from
+          getAllProjectsPlan (factory-core-lmxb.7). Hidden when the list is
+          empty so the happy path renders no extra chrome. Sits outside the
+          kanban scroll region so offline state remains visible regardless
+          of horizontal scroll. */}
+      <OfflineReposBanner offlineRepos={offlineEntries} />
+
       {/* Toolbar: ship-type filter + column filter + zoom controls */}
       <div className="flex items-center gap-2 mb-2 justify-end">
         {/* Ship-type filter toggle */}
