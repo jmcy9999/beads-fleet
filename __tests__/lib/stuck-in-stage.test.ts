@@ -80,7 +80,12 @@ describe("stuck-in-stage rule", () => {
     expect(STAGE_RESUME_ACTIONS["completed"]).toBeUndefined();
   });
 
-  test("stuck epic at qa (16 min old) dispatches send-for-qa", async () => {
+  // factory-core-wlsr.14 Phase B cutover: act() escalates to coherence
+  // instead of dispatching the stage-specific action. Pre-cutover this
+  // test asserted action=send-for-qa; post-cutover the dispatch is
+  // run-coherence-agent (with the resumeAction surfaced inside
+  // escalationContext.ruleSpecificContext for advisory purposes).
+  test("stuck epic at qa (16 min old) escalates to coherence (was: send-for-qa)", async () => {
     const repo = await makeRepo();
     const now = new Date("2026-04-21T10:00:00.000Z");
     const sixteenMinAgo = new Date(
@@ -104,12 +109,17 @@ describe("stuck-in-stage rule", () => {
 
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].body).toMatchObject({
-      action: "send-for-qa",
+      action: "run-coherence-agent",
       epicId: "factory-core-e1",
+      anomalyClass: "stuck-in-stage",
     });
   });
 
-  test("stuck epic at development dispatches start-wave with waveNumber", async () => {
+  // factory-core-wlsr.14 Phase B cutover: development-stage stalls escalate
+  // to coherence instead of firing start-wave. Wave info, when relevant,
+  // lives inside escalationContext (via dispatchHistory entries) rather
+  // than at the top level of the dispatch body.
+  test("stuck epic at development escalates to coherence (was: start-wave with waveNumber)", async () => {
     const repo = await makeRepo();
     const now = new Date("2026-04-21T10:00:00.000Z");
     await appendEvent(repo, {
@@ -130,9 +140,13 @@ describe("stuck-in-stage rule", () => {
     await rec.tick(now);
 
     expect(fetchCalls[0].body).toMatchObject({
-      action: "start-wave",
-      waveNumber: 3,
+      action: "run-coherence-agent",
+      anomalyClass: "stuck-in-stage",
     });
+    // Pre-cutover the dispatch had a top-level waveNumber field; the
+    // post-cutover dispatch carries no waveNumber at the top level —
+    // wave info, if needed, is sourced from escalationContext.
+    expect(fetchCalls[0].body.waveNumber).toBeUndefined();
   });
 
   test("agent:running label blocks recovery", async () => {

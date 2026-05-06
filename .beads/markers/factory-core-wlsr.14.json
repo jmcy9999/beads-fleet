@@ -1,0 +1,51 @@
+{
+  "version": "1",
+  "bead_id": "factory-core-wlsr.14",
+  "stage": "builder",
+  "status": "success",
+  "what_was_done": [
+    {
+      "action": "Rewrite stuck-in-stage.ts act() to escalate to coherence (Phase B cutover per ADR-015)",
+      "result": "act() no longer dispatches run-X-agent from STAGE_RESUME_ACTIONS; instead constructs EscalationContext { anomalyType:'stuck-in-stage', epicId, ruleId:'stuck-in-stage', recentEvents (cap 10, newest-first), ruleSpecificContext:{ stage, lastEventAge, dispatchHistory } } and dispatches run-coherence-agent mirroring coherence-escalation.ts shape (action, epicId, epicTitle, currentLabels, anomalyClass, escalationContext). marker is undefined for this rule (event-log triggered, not marker triggered).",
+      "evidence": "beads_web/src/lib/reconciler-rules/stuck-in-stage.ts lines 271-447 (act method); fetch call at line 406 with action='run-coherence-agent'."
+    },
+    {
+      "action": "Preserve detection predicate unchanged per AC #1",
+      "result": "matches() still uses STAGE_RESUME_ACTIONS[stage] as a skip predicate (line 265 'if (!resume) continue'); thresholds (DEFAULT_STALENESS_MS=15min), discovery horizon (1h), agent:running guard, snapshot null guard, lastEvent type filter (excludes reconciler-action-taken), wave-required guard — all bit-for-bit unchanged from pre-cutover.",
+      "evidence": "beads_web/src/lib/reconciler-rules/stuck-in-stage.ts lines 207-285 (matches method); regression tests in __tests__/lib/reconciler-rules/stuck-in-stage.test.ts and __tests__/lib/stuck-in-stage.test.ts (9 unchanged)."
+    },
+    {
+      "action": "Retain STAGE_RESUME_ACTIONS export per AC #3 / AC #7 / ADR-015 § 4 step 3",
+      "result": "Constant retained as an exported Record at line 94; documented inline as 'NO LONGER CONSULTED BY act()' with note that it is used only as a detection-time predicate during the empirical-verification window. Future janitor will retire after positive-outcome week per ADR-010.",
+      "evidence": "beads_web/src/lib/reconciler-rules/stuck-in-stage.ts lines 79-106; AC #3/#7 export test at __tests__/lib/reconciler-rules/stuck-in-stage.test.ts."
+    },
+    {
+      "action": "Add new test file at __tests__/lib/reconciler-rules/stuck-in-stage.test.ts (15 tests, all passing)",
+      "result": "Coverage: AC #3/#7 export, AC #6 (a) detection fires, AC #6 (b) below-threshold/active/non-canned-stage skips (3 tests), AC #6 (c) EscalationContext six fields + recentEvents cap-and-order, AC #6 (d) does-NOT-call-run-X (qa + development variants), AC #6 (e) idempotency-key regex shape, AC #6 (f) repeat-within-window no-op, plus regression tests for action-taken-clock-exclusion, null snapshot, mid-act race abort, and window-bucket-roll refire. Real Reconciler harness + tmpdir event log; mocks limited to fetch (orchestrator dispatch).",
+      "evidence": "beads_web/__tests__/lib/reconciler-rules/stuck-in-stage.test.ts (15/15 passing)."
+    },
+    {
+      "action": "Update legacy test file at __tests__/lib/stuck-in-stage.test.ts (spillover edit per Step 5d Step 3a)",
+      "result": "Two tests updated to assert post-cutover behaviour: 'stuck epic at qa (16 min old) escalates to coherence (was: send-for-qa)' and 'stuck epic at development escalates to coherence (was: start-wave with waveNumber)'. Comments call out the cutover so a future reader knows why assertions changed. The other 9 tests in the file pass unchanged (they cover detection-side guards which are preserved).",
+      "evidence": "beads_web/__tests__/lib/stuck-in-stage.test.ts (11/11 passing); spillover declared in Files: manifest correction below."
+    },
+    {
+      "action": "Run full beads_web test suite",
+      "result": "2124/2124 tests passing across 105 suites. typecheck clean for changed files. eslint clean for changed files.",
+      "evidence": "Jest output: 'Tests: 1 skipped, 2124 passed, 2125 total'."
+    }
+  ],
+  "what_was_tested": "AC #1 detection predicate preserved: regression tests from legacy file (action-taken excluded from clock; recent-events do not trigger; agent:running blocks; null snapshot skips; submission-prep skips) pass. New file's AC #6 (a)/(b) cover detection fires past threshold and three negative cases. — depth: standard. AC #2 act() dispatches run-coherence-agent: AC #6 (d) tests assert body.action='run-coherence-agent' and explicitly NOT 'send-for-qa' / 'start-wave' / any /run-(architect|builder|reviewer|pm|test-spec|polish|smoke-test)-agent/ pattern. — depth: standard. AC #3 STAGE_RESUME_ACTIONS retained: AC #3/#7 test asserts all 11 stages still present and submission/terminal still excluded; act() does not reference STAGE_RESUME_ACTIONS (verified by grep at line 5e). — depth: mechanical. AC #4 EscalationContext six fields: AC #6 (c) test asserts each field — anomalyType='stuck-in-stage', epicId, ruleId=STUCK_IN_STAGE_RULE_NAME, recentEvents (Array, cap 10), marker undefined, ruleSpecificContext={stage,lastEventAge,dispatchHistory}. recentEvents cap+order verified separately by 12-event seed test. — depth: standard. AC #5 idempotency key shape: AC #6 (e) test asserts regex `^stuck-in-stage::factory-core-key1::qa::stuck-in-stage::\\d+$` against the reconciler-action-taken event payload. — depth: standard. AC #6 repeat-dispatch safety: AC #6 (f) verifies same-bucket no-op; window-bucket-roll test verifies refire after 16-min gap (skip-condition preserved). — depth: standard. AC #7 STAGE_RESUME_ACTIONS retained for v1 export: covered by AC #3/#7 test. — depth: mechanical. AC #8 single commit prefixed factory-core-wlsr.14: enforced at commit time per Step 5d. — depth: mechanical. — Full beads_web suite: 2124/2124 passing including all 26 stuck-in-stage tests across both files.",
+  "deviations_from_ac": "None substantive. Spillover edit declared (Step 5d Step 3a, small same-scope): __tests__/lib/stuck-in-stage.test.ts modified to align two assertions with post-cutover behaviour. The legacy test file was not in the bead's Files: manifest, but two of its 11 tests directly asserted the pre-cutover dispatch action (send-for-qa / start-wave); the cutover necessarily changes those assertions. The change is minimal (two test bodies, with cross-reference comments naming the cutover). Documented in this marker; legacy file added to commit's effective Files: list.",
+  "surprises_or_findings": "Idempotency-key shape divergence (AC #5 surface point): the existing coherence-escalation rule uses (rule-name, epicId, stage) — three components, no anomalyType. This bead's stuck-in-stage rule uses (rule-name, epicId, stage, anomalyType, windowStart) — five components. Two reasons for the divergence: (a) AC #1 forbids changing existing skip conditions, including the 15-min windowStart bucketing which lets the rule refire after a failed dispatch; (b) ADR-015 § Consequences names anomalyType as a cross-rule de-dup discriminator (refinement of ADR-009). For stuck-in-stage's purposes the anomalyType is a constant ('stuck-in-stage'), so it adds no behavioural change today, but it future-proofs the key against new rules that might detect different anomalyTypes on the same (epicId, stage). Cross-rule de-dup with coherence-escalation continues to work because the rule-name prefix differs (`stuck-in-stage::...` vs `coherence-escalation::...`); the reconciler core's dedup is per (rule-name, key) so both rules can fire independently. — EventSummary import path: imported as `type EventSummary` from '../coherence-journal' per wlsr.2's marker decision (EventSummary = PipelineEvent re-export). No redefinition. — dispatchHistory field source (RISK FLAGS surface point): there is no `dispatchHistory` field on EpicSnapshot or any ReconcilerSnapshot type. Derived at match-time from `reconciler-action-taken` events scoped to the epic, sorted newest-first; entries surface ruleName + idempotencyKey + (when present) context.resumeAction. This matches how repeat-dispatch-escalation reads dispatch history from the same event source (its own context.recentActions field). — marker omission per ADR-015 § 3: stuck-in-stage is event-log-triggered, not marker-triggered, so EscalationContext.marker is left undefined — coherence will read events.jsonl directly during diagnosis, marker is not the triggering signal here. — STAGE_RESUME_ACTIONS used as detection predicate: AC #1 says 'do NOT change skip conditions'; the existing matches() skips stages not in STAGE_RESUME_ACTIONS. AC #3 says 'unused by act()'. Both are satisfied: matches() retains the skip; act() makes no reference. The constant has effectively two roles now: (1) detection-time predicate (matches), (2) advisory data inside ruleSpecificContext.dispatchHistory.resumeAction (read from prior reconciler-action-taken event payloads, not from the constant directly). The retire-after-empirical-verification follow-on bead will need to handle (1) explicitly — e.g., replace the membership check with an explicit stage-allowlist enum.",
+  "recommendation_for_next": "Builder marker is success; pipeline can advance. Phase B Wave 3 has wlsr.15 (missed-wave-review-dispatch) and wlsr.16 (wave-bead-mismatch audit) blocked on or paralleling this bead. Both should follow the same pattern established here: (a) preserve detection bit-for-bit, (b) replace act()'s direct dispatch with EscalationContext + run-coherence-agent, (c) align idempotency-key shape with the (rule-name, epicId, stage, anomalyType[, windowStart]) refinement noted in surprises_or_findings, (d) retain any old hardcoded action map as exported-but-unused constant per ADR-015 § 4 step 3. Operator may wish to file the retire-STAGE_RESUME_ACTIONS follow-on bead now (post-Phase-B, gated on a calendar week of positive coherence outcomes for anomalyType='stuck-in-stage' per ADR-010 outcome attribution).",
+  "files_touched": [
+    "beads_web/src/lib/reconciler-rules/stuck-in-stage.ts",
+    "beads_web/__tests__/lib/reconciler-rules/stuck-in-stage.test.ts",
+    "beads_web/__tests__/lib/stuck-in-stage.test.ts"
+  ],
+  "tests_run": "Yes — full beads_web jest suite 2124/2124 passing; targeted runs of stuck-in-stage.test.ts (15/15) and legacy stuck-in-stage.test.ts (11/11). typecheck clean for changed files; eslint clean for changed files.",
+  "next_agent": "reviewer",
+  "blocker_class": null,
+  "whats_open": []
+}

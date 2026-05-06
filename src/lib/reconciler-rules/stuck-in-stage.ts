@@ -1,12 +1,32 @@
 /**
  * factory-core-zsjv.1 — Stuck-in-stage detector.
  *
+ * factory-core-wlsr.14 (Phase B cutover, ADR-015 § 4):
+ *   The act() method NO LONGER chooses an action from STAGE_RESUME_ACTIONS.
+ *   Per ADR-015 ("reconciler rules detect; coherence decides"), the rule's
+ *   act() now constructs an EscalationContext and dispatches
+ *   `run-coherence-agent` via the existing coherence-escalation pattern.
+ *
+ *   STAGE_RESUME_ACTIONS is RETAINED as an exported constant per ADR-015 §
+ *   4 step 3 (do NOT delete in this bead — the table is unused by act() but
+ *   kept around as a fallback during empirical verification of coherence's
+ *   competence at the broader trigger surface). A follow-on bead will
+ *   retire the constant once coherence's escalation decisions for the
+ *   `stuck-in-stage` anomaly class show consistently positive outcomes
+ *   over a calendar week per ADR-010 outcome attribution.
+ *
+ *   Detection (matches()) is preserved unchanged: thresholds, predicates,
+ *   and skip conditions (including "stage has no canned recovery → skip"
+ *   via STAGE_RESUME_ACTIONS membership) match pre-wlsr.14 behaviour
+ *   bit-for-bit. Only the action authority moves to coherence.
+ *
  * Generalises factory-core-lfcf.4 (which only caught missed
  * build-review dispatches) to every pipeline stage. When an epic has
  * been at pipeline:X for longer than the staleness window, has no
- * agent:running label, and has had no recent events, the reconciler
- * dispatches the canned resume action for stage X. This closes the
- * 8sz5-class failure at every stage, not just after review.
+ * agent:running label, and has had no recent events, the rule
+ * escalates to the coherence agent for diagnosis (was: dispatched the
+ * canned resume action for stage X). This closes the 8sz5-class
+ * failure at every stage.
  *
  * Design notes:
  *   - Epics are discovered via recent agent-exited events rather than a
@@ -14,20 +34,35 @@
  *     observed in its lifetime. Pre-existing stalls from before the
  *     event log existed are invisible (acceptable for MVP — owner
  *     resolves historical debt manually).
- *   - Stage → action mapping is a finite table. Unknown stages (e.g.
- *     submission-prep, live) are intentionally NOT in the table because
- *     their resume actions are owner/platform-owned rather than
- *     automatic.
- *   - Idempotency window ties a match to a (epic, stage, 15-min
- *     window-start) triple so successive ticks inside the same stall
- *     don't re-fire. Next stall window gets a fresh idempotency key.
+ *   - Stage → action mapping (STAGE_RESUME_ACTIONS) is kept as a
+ *     detection-time predicate ONLY. Stages NOT in the table are still
+ *     intentionally skipped at detection (their recovery is owner/
+ *     platform-owned). Stages IN the table escalate to coherence with
+ *     the stuck-in-stage anomalyType.
+ *   - Idempotency window ties a match to a (epic, stage, anomalyType,
+ *     15-min window-start) triple so successive ticks inside the same
+ *     stall don't re-fire. Next stall window gets a fresh idempotency
+ *     key. The anomalyType component is added per ADR-015 § Consequences
+ *     refinement of ADR-009 (cross-rule de-dup discriminator).
  */
 
 import type { PipelineEvent } from "../event-log";
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
 import { getDefaultActionUrl } from "../orchestrator-url";
+import type {
+  EscalationContext,
+  EventSummary,
+} from "../coherence-journal";
 
 export const STUCK_IN_STAGE_RULE_NAME = "stuck-in-stage";
+
+/**
+ * AnomalyType for this rule (closed enum value from ADR-015 § 3).
+ * Hard-coded as a literal here so the value stays in lock-step with the
+ * coherence-journal AnomalyType enum at the type level.
+ */
+const STUCK_IN_STAGE_ANOMALY_TYPE: EscalationContext["anomalyType"] =
+  "stuck-in-stage";
 
 /** 15 min default — short enough to recover from typical drops, long
  *  enough that normal agent runs (which can take 5-10 min) don't trigger
@@ -37,13 +72,24 @@ export const DEFAULT_STALENESS_MS = 15 * 60_000;
 /** How far back in the event log to look for candidate epics. */
 export const DEFAULT_DISCOVERY_HORIZON_MS = 60 * 60_000; // 1 hour
 
+/** How many recent epic-scoped events to attach to EscalationContext. Per
+ *  ADR-015 § 3 default ("last N events from events.jsonl scoped to epic
+ *  ... default 10"). */
+export const RECENT_EVENTS_CAP = 10;
+
 /**
  * Canonical stage → resume-action mapping. Each entry describes the
- * exact /api/fleet/action to fire when the stage is stuck.
+ * exact /api/fleet/action that pre-wlsr.14 act() would have fired when
+ * the stage is stuck.
  *
- * Stages NOT in this table are intentionally left alone (submission-
- * related stages, terminal states, and stages whose recovery involves
- * owner decision rather than mechanical re-fire).
+ * factory-core-wlsr.14: NO LONGER CONSULTED BY act(). Retained as an
+ * exported constant per ADR-015 § 4 step 3 — used only at detection
+ * time (matches() skips stages NOT in this table, preserving the
+ * original "skip stages whose recovery is owner-owned" predicate).
+ *
+ * Stages NOT in this table are intentionally left alone at detection
+ * (submission-related stages, terminal states, and stages whose
+ * recovery involves owner decision rather than mechanical re-fire).
  */
 export const STAGE_RESUME_ACTIONS: Record<
   string,
@@ -84,6 +130,73 @@ export interface StuckInStageRuleOptions {
    * hitting bd. Production binds to a helper that wraps readEpicState.
    */
   readEpicSnapshot: (epicId: string) => Promise<EpicSnapshot | null>;
+}
+
+/**
+ * Internal: extract a `dispatchHistory` summary from the event log for the
+ * given epic. We treat the history as the recent record of dispatches the
+ * reconciler made for this epic, regardless of which rule fired. Coherence
+ * uses this as advisory context for "what has been tried already?".
+ *
+ * Source: `reconciler-action-taken` events scoped to the epic, in the
+ * discovery-horizon window. Each entry surfaces the rule that acted, the
+ * idempotency key, and (when present) the resumeAction stuck-in-stage
+ * would have chosen pre-wlsr.14.
+ *
+ * Surfaced in the bead marker (per RISK FLAGS) — there is no
+ * `dispatchHistory` field on EpicSnapshot or the (non-existent)
+ * ReconcilerSnapshot type, so we derive it from events here.
+ */
+function deriveDispatchHistory(
+  events: PipelineEvent[],
+  epicId: string,
+): Array<{
+  at: string;
+  ruleName: string;
+  idempotencyKey?: string;
+  resumeAction?: string;
+}> {
+  const out: Array<{
+    at: string;
+    ruleName: string;
+    idempotencyKey?: string;
+    resumeAction?: string;
+  }> = [];
+  for (const e of events) {
+    if (e.type !== "reconciler-action-taken") continue;
+    if (e.epicId !== epicId) continue;
+    const payload = e.payload as
+      | {
+          ruleName?: string;
+          idempotencyKey?: string;
+          context?: { resumeAction?: string };
+        }
+      | undefined;
+    if (!payload?.ruleName) continue;
+    out.push({
+      at: e.timestamp,
+      ruleName: payload.ruleName,
+      idempotencyKey: payload.idempotencyKey,
+      resumeAction: payload.context?.resumeAction,
+    });
+  }
+  // Newest-first.
+  out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  return out;
+}
+
+/**
+ * Internal: take the last N events scoped to the given epic, newest-first.
+ * Fed to EscalationContext.recentEvents per ADR-015 § 3 default.
+ */
+function recentEpicEvents(
+  events: PipelineEvent[],
+  epicId: string,
+  cap: number,
+): EventSummary[] {
+  const filtered = events.filter((e) => e.epicId === epicId);
+  filtered.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  return filtered.slice(0, cap);
 }
 
 export function buildStuckInStageRule(
@@ -143,8 +256,14 @@ export function buildStuckInStageRule(
         if (snapshot.hasAgentRunning) continue; // an agent is working; not stuck
         if (!snapshot.currentStage) continue; // no pipeline label; not our concern
 
+        // factory-core-wlsr.14: predicate preserved unchanged. Stages
+        // not in STAGE_RESUME_ACTIONS still skip detection (their
+        // recovery is owner/platform-owned, not coherence-resolvable
+        // by re-dispatching a canned action — though coherence could
+        // in principle reason about them, ADR-015 Phase B keeps the
+        // detection scope identical to pre-cutover behaviour).
         const resume = STAGE_RESUME_ACTIONS[snapshot.currentStage];
-        if (!resume) continue; // stage has no canned recovery
+        if (!resume) continue; // stage has no canned recovery (predicate preserved)
 
         if (resume.needsWaveNumber && !snapshot.currentWave) continue; // can't act without it
 
@@ -153,18 +272,44 @@ export function buildStuckInStageRule(
         // detect recovery), the NEXT stall window gets a fresh key and
         // can retry. Without bucketing, one failed attempt would mark
         // the stall permanently-attempted for the idempotency horizon.
+        //
+        // factory-core-wlsr.14: anomalyType component added per ADR-015
+        // § Consequences refinement of ADR-009 (cross-rule de-dup
+        // discriminator). For this rule the anomalyType is constant, so
+        // it adds no behavioural change; the discriminator matters when
+        // future rules detect different anomaly types on the same
+        // (epicId, stage) and should not dedup against each other.
         const windowStart = Math.floor(nowMs / stalenessMs) * stalenessMs;
-        const idempotencyKey = `${STUCK_IN_STAGE_RULE_NAME}::${epicId}::${snapshot.currentStage}::${windowStart}`;
+        const idempotencyKey = `${STUCK_IN_STAGE_RULE_NAME}::${epicId}::${snapshot.currentStage}::${STUCK_IN_STAGE_ANOMALY_TYPE}::${windowStart}`;
+
+        // factory-core-wlsr.14: capture rule-side context for coherence.
+        // recentEvents (last N scoped to epic, newest-first) and
+        // dispatchHistory (recent reconciler-action-taken events) are
+        // derived at match time so act() can build EscalationContext
+        // without re-reading the event log.
+        const recentEvents = recentEpicEvents(events, epicId, RECENT_EVENTS_CAP);
+        const dispatchHistory = deriveDispatchHistory(events, epicId);
 
         matches.push({
           idempotencyKey,
           epicId,
           context: {
             stage: snapshot.currentStage,
+            // resumeAction is RETAINED in match.context for two reasons:
+            //   1. Backwards compat with audit logs (reconciler-action-
+            //      taken events historically include it; downstream tools
+            //      like repeat-dispatch-escalation read it from the
+            //      payload's context.resumeAction).
+            //   2. As advisory data inside ruleSpecificContext — coherence
+            //      MAY use it as a hint, treating it as one possible
+            //      action among others. This is NOT a fast-path bypass:
+            //      act() never calls fetch with this action.
             resumeAction: resume.action,
             currentWave: snapshot.currentWave,
             lastEventAt: lastEvent.timestamp,
             ageMs,
+            recentEvents,
+            dispatchHistory,
           },
         });
       }
@@ -175,14 +320,21 @@ export function buildStuckInStageRule(
     async act(match) {
       const context = match.context as {
         stage: string;
-        resumeAction: string;
+        resumeAction?: string;
         currentWave?: number;
         lastEventAt: string;
         ageMs: number;
+        recentEvents: EventSummary[];
+        dispatchHistory: Array<{
+          at: string;
+          ruleName: string;
+          idempotencyKey?: string;
+          resumeAction?: string;
+        }>;
       };
 
       console.log(
-        `[zsjv.1] stuck-in-stage recovery for ${match.epicId}: stage=${context.stage}, last event ${new Date(context.lastEventAt).toISOString()}, age=${Math.floor(context.ageMs / 60_000)}min, dispatching ${context.resumeAction}`,
+        `[stuck-in-stage] (wlsr.14 cutover) escalating ${match.epicId} to coherence: stage=${context.stage}, last event ${new Date(context.lastEventAt).toISOString()}, age=${Math.floor(context.ageMs / 60_000)}min`,
       );
 
       // Re-read snapshot just before dispatch so we have fresh labels +
@@ -190,7 +342,7 @@ export function buildStuckInStageRule(
       const snapshot = await opts.readEpicSnapshot(match.epicId);
       if (!snapshot) {
         throw new Error(
-          `[zsjv.1] snapshot read failed for ${match.epicId} at act-time; retrying next tick`,
+          `[stuck-in-stage] snapshot read failed for ${match.epicId} at act-time; retrying next tick`,
         );
       }
       if (snapshot.hasAgentRunning) {
@@ -198,20 +350,51 @@ export function buildStuckInStageRule(
         // the idempotency window still records this attempt so we don't
         // re-fire immediately.
         console.log(
-          `[zsjv.1] abort: ${match.epicId} now has agent:running`,
+          `[stuck-in-stage] abort: ${match.epicId} now has agent:running`,
         );
         return;
       }
 
-      const body: Record<string, unknown> = {
-        action: context.resumeAction,
+      // factory-core-wlsr.14: build EscalationContext per ADR-015 § 3.
+      // - anomalyType: closed enum value "stuck-in-stage".
+      // - epicId, ruleId: identification.
+      // - recentEvents: last 10 epic-scoped events (snapshotted at match-time).
+      // - marker: undefined — stuck-in-stage is event-log-triggered, not
+      //   marker-triggered, so there is no marker to attach.
+      // - ruleSpecificContext: { stage, lastEventAge, dispatchHistory } per
+      //   ADR-015 § 2 audit-table row. (NOTE: marker is a top-level
+      //   EscalationContext field per ADR-015 § 3; ruleSpecificContext does
+      //   NOT include marker.)
+      const lastEventAge = Math.floor(context.ageMs / 1000); // seconds
+      const escalationContext: EscalationContext = {
+        anomalyType: STUCK_IN_STAGE_ANOMALY_TYPE,
         epicId: match.epicId,
-        epicTitle: snapshot.title,
-        currentLabels: snapshot.labels,
+        ruleId: STUCK_IN_STAGE_RULE_NAME,
+        recentEvents: context.recentEvents,
+        // marker omitted — stuck-in-stage is not marker-triggered.
+        ruleSpecificContext: {
+          stage: context.stage,
+          lastEventAge,
+          dispatchHistory: context.dispatchHistory,
+        },
       };
-      if (context.currentWave !== undefined) {
-        body.waveNumber = context.currentWave;
-      }
+
+      // factory-core-wlsr.14: dispatch run-coherence-agent (NOT the
+      // pre-cutover run-X-agent action derived from STAGE_RESUME_ACTIONS).
+      // Mirrors the coherence-escalation rule's dispatch shape:
+      //   { action, epicId, epicTitle, currentLabels, anomalyClass, ... }
+      // and adds an `escalationContext` field carrying the structured
+      // payload coherence consumes during diagnosis.
+      //
+      // Idempotency-key alignment with coherence-escalation:
+      //   coherence-escalation uses (rule-name, epicId, stage). Here we
+      //   use (rule-name, epicId, stage, anomalyType, windowStart). The
+      //   shape differs because (a) ADR-015 § Consequences names
+      //   anomalyType as a cross-rule de-dup discriminator (refines
+      //   ADR-009), and (b) AC #1 forbids changing this rule's existing
+      //   skip conditions, including the 15-min window bucketing that
+      //   allows refire after a failed attempt. Divergence surfaced in
+      //   the bead marker per AC #5.
 
       // zsjv hotfix 2026-04-21: fetch timeout (15s). The action endpoint
       // can hang if an upstream lock is held; without a timeout, act()
@@ -223,7 +406,19 @@ export function buildStuckInStageRule(
         res = await fetch(actionUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            action: "run-coherence-agent",
+            epicId: match.epicId,
+            epicTitle: snapshot.title,
+            currentLabels: snapshot.labels,
+            // anomalyClass: legacy field for downstream consumers
+            // (dashboard CTA, journal entries). Set to the anomalyType
+            // value so the legacy field carries the same signal as the
+            // ADR-015 escalationContext.
+            anomalyClass: STUCK_IN_STAGE_ANOMALY_TYPE,
+            // ADR-015 structured handoff. Coherence reads this on launch.
+            escalationContext,
+          }),
           signal: controller.signal,
         });
       } finally {
@@ -233,12 +428,12 @@ export function buildStuckInStageRule(
       if (!res.ok) {
         const text = await res.text().catch(() => "<unreadable>");
         throw new Error(
-          `[zsjv.1] recovery dispatch for ${match.epicId} returned HTTP ${res.status}: ${text}`,
+          `[stuck-in-stage] coherence escalation for ${match.epicId} returned HTTP ${res.status}: ${text}`,
         );
       }
 
       console.log(
-        `[zsjv.1] recovered ${match.epicId}: dispatched ${context.resumeAction}`,
+        `[stuck-in-stage] escalated ${match.epicId} to coherence (anomalyType=${STUCK_IN_STAGE_ANOMALY_TYPE}, stage=${context.stage})`,
       );
     },
   };
