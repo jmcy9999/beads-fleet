@@ -1,33 +1,75 @@
 /**
  * factory-core-lfcf.4 — First real reconciler rule.
  *
+ * factory-core-wlsr.15 (Phase B cutover, ADR-015 § 4):
+ *   The act() method NO LONGER chooses an action ("start-wave" /
+ *   "run-smoke-test") from the inline `let action: ...` selection block.
+ *   Per ADR-015 ("reconciler rules detect; coherence decides"), the rule's
+ *   act() now constructs an EscalationContext and dispatches
+ *   `run-coherence-agent` via the existing coherence-escalation pattern.
+ *
+ *   The pre-cutover hardcoded action-selection logic is RETAINED below as
+ *   a clearly-marked unused helper (`legacyActionSelection`) per ADR-015 §
+ *   4 step 3 — do NOT delete in this bead. The helper is unused by act()
+ *   and exists only as a fallback during empirical verification of
+ *   coherence's competence at the broader trigger surface. A follow-on bead
+ *   will retire the helper once coherence's escalation decisions for the
+ *   `missed-wave-review-dispatch` anomaly class show consistently positive
+ *   outcomes over a calendar week per ADR-010 outcome attribution.
+ *
+ *   Detection (matches()) is preserved unchanged: candidate exits are still
+ *   build-review with exitCode === 0, correlationId set, age past
+ *   `pairingGraceMs`, age within `recoveryHorizonMs`, and no paired
+ *   stage-dispatched (start-wave / run-smoke-test / review-wave) following
+ *   the exit. Only the action authority moves to coherence.
+ *
  * Detects: a `build-review` agent exited successfully (exitCode === 0)
  * more than N seconds ago but no matching `stage-dispatched` event
  * followed — the chain was dropped. This is the 8sz5-class failure in
  * practice: something between detectAgentDone and fetch-to-action
  * swallowed the decision.
  *
- * Recovers: re-reads the epic's current wave state and dispatches the
- * same action that handleChainAction would have. For MVP:
- *   - openBugCount > 0 or current wave incomplete → start-wave (current)
- *   - all waves complete → run-smoke-test
+ * Recovers (post-wlsr.15): escalates to the coherence agent with structured
+ * context about the missed exit. Coherence decides whether the wave was
+ * actually complete (warranting smoke-test) or if review was skipped
+ * intentionally (no recovery needed) or if a fresh review-wave dispatch is
+ * appropriate.
  *
- * Idempotency key: `missed-wave-review-dispatch::<epicId>::<correlationId>`
- * — the exit's tmuxSessionName. If the reconciler has already recovered
- * this specific exit (or a human did manually), the action-taken event
- * blocks re-dispatch. Each distinct exit gets one recovery attempt per
- * idempotency horizon (default 1h).
+ * Idempotency key (post-wlsr.15):
+ *   `missed-wave-review-dispatch::<epicId>::build-review::missed-wave-review-dispatch::<correlationId>`
+ *   — the exit's tmuxSessionName (correlationId) preserves the per-exit
+ *   recovery scope from the pre-cutover key (one recovery attempt per
+ *   distinct exit per idempotency horizon, default 1h). The added
+ *   `stage` + `anomalyType` components are the cross-rule de-dup
+ *   discriminator named in ADR-015 § Consequences refinement of ADR-009.
+ *   Diverges from coherence-escalation.ts's three-component shape
+ *   `(rule-name, epicId, stage)`; divergence documented in the bead
+ *   marker per AC #5.
  */
 
-import type {
-  PipelineEvent,
-  /* intentionally unused in types below */
-} from "../event-log";
+import type { PipelineEvent } from "../event-log";
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
 import { getDefaultActionUrl } from "../orchestrator-url";
+import type { EscalationContext, EventSummary } from "../coherence-journal";
 
 export const MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME =
   "missed-wave-review-dispatch";
+
+/**
+ * AnomalyType for this rule (closed enum value from ADR-015 § 3).
+ * Hard-coded as a literal here so the value stays in lock-step with the
+ * coherence-journal AnomalyType enum at the type level.
+ */
+const MISSED_WAVE_REVIEW_DISPATCH_ANOMALY_TYPE: EscalationContext["anomalyType"] =
+  "missed-wave-review-dispatch";
+
+/**
+ * Stage for this rule (constant — matches() filters to build-review exits
+ * only). Used as the `stage` component of the idempotency key per ADR-015
+ * § Consequences and as the legacy `stage` field on EscalationContext's
+ * ruleSpecificContext.
+ */
+const MISSED_WAVE_REVIEW_DISPATCH_STAGE = "build-review";
 
 /**
  * How long we wait after a build-review exit before deciding "no
@@ -45,6 +87,13 @@ export const DEFAULT_PAIRING_GRACE_MS = 60_000;
  * the reconciler's DEFAULT_LOOKBACK_MS).
  */
 export const DEFAULT_RECOVERY_HORIZON_MS = 10 * 60_000;
+
+/**
+ * How many recent epic-scoped events to attach to EscalationContext. Per
+ * ADR-015 § 3 default ("last N events from events.jsonl scoped to epic
+ * ... default 10").
+ */
+export const RECENT_EVENTS_CAP = 10;
 
 export interface EpicSnapshot {
   waveStatus: {
@@ -76,6 +125,64 @@ export interface MissedWaveReviewDispatchRuleOptions {
 }
 
 /**
+ * factory-core-wlsr.15: pre-cutover action-selection logic, RETAINED as a
+ * clearly-marked unused helper per ADR-015 § 4 step 3.
+ *
+ * Pre-cutover act() chose between "start-wave" (with current wave number)
+ * and "run-smoke-test" based on whether bugs were open or all waves were
+ * complete. Post-cutover act() does NOT call this helper; the decision now
+ * lives in coherence. The helper is preserved verbatim during the
+ * empirical-verification window so a follow-on retirement bead can either
+ * delete it cleanly or, if coherence proves unreliable for this anomaly
+ * class, restore the call site.
+ *
+ * DO NOT call this from act() under any "fallback" condition — see
+ * ADR-015 § 2 "Anti-pattern explicitly rejected": keeping a hardcoded
+ * action-selection alongside coherence escalation re-introduces the
+ * rule-table coupling P3 prohibits.
+ */
+function legacyActionSelection(snapshot: EpicSnapshot): {
+  action: "start-wave" | "run-smoke-test";
+  waveNumber: number | undefined;
+} {
+  // Branch: bugs or incomplete wave -> start-wave (current).
+  // All waves complete and no bugs -> run-smoke-test.
+  let action: "start-wave" | "run-smoke-test";
+  let waveNumber: number | undefined;
+
+  const hasBugs = snapshot.openBugCount === -1 || snapshot.openBugCount > 0;
+
+  if (hasBugs || !snapshot.waveStatus.allWavesComplete) {
+    action = "start-wave";
+    waveNumber = snapshot.waveStatus.hasWaves
+      ? snapshot.waveStatus.currentWave
+      : 1;
+  } else {
+    action = "run-smoke-test";
+  }
+
+  return { action, waveNumber };
+}
+// Reference the helper so TypeScript / eslint don't flag it as dead while
+// it sits dormant during the empirical-verification window. Exported as
+// the legacy fallback handle a future retirement bead can find by name.
+export const __legacyActionSelection_DO_NOT_USE = legacyActionSelection;
+
+/**
+ * Internal: take the last N events scoped to the given epic, newest-first.
+ * Fed to EscalationContext.recentEvents per ADR-015 § 3 default.
+ */
+function recentEpicEvents(
+  events: PipelineEvent[],
+  epicId: string,
+  cap: number,
+): EventSummary[] {
+  const filtered = events.filter((e) => e.epicId === epicId);
+  filtered.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  return filtered.slice(0, cap);
+}
+
+/**
  * Build the rule with its read-functions injected. Production call-site
  * in instrumentation.ts wires these to agent-launcher helpers; tests
  * pass stubs.
@@ -97,6 +204,7 @@ export function buildMissedWaveReviewDispatchRule(
 
       // Candidate exits: build-review, exitCode===0, correlationId set,
       // older than pairingGraceMs, younger than recoveryHorizonMs.
+      // (factory-core-wlsr.15: detection predicate preserved unchanged.)
       const candidates = events.filter((e) => {
         if (e.type !== "agent-exited") return false;
         if (e.stage !== "build-review") return false;
@@ -114,6 +222,7 @@ export function buildMissedWaveReviewDispatchRule(
         // Look for a matching stage-dispatched event with the same
         // correlationId, AFTER the exit, dispatching one of the expected
         // downstream actions.
+        // (factory-core-wlsr.15: pairing predicate preserved unchanged.)
         const paired = events.find(
           (e) =>
             e.type === "stage-dispatched" &&
@@ -131,13 +240,33 @@ export function buildMissedWaveReviewDispatchRule(
 
         if (paired) continue; // Chain dispatched normally — no recovery needed
 
+        // factory-core-wlsr.15: capture rule-side context for coherence.
+        // recentEvents (last N scoped to epic, newest-first) is derived
+        // at match time so act() can build EscalationContext without
+        // re-reading the event log. The original exit metadata is also
+        // preserved on context for waveCompletionEvidence.
+        const recentEvents = recentEpicEvents(
+          events,
+          exitEvent.epicId,
+          RECENT_EVENTS_CAP,
+        );
+
+        // factory-core-wlsr.15: idempotency key gains stage + anomalyType
+        // discriminators per ADR-015 § Consequences refinement of ADR-009.
+        // The correlationId component is preserved (per-exit specificity is
+        // part of the unchanged detection scope per AC #1) — diverges from
+        // coherence-escalation.ts's three-component (rule-name, epicId,
+        // stage) shape; divergence documented in the bead marker per AC #5.
+        const idempotencyKey = `${MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME}::${exitEvent.epicId}::${MISSED_WAVE_REVIEW_DISPATCH_STAGE}::${MISSED_WAVE_REVIEW_DISPATCH_ANOMALY_TYPE}::${exitEvent.correlationId}`;
+
         matches.push({
-          idempotencyKey: `${MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME}::${exitEvent.epicId}::${exitEvent.correlationId}`,
+          idempotencyKey,
           epicId: exitEvent.epicId,
           context: {
             originalExitAt: exitEvent.timestamp,
             originalCorrelationId: exitEvent.correlationId,
             originalPayload: exitEvent.payload,
+            recentEvents,
           },
         });
       }
@@ -147,45 +276,100 @@ export function buildMissedWaveReviewDispatchRule(
 
     async act(match) {
       const epicId = match.epicId;
+      const ctx = match.context as
+        | {
+            originalExitAt?: string;
+            originalCorrelationId?: string;
+            originalPayload?: unknown;
+            recentEvents?: EventSummary[];
+          }
+        | undefined;
+
       console.log(
-        `[lfcf.4] recovering missed wave-review dispatch for ${epicId} (exit correlation: ${
-          (match.context as { originalCorrelationId?: string } | undefined)
-            ?.originalCorrelationId ?? "<unknown>"
+        `[missed-wave-review-dispatch] (wlsr.15 cutover) escalating ${epicId} to coherence: missed dispatch after build-review exit (correlation: ${
+          ctx?.originalCorrelationId ?? "<unknown>"
         })`,
       );
 
       const snapshot = await opts.readEpicSnapshot(epicId);
 
       if (snapshot.waveStatus.error) {
+        // Pre-cutover threw on snapshot.waveStatus.error here so the
+        // reconciler retried on the next tick. Post-cutover preserves
+        // that contract — coherence cannot reason about wave completion
+        // without a usable wave-status snapshot, so we throw and let
+        // the reconciler's always-emit-action-taken safety consume the
+        // idempotency bucket with an error payload (zsjv hotfix
+        // 2026-04-21 in reconciler.ts) rather than dispatching a
+        // partial EscalationContext.
         throw new Error(
-          `[lfcf.4] cannot determine wave state for ${epicId}: ${snapshot.waveStatus.error}`,
+          `[missed-wave-review-dispatch] cannot determine wave state for ${epicId}: ${snapshot.waveStatus.error}`,
         );
       }
 
-      // Branch: bugs or incomplete wave -> start-wave (current).
-      // All waves complete and no bugs -> run-smoke-test.
-      let action: "start-wave" | "run-smoke-test";
-      let waveNumber: number | undefined;
+      // factory-core-wlsr.15: build EscalationContext per ADR-015 § 3.
+      // - anomalyType: closed enum value "missed-wave-review-dispatch".
+      // - epicId, ruleId: identification.
+      // - recentEvents: last 10 epic-scoped events (snapshotted at match-time).
+      // - marker: undefined — missed-wave-review-dispatch is event-log-
+      //   triggered (build-review agent-exited), not marker-triggered, so
+      //   there is no marker to attach.
+      // - ruleSpecificContext: { waveNumber, waveCompletionEvidence } per
+      //   ADR-015 § 2 audit-table row. waveCompletionEvidence captures the
+      //   snapshot's wave-status fields plus the original exit metadata so
+      //   coherence can verify whether the wave was actually complete.
+      //   (NOTE: marker is a top-level EscalationContext field per ADR-015
+      //   § 3; ruleSpecificContext does NOT include marker.)
+      const waveNumber: number | null = snapshot.waveStatus.hasWaves
+        ? snapshot.waveStatus.currentWave
+        : null;
 
-      const hasBugs = snapshot.openBugCount === -1 || snapshot.openBugCount > 0;
-
-      if (hasBugs || !snapshot.waveStatus.allWavesComplete) {
-        action = "start-wave";
-        waveNumber = snapshot.waveStatus.hasWaves
-          ? snapshot.waveStatus.currentWave
-          : 1;
-      } else {
-        action = "run-smoke-test";
-      }
-
-      const body: Record<string, unknown> = {
-        action,
-        epicId,
-        epicTitle: snapshot.title,
-        currentLabels: snapshot.labels,
+      // waveCompletionEvidence: structured payload coherence reasons over to
+      // decide whether the wave was actually complete or whether review was
+      // skipped intentionally. Sources:
+      //   - hasWaves / currentWave / allWavesComplete: from EpicSnapshot.waveStatus
+      //     (the same wave-status surface readEpicState reads from bd via
+      //     waveStatus aggregation in agent-launcher.ts).
+      //   - openBugCount: from EpicSnapshot.openBugCount (-1 sentinel = bd
+      //     failure → "assume bugs"; coherence treats sentinel as a
+      //     don't-trust-this-evidence marker).
+      //   - exitedAt / exitCorrelationId: the build-review exit that
+      //     triggered the match (preserved from match.context). Lets
+      //     coherence cross-reference the events.jsonl entry.
+      const waveCompletionEvidence = {
+        hasWaves: snapshot.waveStatus.hasWaves,
+        currentWave: snapshot.waveStatus.currentWave,
+        allWavesComplete: snapshot.waveStatus.allWavesComplete,
+        openBugCount: snapshot.openBugCount,
+        exitedAt: ctx?.originalExitAt ?? null,
+        exitCorrelationId: ctx?.originalCorrelationId ?? null,
       };
-      if (waveNumber !== undefined) body.waveNumber = waveNumber;
 
+      const escalationContext: EscalationContext = {
+        anomalyType: MISSED_WAVE_REVIEW_DISPATCH_ANOMALY_TYPE,
+        epicId,
+        ruleId: MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME,
+        recentEvents: ctx?.recentEvents ?? [],
+        // marker omitted — this rule is event-log triggered, not marker-triggered.
+        ruleSpecificContext: {
+          waveNumber,
+          waveCompletionEvidence,
+        },
+      };
+
+      // factory-core-wlsr.15: dispatch run-coherence-agent (NOT the
+      // pre-cutover start-wave / run-smoke-test action chosen by
+      // legacyActionSelection). Mirrors the coherence-escalation rule's
+      // dispatch shape:
+      //   { action, epicId, epicTitle, currentLabels, anomalyClass,
+      //     escalationContext }
+      // and adds the structured `escalationContext` field carrying the
+      // payload coherence consumes during diagnosis.
+      //
+      // anomalyClass: legacy field for downstream consumers (dashboard CTA,
+      // journal entries). Set to the anomalyType value so the legacy field
+      // carries the same signal as the ADR-015 escalationContext.
+      //
       // zsjv hotfix 2026-04-21: fetch timeout — action endpoint can
       // hang under lock contention; without a cap, act() hangs forever.
       const controller = new AbortController();
@@ -195,7 +379,15 @@ export function buildMissedWaveReviewDispatchRule(
         res = await fetch(actionUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            action: "run-coherence-agent",
+            epicId,
+            epicTitle: snapshot.title,
+            currentLabels: snapshot.labels,
+            anomalyClass: MISSED_WAVE_REVIEW_DISPATCH_ANOMALY_TYPE,
+            // ADR-015 structured handoff. Coherence reads this on launch.
+            escalationContext,
+          }),
           signal: controller.signal,
         });
       } finally {
@@ -205,14 +397,12 @@ export function buildMissedWaveReviewDispatchRule(
       if (!res.ok) {
         const text = await res.text().catch(() => "<unreadable>");
         throw new Error(
-          `[lfcf.4] recovery dispatch for ${epicId} returned HTTP ${res.status}: ${text}`,
+          `[missed-wave-review-dispatch] coherence escalation for ${epicId} returned HTTP ${res.status}: ${text}`,
         );
       }
 
       console.log(
-        `[lfcf.4] recovered ${epicId}: dispatched ${action}${
-          waveNumber ? ` (wave:${waveNumber})` : ""
-        }`,
+        `[missed-wave-review-dispatch] escalated ${epicId} to coherence (anomalyType=${MISSED_WAVE_REVIEW_DISPATCH_ANOMALY_TYPE}, waveNumber=${waveNumber ?? "<none>"}, allWavesComplete=${snapshot.waveStatus.allWavesComplete})`,
       );
     },
   };

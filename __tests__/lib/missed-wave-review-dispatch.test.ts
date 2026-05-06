@@ -70,6 +70,10 @@ describe("missed-wave-review-dispatch rule", () => {
   });
 
   test("match: exit past grace with no dispatch triggers recovery", async () => {
+    // factory-core-wlsr.15 (Phase B cutover, ADR-015): pre-cutover this
+    // dispatched action='start-wave' with the current wave number. Post-
+    // cutover act() escalates to coherence; coherence decides whether
+    // start-wave / run-smoke-test / something else is appropriate.
     const repo = await makeRepo();
     const now = new Date("2026-04-21T10:00:00.000Z");
     const exitAt = new Date(now.getTime() - 65_000).toISOString(); // 65s ago
@@ -92,10 +96,14 @@ describe("missed-wave-review-dispatch rule", () => {
 
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].body).toMatchObject({
-      action: "start-wave",
+      action: "run-coherence-agent",
       epicId: "factory-core-e1",
-      waveNumber: 2,
     });
+    // Wave context surfaces inside escalationContext.ruleSpecificContext,
+    // not at the top level of the dispatch body.
+    const ec = (fetchCalls[0].body as { escalationContext?: { ruleSpecificContext?: { waveNumber?: number } } })
+      .escalationContext;
+    expect(ec?.ruleSpecificContext?.waveNumber).toBe(2);
   });
 
   test("no match: exit followed by stage-dispatched event", async () => {
@@ -240,7 +248,12 @@ describe("missed-wave-review-dispatch rule", () => {
     expect(actionTaken).toHaveLength(1);
   });
 
-  test("branching: all waves complete + no bugs -> run-smoke-test", async () => {
+  test("branching: all waves complete + no bugs -> escalate to coherence (was: run-smoke-test)", async () => {
+    // factory-core-wlsr.15 (Phase B cutover, ADR-015): pre-cutover this
+    // dispatched action='run-smoke-test' when allWavesComplete && no bugs.
+    // Post-cutover act() escalates regardless; coherence reasons over
+    // waveCompletionEvidence (allWavesComplete=true, openBugCount=0) and
+    // decides whether smoke-test is appropriate.
     const repo = await makeRepo();
     const now = new Date("2026-04-21T10:00:00.000Z");
     const exitAt = new Date(now.getTime() - 65_000).toISOString();
@@ -267,12 +280,33 @@ describe("missed-wave-review-dispatch rule", () => {
     await rec.tick(now);
 
     expect(fetchCalls[0].body).toMatchObject({
-      action: "run-smoke-test",
+      action: "run-coherence-agent",
       epicId: "factory-core-e1",
     });
+    // waveCompletionEvidence surfaces the input that pre-cutover
+    // branching consumed; coherence reasons over it.
+    const ec = (fetchCalls[0].body as {
+      escalationContext?: {
+        ruleSpecificContext?: {
+          waveCompletionEvidence?: {
+            allWavesComplete?: boolean;
+            openBugCount?: number;
+          };
+        };
+      };
+    }).escalationContext;
+    expect(ec?.ruleSpecificContext?.waveCompletionEvidence?.allWavesComplete).toBe(
+      true,
+    );
+    expect(ec?.ruleSpecificContext?.waveCompletionEvidence?.openBugCount).toBe(0);
   });
 
-  test("branching: open bugs -> start-wave (current wave)", async () => {
+  test("branching: open bugs -> escalate to coherence (was: start-wave with current wave)", async () => {
+    // factory-core-wlsr.15 (Phase B cutover, ADR-015): pre-cutover this
+    // dispatched action='start-wave' with the current wave number when
+    // openBugCount > 0. Post-cutover act() escalates; waveCompletionEvidence
+    // captures openBugCount so coherence can reason about whether to
+    // re-run the wave or take a different action.
     const repo = await makeRepo();
     const now = new Date("2026-04-21T10:00:00.000Z");
     const exitAt = new Date(now.getTime() - 65_000).toISOString();
@@ -299,9 +333,18 @@ describe("missed-wave-review-dispatch rule", () => {
     await rec.tick(now);
 
     expect(fetchCalls[0].body).toMatchObject({
-      action: "start-wave",
-      waveNumber: 2,
+      action: "run-coherence-agent",
     });
+    const ec = (fetchCalls[0].body as {
+      escalationContext?: {
+        ruleSpecificContext?: {
+          waveNumber?: number;
+          waveCompletionEvidence?: { openBugCount?: number };
+        };
+      };
+    }).escalationContext;
+    expect(ec?.ruleSpecificContext?.waveNumber).toBe(2);
+    expect(ec?.ruleSpecificContext?.waveCompletionEvidence?.openBugCount).toBe(3);
   });
 
   test("fail-safe: snapshot read failure throws, action-taken emitted WITH error payload", async () => {
