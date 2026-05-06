@@ -1,0 +1,64 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-ehp.1",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-06T19:55:00Z",
+  "exited_at": "2026-05-06T20:09:38Z",
+  "what_was_done": [
+    {
+      "ac": "source-module",
+      "action": "Added src/lib/bead-status-reader.ts (~165 lines incl. JSDoc): exports `type BeadStatus`, `interface BeadSnapshot` (id/status/labels/type + 5 derived label-aware fields), and `async readBeadStatus(beadId, repoPath): Promise<BeadSnapshot | null>`. Spawn shape mirrors the inline precedent at reconciler-bootstrap.ts ~line 631: `execSync(\"${getBdPath()} show ${beadId} --json\", { cwd: rp, encoding: 'utf-8', env: getBdEnv(), timeout: 15_000, stdio: ['ignore','pipe','ignore'] })`. Parses JSON, validates id/status types + status-enum membership, narrows labels to string[], maps `issue_type` → `type`, computes derived fields (pipelineStage = pipeline:<stage> suffix; currentQaRound = max N over qa:round-N; currentWave = lowest N over wave:N; hasAgentRunning = labels.includes('agent:running'); hasReviewNeedsHuman = labels.includes('review:needs-human')).",
+      "result": "Returns null on every failure mode: binary missing (ENOENT), non-zero exit (status=1), timeout, malformed JSON, empty stdout, empty array, missing id, missing status, unknown status enum, non-object payload. Never throws. No caching — fresh bd read each call (architecture § Persistence Strategy). Schema-tolerant on labels (missing field → empty array, not null) and on type (issue_type primary, type fallback for forward-compat).",
+      "evidence": "src/lib/bead-status-reader.ts (NEW, 187 lines incl. blank lines + comments). tsc --noEmit: 0 errors. eslint: 0 errors / 0 warnings."
+    },
+    {
+      "ac": "tests",
+      "action": "Added __tests__/lib/bead-status-reader.test.ts with 24 tests in 5 categories: (1) 3 happy-path tests against REAL bd fixtures (open task, closed task, deferred bug), (2) 5 status-enum tests (open/in_progress/blocked/closed/deferred via test.each), (3) 9 failure-mode tests (binary missing ENOENT, non-zero exit, malformed JSON, empty string, empty array, missing status field, missing id field, unknown status enum, schema-tolerance for missing labels), (4) 6 derived-field tests (pipeline:<stage>, agent:running, review:needs-human, qa:round-N max, wave:N lowest, rich label set together), (5) 1 spawn-shape contract test (cmd format, cwd/env/timeout passed to execSync).",
+      "result": "24 / 24 pass. Test runtime: 0.226s. Mock pattern: jest.mock('child_process', { execSync: jest.fn() }) per the precedent at __tests__/lib/agent-launcher-marker-cleanup.test.ts:34-52.",
+      "evidence": "npx jest --no-cache __tests__/lib/bead-status-reader.test.ts → Tests: 24 passed, 24 total. Time: 0.226s."
+    },
+    {
+      "ac": "fixtures",
+      "action": "Recorded 3 REAL `bd show <id> --json` fixtures from the live factory-core Dolt server (verified via /opt/homebrew/bin/bd 2026-05-06): factory-core-a4tx.32f (open task, labels=['wave:5']), factory-core-9jc9 (closed task), factory-core-8260.1 (deferred bug, labels=['defer:focus-coherence-only','epic:factory-core-8260','ship-type:internal','wave:1']). Stored at __tests__/fixtures/bd-show/.",
+      "result": "Fixtures are unmodified live bd output. The reader's parse path is exercised against actual wire shape, not a hand-written fictional payload (per bead Risk Flag 2 + AC item 5).",
+      "evidence": "__tests__/fixtures/bd-show/factory-core-a4tx.32f-open-task.json (76 lines), -9jc9-closed-task.json, -8260.1-deferred-bug.json. Tests load via fs.readFileSync — bd's wire-shape verified at parse, not asserted in test code."
+    },
+    {
+      "ac": "architecture-doc",
+      "action": "Updated ARCHITECTURE.md per the project's Documentation Rule: added a Core Library Modules entry for `src/lib/bead-status-reader.ts` (after `cache.ts`) with description of the BeadSnapshot shape, derived fields, and downstream consumer (Wave 2 dispatch-precondition library). Added entry to the lib/ section of the File Structure tree.",
+      "result": "ARCHITECTURE.md reflects the new infrastructure module without adding new sections — slot fits the existing 'Core Library Modules' pattern.",
+      "evidence": "git diff ARCHITECTURE.md shows +5 lines: 1 new section heading + 1 description paragraph + 1 file-tree entry."
+    },
+    {
+      "ac": "no-regression",
+      "action": "Ran full project test suite to confirm no regression from the new module addition.",
+      "result": "Test Suites: 106 passed, 106 total. Tests: 1 skipped, 2154 passed, 2155 total. Time: 8.102s. ZERO regressions. (One unrelated console.error log line from src/app/api/insights/route.ts surfaces a BEADS_PROJECT_PATH-unset case in __tests__/api/insights.test.ts — not affected by ehp.1; the test still passes; the log is a pre-existing handler trace.)",
+      "evidence": "npx jest --no-cache → 106 passed / 106 total / 2154 tests passed."
+    },
+    {
+      "ac": "lint+typecheck",
+      "action": "Ran npx tsc --noEmit (project-wide) and npx eslint on changed files.",
+      "result": "tsc: 0 errors in bead-status-reader scope. eslint: 0 errors / 0 warnings on src/lib/bead-status-reader.ts and __tests__/lib/bead-status-reader.test.ts.",
+      "evidence": "npx tsc --noEmit 2>&1 | grep bead-status-reader → empty. npx eslint src/lib/bead-status-reader.ts __tests__/lib/bead-status-reader.test.ts → clean."
+    }
+  ],
+  "what_was_tested": "Failure modes exercised in tests (per bead's marker requirement to enumerate explicitly): (1) binary missing — execSync throws ENOENT → null; (2) non-zero exit — execSync throws with status=1 → null; (3) malformed JSON — '{not valid json[' → null; (4) partial output — empty string, empty array '[]', payload missing 'status' field, payload missing 'id' field, all → null; (5) deferred status — real factory-core-8260.1 fixture → status='deferred' parsed cleanly; (6) closed status — real factory-core-9jc9 fixture → status='closed' parsed cleanly; (7) unknown status enum value ('frobnicated') — schema mismatch → null; (8) all 5 status-enum values (open/in_progress/blocked/closed/deferred) accepted and preserved via test.each. Plus derived-field correctness (pipeline:<stage>, qa:round-N max, wave:N lowest, agent:running, review:needs-human individually + together). Plus spawn-shape contract (cmd format, cwd/env/timeout).",
+  "deviations_from_ac": "1) Bead said source file ~25 lines; actual is ~165 lines incl. JSDoc. The 25-line target reflects the SLOC of the inline `readBeadStatus` callback in reconciler-bootstrap.ts; the standalone module needs JSDoc + the type definitions + 3 small derive-helper functions. No semantic deviation — same spawn shape, same null-on-failure discipline, same return semantics. 2) Bead said timeout '~15s' citing the existing inline pattern. Empirically the existing inline pattern uses 10_000ms (10s), not 15s — confirmed by reading reconciler-bootstrap.ts line 637. I went with 15_000ms per the dispatch's literal directive (a wider window absorbs cold-start daemon RPC latency on first read; reader is typically called once per dispatch decision, not in a tight loop). Documented inline in BD_TIMEOUT_MS comment so future edits see the rationale. Surfaced under surprises_or_findings per the architect-pattern-empirical-verify discipline (memory key architect-recommendations-involving-literal-grep-patterns-mu).",
+  "surprises_or_findings": "1) `bd show <id> --json` shape MATCHES the architecture doc exactly — no SQLite/Dolt-driver quirk where labels come back as a comma-joined string (Risk Flag 2 cleared). Live verification: top-level is a JSON ARRAY of one bead object; labels is a string[]; status is one of {open, in_progress, blocked, closed, deferred}; issue_type is a string. Keys observed on real beads: id, title, description, status, priority (int), issue_type, owner, created_at, created_by, updated_at, labels, dependencies, dependents (some beads also include `notes`). The reader handles `notes` via the open-shape pattern (extract only what we need). 2) Empirical timeout-precedent verification (per the architect-pattern memory): the existing inline pattern at reconciler-bootstrap.ts line 637 uses timeout=10_000ms, NOT ~15s as the bead's CONTEXT line implies. Documented the discrepancy + rationale for keeping 15s in this module's BD_TIMEOUT_MS comment. 3) The `as unknown as Buffer` test-cast pattern triggers a TypeScript narrowing complaint under recent @types/node Buffer<ArrayBufferLike> typings; switched to `as never` for the mockReturnValue casts. Pure mechanical, doesn't affect runtime semantics. 4) tsc baseline run shows the project has many other --noEmit errors elsewhere (~hundreds outside this bead's scope, e.g., older test files, Next.js generated types). I filtered to bead-status-reader scope per the bead's discipline; no project-wide tsc cleanup was in scope.",
+  "whats_open": [
+    "FOLLOW-ON-NORMAL: Wave 2 (next bead in ehp epic) consumes this module. Per the bead's CONTEXT note, Wave 3 will migrate the existing inline `readBeadStatus` callback at reconciler-bootstrap.ts ~lines 629-647 to call this module instead — explicitly OUT-OF-SCOPE here. The inline callback returns only `status`; Wave 3 callers will get the richer BeadSnapshot value object (labels + derived fields) without re-spawning bd.",
+    "FOLLOW-ON-NORMAL: This module exposes derived fields (pipelineStage, currentQaRound, currentWave, hasAgentRunning, hasReviewNeedsHuman) that the bead description anticipates Wave 2's evaluatePreconditions consuming. The label-derivation logic is co-located here (Infrastructure layer) rather than in evaluatePreconditions (Domain layer). Reasoning: label parsing is a wire-format concern, not a domain rule. Wave 2 should consume the parsed fields, not re-parse labels — re-parsing in two places risks drift (e.g., qa:round-N regex divergence)."
+  ],
+  "recommendation_for_next": "Wave 2 (the dispatch-precondition library) imports `readBeadStatus` and `type BeadSnapshot` from `@/lib/bead-status-reader` and uses BeadSnapshot fields as the canonical source for precondition checks. Suggested precondition shape: `(snap: BeadSnapshot) => { ok: boolean; refusalCode?: RefusalCode; reason?: string }`. Since `readBeadStatus` returns null on bd-unreachable, callers should treat null as a refusal with refusalCode='external-dependency-failure' (or similar — Wave 2's RefusalCode enum will define the canonical value).",
+  "files_modified": [
+    "src/lib/bead-status-reader.ts (NEW, 187 lines incl. JSDoc + comments)",
+    "__tests__/lib/bead-status-reader.test.ts (NEW, ~340 lines, 24 tests)",
+    "__tests__/fixtures/bd-show/factory-core-a4tx.32f-open-task.json (NEW, real bd fixture, 76 lines)",
+    "__tests__/fixtures/bd-show/factory-core-9jc9-closed-task.json (NEW, real bd fixture)",
+    "__tests__/fixtures/bd-show/factory-core-8260.1-deferred-bug.json (NEW, real bd fixture)",
+    "ARCHITECTURE.md (+5 lines: Core Library Modules entry + lib/ tree entry)",
+    ".beads/markers/beads_web-ehp.1.json (NEW)"
+  ],
+  "test_summary": "bead-status-reader: 24/24 pass (0.226s). Full project: 2154 pass / 1 skip / 2155 total / 106 suites all pass. ZERO regressions."
+}
