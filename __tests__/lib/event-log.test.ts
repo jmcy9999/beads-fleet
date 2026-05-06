@@ -13,6 +13,9 @@ import * as path from "path";
 import {
   appendEvent,
   readEvents,
+  RECONCILER_ACTION_REFUSED,
+  type ReconcilerActionRefusedEvent,
+  type ReconcilerActionRefusedPayload,
   __resetEventLogForTests,
 } from "@/lib/event-log";
 
@@ -181,6 +184,231 @@ describe("event-log", () => {
     expect(await readEvents(repo)).toHaveLength(1);
     await __resetEventLogForTests(repo);
     expect(await readEvents(repo)).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------
+  // Variant: reconciler-action-refused (beads_web-ehp.2)
+  // ---------------------------------------------------------------------
+  // ADR-006: NEW event type, NOT a flag on existing reconciler-action-taken.
+  // Pure additive variant — the existing event filters and round-trip
+  // semantics MUST be preserved unchanged.
+  // ---------------------------------------------------------------------
+
+  test("RECONCILER_ACTION_REFUSED constant matches the wire literal", () => {
+    expect(RECONCILER_ACTION_REFUSED).toBe("reconciler-action-refused");
+  });
+
+  test("reconciler-action-refused round-trips with all structured fields", async () => {
+    const repo = await makeRepo();
+    // Use the typed payload to lock the schema at the test layer too —
+    // any future drift in the payload shape produces a TS error here.
+    const payload: ReconcilerActionRefusedPayload = {
+      ruleName: "marker-driven-routing",
+      action: "marker-driven-routing:dispatch",
+      // Plain string literal — DO NOT import RefusalCode (Wave 2 ehp.3),
+      // forward-coupling per bead risk flag.
+      refusalCode: "BD_STATUS_DEFERRED",
+      failedCheck: "BD_STATUS_DEFERRED",
+      reason: "Bead status=deferred (372-bead mass-defer scenario); refusing dispatch",
+    };
+    const event: Omit<ReconcilerActionRefusedEvent, "timestamp"> = {
+      type: RECONCILER_ACTION_REFUSED,
+      epicId: "factory-core-niii",
+      correlationId: "shipyard-niii-marker-routing-2026-05-06T10-00-00",
+      payload,
+    };
+    await appendEvent(repo, event);
+
+    const events = await readEvents(repo);
+    expect(events).toHaveLength(1);
+    const got = events[0];
+    expect(got.type).toBe(RECONCILER_ACTION_REFUSED);
+    expect(got.epicId).toBe("factory-core-niii");
+    expect(got.correlationId).toBe(
+      "shipyard-niii-marker-routing-2026-05-06T10-00-00",
+    );
+    expect(got.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(got.payload).toEqual(payload);
+  });
+
+  test("reconciler-action-refused JSONL line is greppable + has stable shape", async () => {
+    // Operators grep events.jsonl directly (event-log ADR: "JSONL, not SQLite
+    // ... greppable by operators"). Verify the on-disk line includes the
+    // discriminant tag and every payload field as raw JSON keys, in
+    // a single line.
+    const repo = await makeRepo();
+    await appendEvent(repo, {
+      type: RECONCILER_ACTION_REFUSED,
+      epicId: "factory-core-x",
+      correlationId: "tmux-corr-1",
+      timestamp: "2026-05-06T10:00:00.000Z",
+      payload: {
+        ruleName: "stuck-in-stage",
+        action: "stuck-in-stage:redispatch",
+        refusalCode: "OPERATOR_DECISION_PENDING",
+        failedCheck: "OPERATOR_DECISION_PENDING",
+        reason: "Marker has next_agent=operator and blocker_class=spec-ambiguity",
+      } satisfies ReconcilerActionRefusedPayload,
+    });
+    const logPath = path.join(repo, ".beads", "events.jsonl");
+    const raw = await fs.readFile(logPath, "utf-8");
+    // One line, terminated by \n.
+    expect(raw.split("\n").filter((l) => l.length > 0)).toHaveLength(1);
+    expect(raw).toContain("\"type\":\"reconciler-action-refused\"");
+    expect(raw).toContain("\"epicId\":\"factory-core-x\"");
+    expect(raw).toContain("\"correlationId\":\"tmux-corr-1\"");
+    expect(raw).toContain("\"timestamp\":\"2026-05-06T10:00:00.000Z\"");
+    expect(raw).toContain("\"ruleName\":\"stuck-in-stage\"");
+    expect(raw).toContain("\"action\":\"stuck-in-stage:redispatch\"");
+    expect(raw).toContain("\"refusalCode\":\"OPERATOR_DECISION_PENDING\"");
+    expect(raw).toContain("\"failedCheck\":\"OPERATOR_DECISION_PENDING\"");
+    expect(raw).toContain("\"reason\":\"Marker has next_agent=operator");
+  });
+
+  test("type filter on reconciler-action-refused does not return reconciler-action-taken", async () => {
+    // Bead AC: "Filter `e.type === 'reconciler-action-refused'` reads only
+    // the new variant, not the existing `reconciler-action-taken` events."
+    const repo = await makeRepo();
+    await appendEvent(repo, {
+      type: "reconciler-action-taken",
+      epicId: "e1",
+      payload: {
+        ruleName: "stuck-in-stage",
+        idempotencyKey: "e1:stuck-in-stage:build",
+      },
+    });
+    await appendEvent(repo, {
+      type: RECONCILER_ACTION_REFUSED,
+      epicId: "e1",
+      payload: {
+        ruleName: "stuck-in-stage",
+        action: "stuck-in-stage:redispatch",
+        refusalCode: "BD_STATUS_DEFERRED",
+        failedCheck: "BD_STATUS_DEFERRED",
+        reason: "deferred bead; refusing",
+      } satisfies ReconcilerActionRefusedPayload,
+    });
+    await appendEvent(repo, {
+      type: "reconciler-action-taken",
+      epicId: "e1",
+      payload: {
+        ruleName: "marker-driven-routing",
+        idempotencyKey: "e1:marker-driven-routing:plan-review",
+      },
+    });
+
+    const refused = await readEvents(repo, {
+      type: "reconciler-action-refused",
+    });
+    expect(refused).toHaveLength(1);
+    expect(refused[0].type).toBe(RECONCILER_ACTION_REFUSED);
+    expect(refused.every((e) => e.type === "reconciler-action-refused")).toBe(
+      true,
+    );
+
+    const taken = await readEvents(repo, { type: "reconciler-action-taken" });
+    expect(taken).toHaveLength(2);
+    expect(taken.every((e) => e.type === "reconciler-action-taken")).toBe(true);
+  });
+
+  test("existing `e.type === 'reconciler-action-taken'` filter is unchanged by the new variant", async () => {
+    // Bead AC: "Existing filter `e.type === 'reconciler-action-taken'`
+    // (e.g., at `stuck-in-stage.ts:122`) continues to work unchanged."
+    // Simulate the consumer's filter shape directly here.
+    const repo = await makeRepo();
+    await appendEvent(repo, {
+      type: "reconciler-action-taken",
+      epicId: "e1",
+      payload: { ruleName: "r1" },
+    });
+    await appendEvent(repo, {
+      type: RECONCILER_ACTION_REFUSED,
+      epicId: "e1",
+      payload: {
+        ruleName: "r1",
+        action: "r1:dispatch",
+        refusalCode: "BD_STATUS_DEFERRED",
+        failedCheck: "BD_STATUS_DEFERRED",
+        reason: "x",
+      } satisfies ReconcilerActionRefusedPayload,
+    });
+    await appendEvent(repo, {
+      type: "agent-exited",
+      epicId: "e1",
+      payload: { exitCode: 0 },
+    });
+
+    const all = await readEvents(repo);
+    // Mirror stuck-in-stage.ts:122 — exclude reconciler-action-taken.
+    const nonReconcilerTaken = all.filter(
+      (e) => e.type !== "reconciler-action-taken",
+    );
+    // Two events remain: the agent-exited and the reconciler-action-refused.
+    expect(nonReconcilerTaken).toHaveLength(2);
+    expect(nonReconcilerTaken.map((e) => e.type).sort()).toEqual(
+      ["agent-exited", "reconciler-action-refused"].sort(),
+    );
+
+    // And the inverse filter — only reconciler-action-taken — returns 1.
+    const onlyTaken = all.filter(
+      (e) => e.type === "reconciler-action-taken",
+    );
+    expect(onlyTaken).toHaveLength(1);
+    expect(onlyTaken[0].payload).toEqual({ ruleName: "r1" });
+  });
+
+  test("epicId + since filters compose with reconciler-action-refused", async () => {
+    // Confirm the new variant participates in compound filters identically
+    // to existing variants — no special-casing.
+    const repo = await makeRepo();
+    await appendEvent(repo, {
+      type: RECONCILER_ACTION_REFUSED,
+      epicId: "e1",
+      timestamp: "2026-05-06T09:00:00.000Z",
+      payload: {
+        ruleName: "r1",
+        action: "r1:dispatch",
+        refusalCode: "BD_STATUS_DEFERRED",
+        failedCheck: "BD_STATUS_DEFERRED",
+        reason: "old",
+      } satisfies ReconcilerActionRefusedPayload,
+    });
+    await appendEvent(repo, {
+      type: RECONCILER_ACTION_REFUSED,
+      epicId: "e1",
+      timestamp: "2026-05-06T11:00:00.000Z",
+      payload: {
+        ruleName: "r1",
+        action: "r1:dispatch",
+        refusalCode: "OPERATOR_DECISION_PENDING",
+        failedCheck: "OPERATOR_DECISION_PENDING",
+        reason: "recent",
+      } satisfies ReconcilerActionRefusedPayload,
+    });
+    await appendEvent(repo, {
+      type: RECONCILER_ACTION_REFUSED,
+      epicId: "e2",
+      timestamp: "2026-05-06T11:00:00.000Z",
+      payload: {
+        ruleName: "r2",
+        action: "r2:dispatch",
+        refusalCode: "BD_STATUS_DEFERRED",
+        failedCheck: "BD_STATUS_DEFERRED",
+        reason: "wrong-epic",
+      } satisfies ReconcilerActionRefusedPayload,
+    });
+
+    const filtered = await readEvents(repo, {
+      type: "reconciler-action-refused",
+      epicId: "e1",
+      since: "2026-05-06T10:00:00.000Z",
+    });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].epicId).toBe("e1");
+    expect(filtered[0].timestamp).toBe("2026-05-06T11:00:00.000Z");
+    expect((filtered[0].payload as ReconcilerActionRefusedPayload).reason).toBe(
+      "recent",
+    );
   });
 
   test("events missing required fields are skipped on read", async () => {

@@ -57,6 +57,86 @@ export interface PipelineEvent {
   payload?: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Variant: reconciler-action-refused (beads_web-ehp.2)
+// ---------------------------------------------------------------------------
+// Per architecture ADR-006 (ehp epic): refused dispatches emit a NEW event
+// type, NOT a flag on the existing `reconciler-action-taken` variant. Single
+// Responsibility — `reconciler-action-taken` semantically means "dispatch
+// fired"; muddying it with a `success: false` flag would break the existing
+// `e.type === "reconciler-action-taken"` filter at
+// stuck-in-stage.ts:122 (which uses that signal to detect dispatched stalls)
+// and the bucketing key the reconciler uses for idempotency. Refusals
+// deserve their own bucket — the 15-min `(epicId, ruleName, refusalCode)`
+// window is a downstream concern owned by reconciler.ts (out-of-scope here).
+//
+// This is a PURELY ADDITIVE change: the underlying `PipelineEvent` interface
+// uses `type: string` (open-ended) so no exhaustiveness switch can break.
+// The typed sub-interfaces below give Wave 3 rule-integration beads a
+// strongly-typed import target without altering the on-the-wire JSONL shape.
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminator string for the `reconciler-action-refused` event variant.
+ * Exported as a named constant so consumers (Wave 3 rules) can reference
+ * the canonical literal at the call site rather than re-typing the string.
+ */
+export const RECONCILER_ACTION_REFUSED = "reconciler-action-refused" as const;
+
+/**
+ * Variant-specific payload for `reconciler-action-refused`.
+ *
+ * `refusalCode` is typed as `string` (not the canonical `RefusalCode` enum
+ * defined in beads_web-ehp.3 / `src/lib/dispatch-preconditions.ts`)
+ * deliberately: the event-log module MUST NOT depend on the precondition
+ * library to avoid forward-coupling. Wave 3 callers that build refused
+ * events will pass values from the `RefusalCode` enum which TypeScript
+ * widens to `string` at this boundary — round-trip through JSONL is
+ * lossless because both ends speak strings.
+ *
+ * Field rationale (mirrors the bead description's "structured fields"):
+ *   - `ruleName`     : which reconciler rule's `act()` was refused
+ *   - `action`       : the dispatch action string (e.g. "stuck-in-stage:redispatch")
+ *   - `refusalCode`  : canonical refusal code (one of the RefusalCode union)
+ *   - `failedCheck`  : the specific predicate that produced the refusal
+ *   - `reason`       : human-readable explanation; surfaces in logs/UI
+ */
+// `type` alias (not `interface`) by design: TypeScript treats interface
+// declarations as "open" (declaration-mergeable) and therefore not
+// assignable to the closed `Record<string, unknown>` index signature on
+// `PipelineEvent.payload`. A `type` alias is closed and assigns cleanly,
+// which is what `ReconcilerActionRefusedEvent` below needs to extend
+// `PipelineEvent` without a compatibility error.
+export type ReconcilerActionRefusedPayload = {
+  ruleName: string;
+  action: string;
+  refusalCode: string;
+  failedCheck: string;
+  reason: string;
+};
+
+/**
+ * Strongly-typed shape of the `reconciler-action-refused` event variant.
+ *
+ * Top-level fields mirror `reconciler-action-taken` (the bead's "schema
+ * mirrors existing reconciler-action-taken for downstream-consumer pattern
+ * symmetry" requirement). The bead's "structured fields" map to the
+ * existing `PipelineEvent` shape as follows:
+ *   - `epicId`        -> top-level (inherited)
+ *   - `correlationId` -> top-level (inherited)
+ *   - `at` (refusal time) -> top-level `timestamp` (inherited; `at` is the
+ *     architecture-doc field name, but on the wire we reuse `timestamp` to
+ *     keep parity with every other PipelineEvent variant — no double-write).
+ *   - `ruleName`, `action`, `refusalCode`, `failedCheck`, `reason` -> `payload`
+ *
+ * Consumers narrow with `if (e.type === RECONCILER_ACTION_REFUSED)` and can
+ * then safely access `e.payload.refusalCode` etc.
+ */
+export interface ReconcilerActionRefusedEvent extends PipelineEvent {
+  type: typeof RECONCILER_ACTION_REFUSED;
+  payload: ReconcilerActionRefusedPayload;
+}
+
 export interface ReadEventsOptions {
   /** Only return events whose timestamp >= this (ISO-8601). */
   since?: string;

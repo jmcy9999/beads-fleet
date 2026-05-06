@@ -1,0 +1,73 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-ehp.2",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-06T19:36:00Z",
+  "exited_at": "2026-05-06T19:54:34Z",
+  "what_was_done": [
+    {
+      "ac": "schema",
+      "action": "Added 3 exports to src/lib/event-log.ts: const RECONCILER_ACTION_REFUSED = 'reconciler-action-refused' (literal), type ReconcilerActionRefusedPayload = { ruleName, action, refusalCode, failedCheck, reason } (5 string fields), interface ReconcilerActionRefusedEvent extends PipelineEvent (typed type discriminant + typed payload).",
+      "result": "Pure additive at the schema layer. PipelineEvent's open `type: string` discriminator means no runtime narrowing changes; downstream consumers narrow via `e.type === RECONCILER_ACTION_REFUSED` and TS infers the payload shape. Field mapping: epicId/correlationId/timestamp inherited from PipelineEvent (the architecture's `at` field maps to existing `timestamp` — no double-write); ruleName/action/refusalCode/failedCheck/reason live in payload.",
+      "evidence": "src/lib/event-log.ts lines 60-130 (74 added lines). Schema parity with reconciler-action-taken's existing shape (top-level epicId/correlationId, payload-nested rule-specific fields)."
+    },
+    {
+      "ac": "type-alias-not-interface",
+      "action": "Used `type ReconcilerActionRefusedPayload = {...}` (type alias, not interface) so it assigns cleanly to `PipelineEvent.payload: Record<string, unknown>`.",
+      "result": "TypeScript treats interfaces as 'open' (declaration-mergeable) and rejects assignment to closed Record index signatures even when all property values are compatible. Type alias is closed → assigns cleanly. Tested empirically: switched from `interface` to `type` cleared 3 TS errors (event-log.ts:129, event-log.test.ts:220, event-log.test.ts:409).",
+      "evidence": "src/lib/event-log.ts lines 90-100 (commented design rationale); npx tsc --noEmit shows 0 event-log errors."
+    },
+    {
+      "ac": "tests",
+      "action": "Added 6 tests to __tests__/lib/event-log.test.ts: (1) RECONCILER_ACTION_REFUSED const matches wire literal, (2) round-trip with all structured fields preserved (typed payload + typed event interface), (3) JSONL line is greppable (operator-grep contract from event-log ADR), (4) type filter on 'reconciler-action-refused' does not return 'reconciler-action-taken' events (bead AC), (5) existing `e.type === 'reconciler-action-taken'` filter (mirroring stuck-in-stage.ts:122 pattern) is unchanged by the new variant (bead AC), (6) compound epicId+since filters compose with reconciler-action-refused identically to existing variants.",
+      "result": "All 6 new tests pass; pre-existing 12 tests still pass. Total event-log suite: 18/18 pass.",
+      "evidence": "npx jest --no-cache __tests__/lib/event-log.test.ts → 18 passed, 0 failed."
+    },
+    {
+      "ac": "switch-grep",
+      "action": "Per bead Risk Flags: grep'd src/ for `switch` over PipelineEvent variants. Patterns checked: `switch\\s*\\(\\s*[a-zA-Z_]+\\.type\\s*\\)`, `case \"(agent-|stage-|pipeline-|reconciler-|marker-)\"`, `switch\\s*\\([^)]*event[^)]*\\.type`.",
+      "result": "ZERO exhaustive switches over PipelineEvent variants exist. The two `switch (x.type)` sites in src/ are over CacheScope (src/lib/cache.ts:56, src/lib/bv-client.ts:1015), unrelated to PipelineEvent. The base PipelineEvent.type is `string` (open-ended literal, not a literal union), so additive variants cannot break exhaustiveness checks anywhere. No no-op branches needed downstream.",
+      "evidence": "grep -rnE 'switch\\s*\\(\\s*[a-zA-Z_]+\\.type\\s*\\)' src/ → 2 hits (cache.ts:56 over CacheScope; bv-client.ts:1015 over CacheScope). grep -rnE 'case \"(agent|stage|pipeline|reconciler|marker)' src/ → 0 hits. Equality consumers e.type === '...' exist at 2 sites (marker-driven-routing.ts:127, missed-wave-review-dispatch.ts:119) and 1 inverse !== at stuck-in-stage.ts:123 — these are runtime if-checks, not exhaustive switches, and are unaffected by additive variants."
+    },
+    {
+      "ac": "lint+typecheck",
+      "action": "Ran npx eslint on changed files; ran npx tsc --noEmit project-wide and filtered to event-log scope.",
+      "result": "ESLint: 0 errors / 0 warnings on src/lib/event-log.ts and __tests__/lib/event-log.test.ts. tsc: 0 errors in event-log scope after switching payload from interface to type alias.",
+      "evidence": "npx eslint src/lib/event-log.ts __tests__/lib/event-log.test.ts → clean. npx tsc --noEmit 2>&1 | grep event-log → empty after type-alias fix."
+    },
+    {
+      "ac": "regression",
+      "action": "Ran broader regression on PipelineEvent consumer suites (reconciler.test, stuck-in-stage.test, missed-wave-review-dispatch.test, repeat-dispatch-escalation.test, coherence-outcome-classifier.test, cli/reason.test) plus full project test run.",
+      "result": "PipelineEvent consumer suites: 148/148 pass (covers every PipelineEvent narrowing site). Full project: 2122 pass / 2 fail / 1 skip. The 2 failures are PRE-EXISTING in stuck-in-stage.test.ts (tests expect old STAGE_RESUME_ACTIONS dispatch but source-code at wlsr.14 cut over to run-coherence-agent dispatch per ADR-015 — test stalled, source moved). Empirically verified pre-existence by stashing the ehp.2 changes and re-running stuck-in-stage.test.ts: still 2 failures. ZERO regressions introduced by ehp.2.",
+      "evidence": "Full suite output: Test Suites: 1 failed, 104 passed, 105 total. Tests: 2 failed, 1 skipped, 2122 passed, 2125 total. Stashed-changes baseline run: same 2 failures."
+    }
+  ],
+  "what_was_tested": "AC schema: event-log.ts compiles cleanly with new exports; round-trip test verifies all 5 payload fields + 3 top-level fields (epicId, correlationId, timestamp) + discriminant survive JSONL serialise/deserialise. AC type-alias-not-interface: tsc passes after switching from interface to type alias. AC tests: 6 new tests cover constant identity, round-trip with typed shapes, JSONL on-disk shape (operator-grep contract), filter exclusivity in BOTH directions (refused-filter excludes taken events; stuck-in-stage's `!== reconciler-action-taken` filter still selects refused events as activity), compound filter composition. AC switch-grep: empirically grep'd src/; 0 exhaustive switches over PipelineEvent. AC lint+typecheck: 0 ESLint errors, 0 tsc errors in event-log scope. AC regression: 148/148 PipelineEvent-consumer tests pass; full suite shows 2 pre-existing failures (stuck-in-stage.test.ts) confirmed unrelated by stash baseline.",
+  "deviations_from_ac": "None on the bead's literal ACs. Note on field-naming: bead description's 'structured fields' list includes `at` as a separate field, but the bead also says 'Schema mirrors existing reconciler-action-taken' and the existing PipelineEvent shape uses `timestamp` at the top level. Implementation maps `at` → `timestamp` (single field on the wire) per parity-with-existing-variants principle; rationale + mapping documented inline in the ReconcilerActionRefusedEvent interface JSDoc. No double-write; consumers reading `e.timestamp` get the refusal time. Wave 3 callers building these events pass `timestamp` (or omit it for `now`) per the existing appendEvent contract.",
+  "surprises_or_findings": "1) PipelineEvent is NOT a discriminated union in the strict TypeScript sense — `type: string` is open-ended (not a literal union). The bead description's 'discriminated union' phrasing is loose. This means: (a) additive variants cannot break exhaustiveness anywhere in the codebase (zero risk on the Risk Flag's switch-statement watch); (b) the new typed sub-interface gives Wave 3 (ehp.4-ehp.10) a strongly-typed import target without imposing constraints on existing callers. 2) Switching from interface to type alias was required for TS index-signature compatibility — interfaces are 'open' (declaration-mergeable) and don't satisfy `Record<string, unknown>` even when all properties are unknown-compatible. Type aliases are 'closed' and assign cleanly. Documented inline so future edits don't accidentally revert. 3) Stale test discovery: stuck-in-stage.test.ts has 2 pre-existing failures (tests expect STAGE_RESUME_ACTIONS-style dispatch; source moved to run-coherence-agent at wlsr.14 per ADR-015). Confirmed pre-existing via empirical stash-baseline re-run. Not in ehp.2 scope to fix; flagging for QA.",
+  "whats_open": [
+    "PRE-EXISTING: __tests__/lib/stuck-in-stage.test.ts has 2 stale failures from the wlsr.14 (ADR-015) cutover where act() now dispatches run-coherence-agent instead of STAGE_RESUME_ACTIONS-keyed actions. Tests still expect 'send-for-qa' and 'start-wave'. Out of scope for ehp.2; confirmed pre-existing via stash-baseline. Owner: whoever shipped wlsr.14 source-code change forgot to update the test expectations.",
+    "FOLLOW-ON-NORMAL: Wave 3 beads (ehp.4–ehp.10) will use the new types. They should `import { RECONCILER_ACTION_REFUSED, type ReconcilerActionRefusedPayload, type ReconcilerActionRefusedEvent } from '@/lib/event-log'`. Recommend a single `appendReconcilerActionRefused` builder helper land in ehp.3 (the dispatch-preconditions library) so Wave 3 rules don't each hand-construct the event — but explicitly NOT in scope for ehp.2 (bead's `recordEvent / appendEvent accept the new variant` AC is already satisfied).",
+    "FOLLOW-ON-DOWNSTREAM: stuck-in-stage.ts:123 uses `e.type !== 'reconciler-action-taken'` to compute 'last activity'. After ehp.4-ehp.10 ship and refusals start landing in the log, refusals will count as 'activity' and reset the stall clock — semantically correct (the rule HAS done work even if it refused), but worth verifying when those waves land. ADR-006 idempotency-bucketing in reconciler.ts is the canonical place to revisit; out of scope here per bead Out-of-scope clause."
+  ],
+  "recommendation_for_next": "Wave 2 (beads_web-ehp.3) is the next bead in the ehp epic — it owns the `RefusalCode` enum and `buildDispatchContext` / `evaluatePreconditions` library. ehp.3 should import RECONCILER_ACTION_REFUSED and ReconcilerActionRefusedPayload from this bead's exports as the canonical event-construction target. Wave 3 (ehp.4-ehp.10) integrate at each reconciler rule's act(); each rule will: (1) build DispatchContext, (2) call evaluatePreconditions, (3) on refusal: appendEvent({type: RECONCILER_ACTION_REFUSED, epicId, correlationId, payload: {ruleName, action, refusalCode, failedCheck, reason}}) and return without dispatching. The typed payload + typed event interface defined here ensure each Wave 3 callsite has compile-time safety on the field shape.",
+  "files_modified": [
+    "src/lib/event-log.ts (+74 lines: 1 const, 1 type alias, 1 interface, JSDoc)",
+    "__tests__/lib/event-log.test.ts (+228 lines: 1 import update, 6 new tests)",
+    ".beads/markers/beads_web-ehp.2.json (NEW)"
+  ],
+  "switch_sites_audited": [
+    {"file": "src/lib/cache.ts", "line": 56, "subject": "CacheScope (NOT PipelineEvent)", "handling": "no-op — different union; unaffected by ehp.2"},
+    {"file": "src/lib/bv-client.ts", "line": 1015, "subject": "CacheScope (NOT PipelineEvent)", "handling": "no-op — different union; unaffected by ehp.2"}
+  ],
+  "pipeline_event_equality_consumers": [
+    {"file": "src/lib/reconciler.ts", "line": 309, "pattern": "e.type !== 'reconciler-action-taken'", "handling": "unchanged — reconciler's own emit-loop dedup; refusals do NOT pollute (different type discriminant)"},
+    {"file": "src/lib/reconciler-rules/stuck-in-stage.ts", "line": 123, "pattern": "e.type !== 'reconciler-action-taken'", "handling": "unchanged per bead AC — `Existing filter ... continues to work unchanged`. Refusals will count as activity once Wave 3 emits them; semantically correct (rule did work). Documented as FOLLOW-ON-DOWNSTREAM."},
+    {"file": "src/lib/reconciler-rules/repeat-dispatch-escalation.ts", "line": 142, "pattern": "if (e.type !== 'reconciler-action-taken') continue", "handling": "unchanged — counts only dispatches in the lookback window; refusals correctly excluded from this metric"},
+    {"file": "src/lib/reconciler-rules/marker-driven-routing.ts", "line": 127, "pattern": "if (e.type === 'agent-exited' && e.epicId && e.stage)", "handling": "unchanged — selects only agent-exited events; refusals do not match"},
+    {"file": "src/lib/reconciler-rules/missed-wave-review-dispatch.ts", "line": 119, "pattern": "e.type === 'stage-dispatched'", "handling": "unchanged — selects only stage-dispatched events; refusals do not match"},
+    {"file": "src/app/api/fleet/reconciler/coherence/route.ts", "line": 29, "pattern": "readEvents(repoPath, { type: 'reconciler-action-taken', since })", "handling": "unchanged — explicitly filters to taken events; refusals are in a separate variant and do not match"}
+  ],
+  "test_summary": "event-log: 18/18 pass (12 pre-existing + 6 new). PipelineEvent consumers (7 suites): 148/148 pass. Full project: 2122 pass / 2 fail (pre-existing stuck-in-stage stale-tests, unrelated to ehp.2) / 1 skip / 2125 total."
+}
