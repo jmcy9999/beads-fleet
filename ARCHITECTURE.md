@@ -480,6 +480,15 @@ Spawns Claude Code CLI as a detached background subprocess. Manages one active s
 ### `src/lib/cache.ts`
 Simple TTL cache (10-second default). Used by bv-client to avoid redundant subprocess calls.
 
+### `src/lib/bead-status-reader.ts` (beads_web-ehp.1)
+Thin async wrapper around `bd show <id> --json` returning a typed `BeadSnapshot` (id, status, labels, type, plus derived label-aware fields: `pipelineStage`, `currentQaRound`, `currentWave`, `hasAgentRunning`, `hasReviewNeedsHuman`). Returns `null` on every failure mode (binary missing, non-zero exit, malformed JSON, partial output, unknown status enum) so callers can distinguish "bd unreachable" from "bead in a known state" without try/catch. No caching — each call is a fresh `bd show` (per ehp ADR-002). Consumed by the dispatch-precondition library (Wave 2) and precondition-aware reconciler rules (Wave 3); existing inline pattern at `reconciler-bootstrap.ts` ~line 641 will be migrated by a downstream bead.
+
+### `src/lib/dispatch-preconditions.ts` (beads_web-ehp.3 / Wave 2)
+Single source of truth for the "is this dispatch actually safe to fire?" gate every dispatch site must call BEFORE mutating labels or launching agents. Exports `buildDispatchContext({ epicId, repoPath, action, waveNumber? })` (async aggregator over `readBeadStatus` + `readMarker` + `getEpicLabels`) and `evaluatePreconditions(ctx)` (pure synchronous verdict). Returns a discriminated-union `PreconditionResult` (`{ ok: true } | { ok: false, refusalCode, failedCheck, reason }`) — never throws. Wave-2 ships 4 universal predicates: A.5 `BD_STATUS_DEFERRED` / `BD_STATUS_CLOSED` (load-bearing for the 372-bead mass-defer per ADR-002 fail-closed posture), C `OPERATOR_DECISION_PENDING` / `REVIEW_NEEDS_HUMAN`. `BD_READ_FAILED` is the fail-closed branch when the bead snapshot is null. Wave-3 sibling beads_web-ehp.13 extends with per-action predicates and the `PreconditionRefusalResponse` HTTP-412 helper. Consumed by `marker-driven-routing` rule's `act()` (beads_web-ehp.4) and downstream Wave-3 dispatch sites.
+
+### `src/lib/reconciler-rules/marker-driven-routing.ts` (Wave-3 precondition-gated)
+Reconciler rule that dispatches the next agent based on a marker's routing fields. The `act()` body (beads_web-ehp.4) wraps the dispatch fetch with `buildDispatchContext` + `evaluatePreconditions` — load-bearing for the 372-bead mass-defer protection. On rule-side refusal: structured warn-line tagged `reconciler_dispatch_refused` + `reconciler-action-refused` event-log entry (Wave-1 variant) + early return without dispatching. On route-side refusal (HTTP 412 from `/api/fleet/action`): warn-line tagged `reconciler_dispatch_refused_at_route` + `reconciler-action-refused` event with `refusalCode: "ROUTE_REFUSED_412"` + return without throwing (architecture § Seam 5 defense-in-depth — distinguishes refusal from genuine HTTP failure). Existing `match()` logic and `interpretMarkerForRouting` consumption are unchanged. Known FOLLOW-ON: refusals currently consume the `reconciler-action-taken` idempotency bucket because `reconciler.ts` appends that event unconditionally after `act()` returns; the proper bucketing key for refusals is `(epicId, ruleName, refusalCode, 15-min window)` per architecture ADR-006 — separate reconciler-core bead.
+
 
 ### `src/lib/types.ts`
 All TypeScript types:
@@ -640,6 +649,7 @@ src/
     recipes.ts              # Filter engine + saved views
     token-usage.ts          # Token usage reader
     cache.ts                # TTL cache
+    bead-status-reader.ts   # bd show --json wrapper → BeadSnapshot (ehp.1; consumed by Wave 2 dispatch-precondition library)
   hooks/
     useIssues.ts            # Issues data hook
     useIssueDetail.ts       # Single issue hook

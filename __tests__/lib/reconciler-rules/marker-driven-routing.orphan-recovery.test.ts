@@ -21,6 +21,41 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 
+// beads_web-ehp.4: marker-driven-routing's act() now wraps the dispatch
+// fetch with a dispatch-precondition gate. The gate calls readBeadStatus /
+// readMarker / getEpicLabels. Mock these at the import boundary so legacy
+// orphan-recovery tests (which don't stand up a real bd repo) bypass the
+// precondition layer cleanly — open bead, no marker, no labels means every
+// universal predicate passes and the existing dispatch behaviour is
+// preserved.
+jest.mock("@/lib/bead-status-reader", () => {
+  const actual = jest.requireActual("@/lib/bead-status-reader");
+  return {
+    ...actual,
+    readBeadStatus: jest.fn().mockImplementation(async (id: string) => ({
+      id,
+      status: "open",
+      labels: [],
+      type: "task",
+      pipelineStage: null,
+      currentQaRound: null,
+      currentWave: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    })),
+  };
+});
+jest.mock("@/lib/marker-reader", () => {
+  const actual = jest.requireActual("@/lib/marker-reader");
+  return {
+    ...actual,
+    readMarker: jest.fn().mockResolvedValue(null),
+  };
+});
+jest.mock("@/lib/pipeline-labels", () => ({
+  getEpicLabels: jest.fn().mockResolvedValue([]),
+}));
+
 import { Reconciler } from "@/lib/reconciler";
 import { appendEvent, readEvents } from "@/lib/event-log";
 import {
@@ -375,7 +410,13 @@ describe("marker-driven-routing orphan recovery (beads_web-hs5)", () => {
 
     // Build the rule with real filesystem-walk (reading from the temp repo).
     const { readdirSync } = require("fs");
-    const { readMarker: realReadMarker } = await import("@/lib/marker-reader");
+    // beads_web-ehp.4: jest.mock at file-top now intercepts the
+    // readMarker import. This test wants the REAL filesystem reader for
+    // the rule's own opts.readMarker (so it discovers the synthetic
+    // marker file we wrote above) — use requireActual to bypass the mock.
+    const { readMarker: realReadMarker } = jest.requireActual(
+      "@/lib/marker-reader",
+    );
 
     const rule = buildMarkerDrivenRoutingRule({
       readMarker: realReadMarker,

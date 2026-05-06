@@ -51,6 +51,14 @@ import type { EpicStateSnapshot } from "../marker-routing";
 import { interpretMarkerForRouting } from "../marker-routing";
 import { getDefaultActionUrl } from "../orchestrator-url";
 import { getActionForAgent } from "../agent-action-map";
+import {
+  buildDispatchContext,
+  evaluatePreconditions,
+} from "../dispatch-preconditions";
+import {
+  appendEvent,
+  RECONCILER_ACTION_REFUSED,
+} from "../event-log";
 
 export const MARKER_DRIVEN_ROUTING_RULE_NAME = "marker-driven-routing";
 
@@ -370,6 +378,50 @@ export function buildMarkerDrivenRoutingRule(
       // Map nextAgent to action name for /api/fleet/action dispatch.
       const actionName = getActionForAgent(nextAgent);
 
+      // -----------------------------------------------------------------
+      // beads_web-ehp.4: dispatch-precondition gate (Wave 3 integration).
+      //
+      // Architecture § Component Boundaries Contract 2: precondition check
+      // runs AFTER snapshot re-read and BEFORE the action-route fetch.
+      // Load-bearing for the 372-bead mass-defer (BD_STATUS_DEFERRED) and
+      // operator-decision-pending Class C protection (OPERATOR_DECISION_
+      // PENDING / REVIEW_NEEDS_HUMAN). On refusal: structured warn-log
+      // tagged `reconciler_dispatch_refused` + a `reconciler-action-refused`
+      // event (Wave-1 variant) + early return WITHOUT dispatching.
+      //
+      // FOLLOW-ON (architecture ADR-006): refusals currently consume the
+      // reconciler-action-taken idempotency bucket because reconciler.ts
+      // appends that event unconditionally after act() returns. The proper
+      // bucketing key for refusals is (epicId, ruleName, refusalCode,
+      // 15-min window); implementing that requires a reconciler.ts change
+      // and is tracked as a separate reconciler-core bead. This rule's
+      // act() is correct: it returns cleanly so the loop continues.
+      // -----------------------------------------------------------------
+      const precondCtx = await buildDispatchContext({
+        epicId: match.epicId,
+        repoPath: markerRepoPath,
+        action: actionName,
+      });
+      const precondResult = evaluatePreconditions(precondCtx);
+      if (!precondResult.ok) {
+        console.warn(
+          `[xfc] reconciler_dispatch_refused: rule=${MARKER_DRIVEN_ROUTING_RULE_NAME} epicId=${match.epicId} action=${actionName} refusalCode=${precondResult.refusalCode} failedCheck=${precondResult.failedCheck} reason="${precondResult.reason}"`,
+        );
+        await appendEvent(opts.repoPath, {
+          type: RECONCILER_ACTION_REFUSED,
+          epicId: match.epicId,
+          stage: context.stage,
+          payload: {
+            ruleName: MARKER_DRIVEN_ROUTING_RULE_NAME,
+            action: actionName,
+            refusalCode: precondResult.refusalCode,
+            failedCheck: precondResult.failedCheck,
+            reason: precondResult.reason,
+          },
+        });
+        return;
+      }
+
       // Dispatch via /api/fleet/action (same pattern as stuck-in-stage
       // and other reconciler rules).
       const controller = new AbortController();
@@ -386,6 +438,41 @@ export function buildMarkerDrivenRoutingRule(
           }),
           signal: controller.signal,
         });
+
+        // -------------------------------------------------------------
+        // beads_web-ehp.4: route-side precondition refusal (HTTP 412).
+        //
+        // Architecture § Seam 5 (defense-in-depth): both the rule AND the
+        // action route validate preconditions. If the route refuses with
+        // 412 (route-side check caught state the rule's own check missed
+        // — race window, marker mutated mid-flight, etc.), the rule must
+        // distinguish that from a genuine HTTP failure. 412 is a refusal:
+        // log a structured warn-line tagged `reconciler_dispatch_refused_
+        // at_route`, emit a `reconciler-action-refused` event with a
+        // ROUTE_REFUSED_412 marker code, and return WITHOUT throwing.
+        // Throwing would propagate to the reconciler tick handler and
+        // count as an act() failure (which dispatches a different
+        // recovery path — wrong semantics for a refusal).
+        // -------------------------------------------------------------
+        if (res.status === 412) {
+          const text = await res.text().catch(() => "<unreadable>");
+          console.warn(
+            `[xfc] reconciler_dispatch_refused_at_route: rule=${MARKER_DRIVEN_ROUTING_RULE_NAME} epicId=${match.epicId} action=${actionName} httpStatus=412 body="${text}"`,
+          );
+          await appendEvent(opts.repoPath, {
+            type: RECONCILER_ACTION_REFUSED,
+            epicId: match.epicId,
+            stage: context.stage,
+            payload: {
+              ruleName: MARKER_DRIVEN_ROUTING_RULE_NAME,
+              action: actionName,
+              refusalCode: "ROUTE_REFUSED_412",
+              failedCheck: "route-side-precondition",
+              reason: text,
+            },
+          });
+          return;
+        }
 
         if (!res.ok) {
           const text = await res.text().catch(() => "<unreadable>");

@@ -17,6 +17,40 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 
+// beads_web-ehp.4: marker-driven-routing's act() now wraps the dispatch
+// fetch with a dispatch-precondition gate. The gate calls readBeadStatus /
+// readMarker / getEpicLabels. Mock these at the import boundary so legacy
+// tests (which don't stand up a real bd repo) bypass the precondition layer
+// cleanly — opening the bead, returning no marker, returning no labels means
+// every universal predicate passes.
+jest.mock("@/lib/bead-status-reader", () => {
+  const actual = jest.requireActual("@/lib/bead-status-reader");
+  return {
+    ...actual,
+    readBeadStatus: jest.fn().mockImplementation(async (id: string) => ({
+      id,
+      status: "open",
+      labels: [],
+      type: "task",
+      pipelineStage: null,
+      currentQaRound: null,
+      currentWave: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    })),
+  };
+});
+jest.mock("@/lib/marker-reader", () => {
+  const actual = jest.requireActual("@/lib/marker-reader");
+  return {
+    ...actual,
+    readMarker: jest.fn().mockResolvedValue(null),
+  };
+});
+jest.mock("@/lib/pipeline-labels", () => ({
+  getEpicLabels: jest.fn().mockResolvedValue([]),
+}));
+
 import { Reconciler } from "@/lib/reconciler";
 import { appendEvent } from "@/lib/event-log";
 import {

@@ -28,6 +28,35 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 
+// beads_web-ehp.4: marker-driven-routing's act() now wraps the dispatch
+// fetch with a dispatch-precondition gate. Cross-rule tests in this file
+// register marker-driven-routing alongside coherence-escalation; without
+// this mock the rule's bd-status check returns null (no real bd repo) and
+// refuses with BD_READ_FAILED, suppressing one of the two expected
+// dispatches. Mock only readBeadStatus + getEpicLabels — readMarker stays
+// REAL because the test fixtures include real per-stage marker files that
+// coherence-escalation reads through that interface.
+jest.mock("@/lib/bead-status-reader", () => {
+  const actual = jest.requireActual("@/lib/bead-status-reader");
+  return {
+    ...actual,
+    readBeadStatus: jest.fn().mockImplementation(async (id: string) => ({
+      id,
+      status: "open",
+      labels: [],
+      type: "task",
+      pipelineStage: null,
+      currentQaRound: null,
+      currentWave: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    })),
+  };
+});
+jest.mock("@/lib/pipeline-labels", () => ({
+  getEpicLabels: jest.fn().mockResolvedValue([]),
+}));
+
 import { Reconciler } from "@/lib/reconciler";
 import { appendEvent } from "@/lib/event-log";
 import { readMarker, type MarkerData } from "@/lib/marker-reader";
