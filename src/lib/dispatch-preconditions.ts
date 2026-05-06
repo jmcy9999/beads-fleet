@@ -500,13 +500,25 @@ const ACTIONS_REFUSED_BY_PLAN_PENDING: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Actions that operate on a wave-N bead set. Both `wave-beads-exist`
- * (NO_WAVE_BEADS) and `wave-beads-not-all-closed` (ALL_WAVE_BEADS_CLOSED)
- * apply here (per ehp.7's explicit "register both" requirement).
+ * Actions that operate on a wave-N bead set with OPEN beads expected.
+ * Both `wave-beads-exist` (NO_WAVE_BEADS) and `wave-beads-not-all-closed`
+ * (ALL_WAVE_BEADS_CLOSED) apply here.
+ *
+ * NOTE (2026-05-07 fix): review-wave was incorrectly listed here. By
+ * definition review-wave runs AFTER all wave beads close — having ALL
+ * wave-N beads closed is the SUCCESS condition, not a refusal trigger.
+ * Both predicates fire on `openWaveBeadIds.length === 0`, which is the
+ * EXACT post-close state review-wave is meant to handle. Including
+ * review-wave here makes it impossible to dispatch — the design flaw
+ * empirically reproduced 2026-05-07 00:17 BST when review-wave 4 was
+ * refused with NO_WAVE_BEADS despite all 7 Wave-4 beads being correctly
+ * closed. Tracked as part of beads_web-poh.3 (precondition library
+ * design fixes follow-on). review-wave preconditions should refuse on
+ * "no wave-N beads of ANY status exist" (phantom wave) — a separate
+ * predicate not present in v1.
  */
 const ACTIONS_REQUIRING_WAVE_BEADS: ReadonlySet<string> = new Set([
   "start-wave",
-  "review-wave",
   "resume-build",
 ]);
 
