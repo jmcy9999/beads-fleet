@@ -304,10 +304,11 @@ export function ensureReconcilerRunning(): void {
       }),
     );
 
-    // factory-core-zsjv.2: wave-bead-mismatch detector — catches epics
-    // that advanced past development while wave beads remained open.
-    // Rolls the epic back to pipeline:development + re-dispatches
-    // start-wave for the lowest open wave.
+    // factory-core-zsjv.2 + factory-core-wlsr.16: wave-bead-mismatch
+    // detector — catches epics that advanced past development while
+    // wave beads remained open. Per ADR-015 (Phase B cutover, wlsr.16),
+    // escalates to coherence with EscalationContext rather than rolling
+    // labels back / dispatching start-wave directly.
     rec.registerRule(
       buildWaveBeadMismatchRule({
         readEpicSnapshot: async (epicId: string) => {
