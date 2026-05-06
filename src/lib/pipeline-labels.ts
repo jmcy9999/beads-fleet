@@ -26,6 +26,7 @@ import { promisify } from "util";
 import { findRepoForIssue } from "./repo-config";
 import { getBdPath } from "./bd-path";
 import { withLock, epicLock, LockTimeoutError } from "./locks";
+import { appendEvent } from "./event-log";
 
 const execFile = promisify(execFileCb);
 // Lazy-initialize BD to avoid stale references during Next.js hot reload.
@@ -291,6 +292,24 @@ export async function removeAllPipelineLabels(
 
 /**
  * Close an epic via `bd close <issueId> --reason="<reason>"`.
+ *
+ * factory-core-wlsr.19: after `bd close` reports success, append a
+ * `bead-status-changed` event to the repo's event log so the coherence
+ * outcome attribution rule (factory-core-wlsr.6) sees a live closure
+ * signal. The event is fire-and-forget — its absence after a successful
+ * close costs us a 24h-horizon positive attribution instead of an
+ * immediate one (default-positive per ADR-010), so propagating
+ * appendEvent failures here would be net harmful. The contract matches
+ * coherence-outcome-classifier.ts § "Closure event":
+ *   { type: "bead-status-changed",
+ *     epicId: <issueId>,
+ *     payload: { beadId: <issueId>, newStatus: "closed" } }
+ *
+ * appendEvent itself swallows errors (event-log.ts ADR-007), but we
+ * still wrap the call in a defensive try/catch in case future
+ * implementations change that contract — `closeEpic` callers (e.g.
+ * deprioritise, venture completion) must never see a side-effect
+ * failure after a successful close.
  */
 export async function closeEpic(
   issueId: string,
@@ -304,6 +323,26 @@ export async function closeEpic(
     timeout: BD_TIMEOUT,
     env: { ...process.env, NO_COLOR: "1" },
   });
+
+  // factory-core-wlsr.19: emit bead-status-changed event AFTER bd close
+  // reports success. Defense-in-depth — appendEvent already swallows
+  // its own errors but we double-wrap so a future regression cannot
+  // surface as a post-close exception in a long pipeline transition.
+  try {
+    await appendEvent(repoPath, {
+      type: "bead-status-changed",
+      epicId: issueId,
+      payload: { beadId: issueId, newStatus: "closed" },
+    });
+  } catch (err) {
+    // Should never reach this branch because appendEvent swallows. Log
+    // for observability and move on; the pipeline must not stall on a
+    // telemetry hiccup.
+    console.error(
+      `[pipeline-labels] closeEpic: bead-status-changed event append failed (non-fatal) for ${issueId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 /**

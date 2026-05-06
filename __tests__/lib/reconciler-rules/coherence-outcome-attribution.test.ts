@@ -350,4 +350,62 @@ describe("coherence-outcome-attribution rule", () => {
     expect(entryIds.has(entryA.entryId)).toBe(true);
     expect(entryIds.has(entryB.entryId)).toBe(true);
   });
+
+  // ===========================================================================
+  // Round-trip integration test (factory-core-wlsr.19 AC#5)
+  // ===========================================================================
+  //
+  // Per AC#5: "append a journal entry via CoherenceJournal.append, simulate
+  // a bd close (synthetic bead-status-changed event), tick reconciler twice,
+  // verify the entry's outcome transitions from pending → positive with
+  // rationale 'epic closed without re-escalation'."
+  //
+  // This is the end-to-end signal that wlsr.19's wiring closes the loop —
+  // the rule (factory-core-wlsr.6) consumes the event closeEpic emits
+  // (factory-core-wlsr.19 closeEpic helper change in pipeline-labels.ts)
+  // and produces a positive attribution.
+  // ===========================================================================
+  test("AC#5 round-trip: pending → positive on synthetic bd-close event after two ticks", async () => {
+    // Step 1: append a pending journal entry (CoherenceJournal.append).
+    const journal = new CoherenceJournal(repo);
+    const entry = await journal.append(
+      makeEntrySeed({ timestamp: "2026-05-06T00:00:00.000Z" }),
+    );
+
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(buildCoherenceOutcomeAttributionRule({ repoPath: repo }));
+
+    // Tick #1 — BEFORE the synthetic bd-close event lands. No closure
+    // event in the log yet, time-horizon (24h) not reached. Expect the
+    // entry to remain pending; the rule attributes nothing.
+    await rec.tick(new Date("2026-05-06T00:01:00.000Z"));
+    let after = await journal.all();
+    expect(after.find((e) => e.entryId === entry.entryId)?.outcome).toBe(
+      "pending",
+    );
+
+    // Step 2: simulate a `bd close` by appending the bead-status-changed
+    // event in the exact shape closeEpic (pipeline-labels.ts) emits after
+    // bd reports success. The match contract is documented in
+    // coherence-outcome-classifier.ts § "Closure event":
+    //   { type: "bead-status-changed",
+    //     epicId: <issueId>,
+    //     payload: { beadId: <issueId>, newStatus: "closed" } }
+    await appendEvent(repo, {
+      type: "bead-status-changed",
+      epicId: entry.epicId,
+      timestamp: "2026-05-06T00:02:00.000Z",
+      payload: { beadId: entry.epicId, newStatus: "closed" },
+    });
+
+    // Tick #2 — AFTER the closure event. Rule should attribute positive
+    // with rationale "epic closed without re-escalation".
+    await rec.tick(new Date("2026-05-06T00:03:00.000Z"));
+
+    after = await journal.all();
+    const updated = after.find((e) => e.entryId === entry.entryId);
+    expect(updated?.outcome).toBe("positive");
+    expect(updated?.outcomeRationale).toBe("epic closed without re-escalation");
+    expect(updated?.outcomeAttributedAt).not.toBeNull();
+  });
 });

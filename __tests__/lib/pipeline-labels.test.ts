@@ -42,7 +42,19 @@ jest.mock("@/lib/bd-path", () => ({
   getBdEnv: () => ({ NO_COLOR: "1" }),
 }));
 
+// factory-core-wlsr.19: closeEpic now emits a bead-status-changed event
+// after bd close succeeds. Mock event-log to (a) keep the unit test
+// hermetic (no real fs writes) and (b) let us assert the call shape.
+const mockAppendEvent = jest.fn();
+jest.mock("@/lib/event-log", () => ({
+  appendEvent: (
+    repoPath: string,
+    event: { type: string; epicId: string; payload?: Record<string, unknown> },
+  ) => mockAppendEvent(repoPath, event),
+}));
+
 import {
+  closeEpic,
   removeLabelsFromEpic,
   removeLabelsFromEpicStrict,
 } from "@/lib/pipeline-labels";
@@ -220,5 +232,85 @@ describe("removeLabelsFromEpic (lenient)", () => {
     await expect(
       removeLabelsFromEpic("epic-1", ["pipeline:research"]),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// closeEpic — bd close + bead-status-changed event emission
+// (factory-core-wlsr.19 AC#4)
+// ---------------------------------------------------------------------------
+
+describe("closeEpic", () => {
+  it("invokes `bd close <id> --reason <reason>` against the resolved repo", async () => {
+    execFileSucceeds();
+
+    await closeEpic("epic-1", "all done", "/repo/foo");
+
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    const [cmd, args, opts] = mockExecFile.mock.calls[0];
+    expect(cmd).toBe("/usr/bin/bd");
+    expect(args).toEqual(["close", "epic-1", "--reason", "all done"]);
+    expect(opts).toMatchObject({ cwd: "/repo/foo" });
+  });
+
+  it("emits bead-status-changed event AFTER bd close succeeds (AC#4)", async () => {
+    execFileSucceeds();
+
+    await closeEpic("epic-1", "all done", "/repo/foo");
+
+    // Event must fire exactly once with the closeEpic-emitted shape.
+    // Per coherence-outcome-classifier.ts § 'Closure event':
+    //   { type: "bead-status-changed",
+    //     epicId: <issueId>,
+    //     payload: { beadId: <issueId>, newStatus: "closed" } }
+    expect(mockAppendEvent).toHaveBeenCalledTimes(1);
+    const [repoArg, eventArg] = mockAppendEvent.mock.calls[0];
+    expect(repoArg).toBe("/repo/foo");
+    expect(eventArg).toMatchObject({
+      type: "bead-status-changed",
+      epicId: "epic-1",
+      payload: { beadId: "epic-1", newStatus: "closed" },
+    });
+  });
+
+  it("emits the event AFTER bd close, not before (ordering is observable)", async () => {
+    const callOrder: string[] = [];
+    mockExecFile.mockImplementation((_cmd, _args, _opts, cb) => {
+      callOrder.push("bd-close");
+      cb(null, "", "");
+    });
+    mockAppendEvent.mockImplementation(async () => {
+      callOrder.push("append-event");
+    });
+
+    await closeEpic("epic-1", "x", "/repo/foo");
+
+    expect(callOrder).toEqual(["bd-close", "append-event"]);
+  });
+
+  it("propagates bd close failure WITHOUT emitting the event (AC#4 ordering)", async () => {
+    execFileFailsWith("connect ECONNREFUSED");
+
+    await expect(closeEpic("epic-1", "x", "/repo/foo")).rejects.toThrow(
+      /ECONNREFUSED/,
+    );
+    expect(mockAppendEvent).not.toHaveBeenCalled();
+  });
+
+  it("does NOT propagate event-log failures after a successful close (telemetry never breaks pipeline)", async () => {
+    execFileSucceeds();
+    mockAppendEvent.mockImplementationOnce(async () => {
+      throw new Error("disk full");
+    });
+    const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        closeEpic("epic-1", "x", "/repo/foo"),
+      ).resolves.toBeUndefined();
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

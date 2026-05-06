@@ -34,6 +34,7 @@ import { buildStuckInStageRule } from "./reconciler-rules/stuck-in-stage";
 import { buildWaveBeadMismatchRule } from "./reconciler-rules/wave-bead-mismatch";
 import { buildRepeatedQaRoundRule } from "./reconciler-rules/repeated-qa-round";
 import { buildCoherenceEscalationRule } from "./reconciler-rules/coherence-escalation";
+import { buildCoherenceOutcomeAttributionRule } from "./reconciler-rules/coherence-outcome-attribution";
 import {
   buildRepeatDispatchEscalationRule,
   REPEAT_DISPATCH_SUPPRESSED_EVENT_TYPE,
@@ -410,6 +411,45 @@ export function ensureReconcilerRunning(): void {
         },
         repoPath,
       }), 60_000), // factory-core-3akh.2: escalation at 1-min granularity
+    );
+
+    // factory-core-wlsr.19 — coherence-outcome-attribution rule:
+    // attributes coherence journal entries as positive / negative based
+    // on downstream pipeline signal (re-escalation event, bead closure,
+    // or 24h time horizon). The rule is the production wiring for the
+    // outcome classifier defined in factory-core-wlsr.6 and is the
+    // operational half of ADR-010 (outcome attribution horizon —
+    // hybrid: 5 events, 24h, default-positive). Without this
+    // registration, every coherence dispatch eventually attributes via
+    // the 24h horizon (default-positive) and re-escalations are never
+    // observed in production — half of ADR-010's signal.
+    //
+    // Architecture references:
+    //   - factory-core-wlsr.6 (classifier + reconciler rule landed)
+    //   - factory-core-wlsr.19 (this wiring + bd-close event emission)
+    //   - docs/research/universal-coherence-routing-agents-never-architecture.md
+    //     § ADR-010 (outcome attribution horizon)
+    //
+    // Throttle: 5 minutes — outcome attribution is non-urgent (the
+    // 24h horizon is the slowest signal it consumes; closure / re-
+    // escalation signals can wait 5 minutes before attribution
+    // without changing the operational meaning). Cheaper than the
+    // default-tick cost on every reconciler cycle (JSONL load + scan
+    // over journal + appends).
+    //
+    // repoPath: same FLEET_CORE_PATH-aware path used by adjacent rules
+    // (resolved at bootstrap top via process.env.FLEET_CORE_PATH ??
+    // "/Users/janemckay/dev/fleet/factory-core").
+    //
+    // The rule factory exposes minTickIntervalMs directly (see
+    // CoherenceOutcomeAttributionRuleOptions) so we pass it inline
+    // rather than through the throttled() wrapper used for legacy
+    // rules whose factories don't surface the setting.
+    rec.registerRule(
+      buildCoherenceOutcomeAttributionRule({
+        repoPath,
+        minTickIntervalMs: 5 * 60_000,
+      }),
     );
 
     // factory-core-zsjv.6 — repeat-dispatch-escalation: when the same

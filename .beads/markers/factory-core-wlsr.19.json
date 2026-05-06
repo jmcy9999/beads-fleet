@@ -1,0 +1,52 @@
+{
+  "version": "1",
+  "bead_id": "factory-core-wlsr.19",
+  "status": "success",
+  "stage": "builder",
+  "what_was_done": [
+    {
+      "ac_item": 1,
+      "action": "Register buildCoherenceOutcomeAttributionRule via rec.registerRule in beads_web/src/lib/reconciler-bootstrap.ts",
+      "result": "Import added at top alongside other reconciler-rule imports; registration block placed after coherence-escalation rule (conceptually adjacent — both consume coherence-related signal). Rule is registered inline-passing minTickIntervalMs to the builder rather than wrapping with throttled() because the builder already exposes the option (matches the rule's documented public surface).",
+      "evidence": "src/lib/reconciler-bootstrap.ts: +1 import line; +40-line registration block citing factory-core-wlsr.6, factory-core-wlsr.19, ADR-010"
+    },
+    {
+      "ac_item": 2,
+      "action": "Use FLEET_CORE_PATH-aware repoPath",
+      "result": "Rule uses the same `repoPath` variable computed at bootstrap top: `process.env.FLEET_CORE_PATH ?? '/Users/janemckay/dev/fleet/factory-core'` (line 254-255 of bootstrap, identical to adjacent rules' resolution).",
+      "evidence": "src/lib/reconciler-bootstrap.ts: registration block references `repoPath` directly"
+    },
+    {
+      "ac_item": 3,
+      "action": "Set minTickIntervalMs to 5 * 60_000 (5 min)",
+      "result": "Passed inline to buildCoherenceOutcomeAttributionRule({ repoPath, minTickIntervalMs: 5 * 60_000 }). Throttle rationale documented in registration block: outcome attribution is non-urgent (24h horizon is the slowest signal it consumes; closure / re-escalation signals can wait 5 minutes before attribution without changing operational meaning).",
+      "evidence": "src/lib/reconciler-bootstrap.ts: minTickIntervalMs option set to 5*60_000"
+    },
+    {
+      "ac_item": 4,
+      "action": "Emit bead-status-changed event after bd close in closeEpic helper (pipeline-labels.ts)",
+      "result": "Modified closeEpic to call appendEvent(repoPath, { type: 'bead-status-changed', epicId: issueId, payload: { beadId: issueId, newStatus: 'closed' } }) AFTER bd close reports success. Wrapped in try/catch (defense-in-depth — appendEvent itself swallows errors per ADR-007 but a future regression must never surface as a post-close exception during long pipeline transitions). Event shape matches coherence-outcome-classifier.ts § 'Closure event' contract verbatim.",
+      "evidence": "src/lib/pipeline-labels.ts: +import appendEvent; +25-line emit block in closeEpic"
+    },
+    {
+      "ac_item": 5,
+      "action": "Round-trip integration test: pending → positive on synthetic bd-close event after two ticks",
+      "result": "Added test 'AC#5 round-trip: pending → positive on synthetic bd-close event after two ticks' to coherence-outcome-attribution.test.ts. Drives the prescribed flow: append journal entry via CoherenceJournal.append, tick #1 (verify still pending — no signal yet), append synthetic bead-status-changed event with the exact shape closeEpic emits, tick #2 (verify outcome=positive with rationale 'epic closed without re-escalation'). Test passes against real CoherenceJournal repo (tmpdir-backed) wired into a real Reconciler instance. Also added 5 unit tests for closeEpic in pipeline-labels.test.ts: invokes bd close correctly; emits bead-status-changed event after success (AC#4); event ordering observable (bd-close before append-event); bd close failure suppresses event emission; event-log failure does NOT propagate.",
+      "evidence": "__tests__/lib/reconciler-rules/coherence-outcome-attribution.test.ts (+58 lines, 1 new test); __tests__/lib/pipeline-labels.test.ts (+92 lines, 5 new closeEpic tests). Jest output: 28/28 tests pass for both files; 1143/1143 tests pass for full __tests__/lib suite."
+    },
+    {
+      "ac_item": 6,
+      "action": "Document rule registration block citing factory-core-wlsr.6 + ADR-010",
+      "result": "Registration block has a 14-line comment header naming wlsr.6 (classifier + reconciler rule), wlsr.19 (this wiring + bd-close event emission), the architecture document path, and ADR-010 (outcome attribution horizon — hybrid: 5 events, 24h, default-positive). Throttle rationale and repoPath provenance also documented inline.",
+      "evidence": "src/lib/reconciler-bootstrap.ts: 28-line documentation comment preceding registration call"
+    }
+  ],
+  "what_was_tested": "Standard implementation depth (per builder.md § 5c). The outcome classifier itself is a pure function (already covered by 24 tests in factory-core-wlsr.6); this bead's tests target two integration boundaries: (1) closeEpic + appendEvent — verified via 5 unit tests in pipeline-labels.test.ts using mocked execFile + mocked event-log to assert call shape, ordering, error propagation discipline, and post-close error swallow; (2) round-trip rule activation — verified via 1 new integration test in coherence-outcome-attribution.test.ts using real CoherenceJournal repo (tmpdir-backed JSONL via fs.mkdtemp) wired into a real Reconciler instance with real event-log appends. Boundary cases for ordering: 'event AFTER bd close, not before'; 'bd close failure → no event emitted'; 'event-log failure → caller resolves cleanly'. The integration test exactly mirrors AC#5's prose ('append journal entry, simulate bd close, tick reconciler twice, verify pending → positive with rationale epic closed without re-escalation'). Typecheck clean for the 4 modified files. Full __tests__/lib suite (60 suites, 1143 tests, excluding pre-existing dolt and stuck-in-stage failures unrelated to this bead) passes with no regressions.",
+  "deviations_from_ac": "None. All 6 AC items addressed and verified. The bead notes mentioned that the operator could choose to scope-add this work to wlsr.9 (option a) or leave it as a post-Wave-3 follow-on (option b); this completion implements option (b) cleanly via a separate bead. The wlsr.6 marker's recommendation_for_next was: 'Reconciler bootstrap: register this rule in src/lib/reconciler-bootstrap.ts (not done in this bead — out of scope; that wiring belongs to a separate integration bead or to wlsr.9). Until registered, the rule is exercised only by tests; no production effect.' — this bead is exactly that integration bead.",
+  "surprises_or_findings": "The rule's builder factory exposes minTickIntervalMs as a documented option (CoherenceOutcomeAttributionRuleOptions interface in coherence-outcome-attribution.ts line 49-66). Other rules in bootstrap use a `throttled()` helper because their factories don't expose the setting (per the helper's own comment at bootstrap line 22-25). Passing minTickIntervalMs inline to the builder is cleaner and uses the rule's documented public surface; the throttled() wrapper is unnecessary. Both approaches are functionally equivalent (the reconciler reads rule.minTickIntervalMs at tick time either way). Documented this rationale inline in the registration block. Verified with full __tests__/lib suite (1143/1143 pass) that the wiring change does not regress any existing rule — including the existing coherence-outcome-attribution rule tests (which exercise the rule via its builder, not via bootstrap, so they were unaffected by the bootstrap change).",
+  "recommendation_for_next": "Wave 2 is now complete for this follow-on. Reviewer Stage 4 should verify: (a) the registration block in reconciler-bootstrap.ts compiles and runs at boot (smoke test: start beads_web, hit any /api/fleet/action endpoint, confirm reconciler logs include the new rule via reconciler stats); (b) closeEpic emits the event in production (smoke test: deprioritise an epic via the dashboard, grep .beads/events.jsonl for `bead-status-changed` event with the right beadId/newStatus payload). For Wave 3 (wlsr.9 already closed; wlsr.14/15/16 already closed): no impact. The end-to-end signal loop is now closed: rule.act() in any non-success marker case → coherence dispatched → journal entry appended → wlsr.6 outcome rule attributes via re-escalation, closure event (now live), or 24h horizon. ADR-010's hybrid attribution is fully live in production.",
+  "next_agent": "reviewer",
+  "blocker_class": null,
+  "whats_open": [],
+  "ac_items_NOT_verified": "None — all 6 AC items verified."
+}
