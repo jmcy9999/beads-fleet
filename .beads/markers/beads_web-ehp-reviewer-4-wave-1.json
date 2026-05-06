@@ -1,0 +1,78 @@
+{
+  "version": "1",
+  "epic_id": "beads_web-ehp",
+  "status": "success",
+  "stage": "reviewer-4",
+  "started_at": "2026-05-06T20:30:00Z",
+  "exited_at": "2026-05-06T20:55:00Z",
+  "what_was_done": [
+    {
+      "action": "Read all required process docs in order before starting: standards/generic/agent-discipline.md, standards/generic/regression-patterns.md, standards/generic/surfacing-protocol.md (especially § 1 + § 2.3 reviewer failure modes), standards/generic/marker-protocol.md (§ 1 + § 2 + § 3.7 reviewer slant), and .claude/agents/reviewer.md (Stage 4 Code Review process).",
+      "result": "Loaded the Stage-4 Code Review rubric: standing-order-compliance table, architecture-layer compliance, design-system / code-standards compliance, anchor-decision compliance, common code smells. STOP-and-Surface failure modes for reviewer (AC unverifiable from artefacts, artefact contradicts authoritative source, commit touches files outside Files manifest) understood.",
+      "evidence": "All 5 docs read; reviewer.md Stages 1–4 + Pipeline Integration sections internalised."
+    },
+    {
+      "action": "Identified Wave-1 beads against the build plan and bd state. Plan at /Users/janemckay/dev/fleet/factory-core/.beads/plans/beads_web-ehp.md § Wave Summary lists Wave 1 = beads_web-ehp.1 + beads_web-ehp.2 (foundations: bead-status reader + event-log additive variant). bd labels on both beads confirmed via `bd show <id> --json` — both carry `epic:beads_web-ehp` + `ship-type:internal` only; neither carries `wave:1` (Observation 2 in review).",
+      "result": "Both Wave-1 beads are closed (✓): ehp.1 closed via fd4ce89, ehp.2 closed via 0476117. Both close-reasons present, both per-bead markers present at .beads/markers/beads_web-ehp.{1,2}.json with status=success and 0 BLOCKERs. Reviewing per the named-in-plan set despite the missing wave:1 label (operator surfacing point in review § Observations).",
+      "evidence": "bd list --status=all --label epic:beads_web-ehp → 14 beads (ehp + ehp.1–13 + abc); ehp.1 + ehp.2 are CLOSED; rest open or blocked. git log: fd4ce89 (ehp.1) and 0476117 (ehp.2) are the per-bead Wave-1 commits."
+    },
+    {
+      "action": "Read all changed files for ehp.1 (src/lib/bead-status-reader.ts; __tests__/lib/bead-status-reader.test.ts; 3 fixture files at __tests__/fixtures/bd-show/) and ehp.2 (src/lib/event-log.ts +74 lines; __tests__/lib/event-log.test.ts +228 lines).",
+      "result": "Reviewed: layer compliance (Infrastructure for bead-status-reader; existing layer for event-log additions); failure-mode handling (null-on-every-failure, never throws); naming conventions (BeadSnapshot, BeadStatus, RECONCILER_ACTION_REFUSED, ReconcilerActionRefusedPayload, ReconcilerActionRefusedEvent — clear); test coverage (24 tests in ehp.1 + 6 new tests in ehp.2 = 30 new tests, all pass); fixture realism (3 live `bd show --json` captures from factory-core for ehp.1).",
+      "evidence": "src/lib/bead-status-reader.ts (185 lines including JSDoc + comments). src/lib/event-log.ts (additions at lines 60–138). All file reads done with line-number granularity."
+    },
+    {
+      "action": "Cross-checked Wave-1 implementation against the architecture document (/Users/janemckay/dev/fleet/factory-core/docs/research/action-route-lacks-precondition-checks-architecture.md) § Layer Mapping and § File Structure Plan.",
+      "result": "Architecture explicitly lists `readBeadStatus(epicId, repoPath)` (Infrastructure) as ehp.1's deliverable, and event-log additive variant (existing layer) as ehp.2's deliverable. Both shipped exactly as specified; layer assignments correct; no DTO chains, no new repositories, no event-bus abstractions introduced. Wave 1 satisfies architecture's File Structure Plan for foundations.",
+      "evidence": "architecture doc § Layer Mapping table (line 50 onwards) names BeadSnapshot + readBeadStatus as Infrastructure; § ADR-006 specifies the new event-log variant rather than a flag on reconciler-action-taken (verified in ehp.2 marker's switch-grep audit)."
+    },
+    {
+      "action": "Ran the Wave-1 test suites locally to verify the closed beads' tests still pass and no regressions slipped in.",
+      "result": "42/42 Wave-1 tests pass (`__tests__/lib/bead-status-reader.test.ts` 24/24 + `__tests__/lib/event-log.test.ts` 18/18) in 1.277s. tsc --noEmit shows 0 errors in Wave-1 scope (filtered by grep). ESLint shows 0 errors / 0 warnings on the 4 changed files.",
+      "evidence": "npx jest --no-cache __tests__/lib/bead-status-reader.test.ts __tests__/lib/event-log.test.ts → Tests: 42 passed, 42 total. npx tsc --noEmit | grep -E 'bead-status-reader|event-log' → empty. npx eslint <files> → clean."
+    },
+    {
+      "action": "Cross-referenced PipelineEvent equality consumers against ehp.2 marker's switch_sites_audited and pipeline_event_equality_consumers tables.",
+      "result": "0 exhaustive switches over PipelineEvent variants exist in src/ (the 2 `switch (x.type)` sites in src/lib/cache.ts and src/lib/bv-client.ts are over CacheScope, unrelated to PipelineEvent). 6 equality consumers exist (reconciler.ts:309, stuck-in-stage.ts:123, repeat-dispatch-escalation.ts:142, marker-driven-routing.ts:127, missed-wave-review-dispatch.ts:119, reconciler/coherence/route.ts:29) — none are affected by the new variant; semantics preserved. The only future-effect noted (refusals will count as activity in stuck-in-stage's `!== reconciler-action-taken` filter once Wave 3 emits) is correctly flagged as FOLLOW-ON-DOWNSTREAM in the ehp.2 marker, not a regression.",
+      "evidence": "ehp.2 marker's pipeline_event_equality_consumers array; cross-checked against src/lib/reconciler-rules/stuck-in-stage.ts, etc."
+    },
+    {
+      "action": "Scanned for regression-pattern matches per agent-discipline § 8 + regression-patterns.md.",
+      "result": "Pattern #1 Write/Read Disconnect: ehp.2 has explicit JSONL on-disk shape test (greppable contract). No drift between write and read. Pattern #7 Type Confusion: not applicable (PipelineEvent.type is open string, not discriminated union; switch-grep audit confirmed). Pattern #10 Build-Before-Architect: not applicable (architecture doc honored). Pattern #13 Silent Exception Swallowing: ehp.1's null-on-failure pattern is correctly disciplined (every catch path returns null, distinguishing 'unreachable' from 'in-known-state'; failure modes individually unit-tested). No silent-swallow anti-patterns introduced.",
+      "evidence": "regression-patterns.md cross-referenced section by section against the changed code."
+    },
+    {
+      "action": "Checked for open bug beads against the epic before filing new ones (per reviewer.md 'Don't duplicate existing bugs').",
+      "result": "0 open bug beads against epic:beads_web-ehp. No existing bugs to dedupe against.",
+      "evidence": "bd list --status=open --type=bug --label=epic:beads_web-ehp → No issues found."
+    },
+    {
+      "action": "Wrote review file at /Users/janemckay/dev/claude_projects/beads_web/.beads/reviews/beads_web-ehp-wave-1-round-1.md with verdict PASS, full standing-order-compliance table, architecture review, code quality review, 0 bugs filed, and 3 non-blocking observations.",
+      "result": "Review file landed; review directory was created (did not exist previously). Verdict and observations recorded for operator awareness; no bugs filed because no issues meet the bug-bar.",
+      "evidence": "ls /Users/janemckay/dev/claude_projects/beads_web/.beads/reviews/ → beads_web-ehp-wave-1-round-1.md present."
+    }
+  ],
+  "what_was_tested": "Reviewer's 'tested' = the Stage-4 rubric (architecture layer compliance, naming, error handling, anchor-decision compliance, common code smells, regression-pattern coverage, test suite green) + the Wave-1-specific cross-checks (architecture File Structure Plan; ADR-002 fail-closed posture; ADR-006 new event variant; switch-grep audit; equality-consumer audit). Each rubric item: PASS — see review file's Standing Order Compliance table for the per-item verdict. Independently re-ran the Wave-1 test suites (42/42 pass), filtered tsc --noEmit (0 errors in Wave-1 scope), and re-ran ESLint on the 4 changed files (0 errors / 0 warnings). Verified the ehp.2 marker's switch-grep audit by spot-checking that the 2 `switch (x.type)` sites in src/ (cache.ts, bv-client.ts) are over CacheScope, not PipelineEvent. Verified the ehp.1 marker's spawn-shape mirroring by reading reconciler-bootstrap.ts:669–687 and confirming the only deltas are (a) more comprehensive failure-mode coverage and (b) a documented 10s→15s timeout rationale.",
+  "deviations_from_ac": "None. All Wave-1 ACs from the build plan and architecture document are satisfied: bead-status reader returns BeadSnapshot|null with full failure-mode coverage; event-log gains the new variant additively; switch-grep audit recorded; equality consumers audited; tests pass; lint + tsc clean in scope; markers landed with the per-bead commits per marker-protocol § 1 ordering.",
+  "surprises_or_findings": "1) Wave 1 beads (ehp.1 + ehp.2) lack the `wave:1` label that agent-discipline § 2 step 6 prescribes. They carry only `epic:beads_web-ehp` + `ship-type:internal`. The build plan documents them as Wave 1 but the planner's bead-creation commits (8741eca + f54693e) did not apply wave labels. This is a planner-stage concern, not a builder-stage code defect, and does not affect this review's verdict — but the dep-naive `start-wave` dispatcher (`agent-launcher.ts:1370 groupBeadsByFileConflict`, per the build plan's parallelism summary) consults wave labels to decide which beads to launch in parallel, so missing labels on Waves 2–5 would be a real operational hazard. Surfaced as Observation 2 in the review file. 2) The ehp.1 builder noted a 10s-vs-15s timeout discrepancy between the bead description's CONTEXT line and the live precedent at reconciler-bootstrap.ts:677 (precedent is 10s, builder went with 15s with documented cold-start-RPC rationale). Already correctly flagged in the ehp.1 marker; no action needed. 3) The reviews/ directory did not exist in beads_web/.beads/ — created it during this review. No prior code-review activity on this repo. 4) Pre-existing test failures in __tests__/lib/stuck-in-stage.test.ts (2 tests) are unrelated to Wave 1 — they predate ehp.2 per stash-baseline verification in the ehp.2 marker. The wlsr.14 ADR-015 cutover changed the source dispatch action but the tests were not updated. Out of scope for this review; flagged as `whats_open` in ehp.2's marker for the wlsr.14 owner.",
+  "whats_open": [
+    "FOLLOW-ON: Operator should consider backfilling `wave:1` labels on beads_web-ehp.1 + beads_web-ehp.2, and verify wave labels are present on Waves 2–5 before the dep-naive start-wave dispatcher fires. This is a planner-discipline gap, not a code defect; non-blocking for Wave 2 dispatch (which is a single-bead wave: beads_web-ehp.3) but becomes load-bearing for Wave 3+ multi-bead waves.",
+    "FOLLOW-ON: A future hardening pass could migrate src/lib/bead-status-reader.ts:106 + src/lib/reconciler-bootstrap.ts:673 from execSync-with-string-interpolation to execFileSync-with-arg-array (defense in depth against shell-metacharacter bead IDs). Practical risk near-zero today under bd's id grammar; both call sites should migrate together. Non-blocking; not in scope for this epic.",
+    "FOLLOW-ON: __tests__/lib/stuck-in-stage.test.ts has 2 stale failures from the wlsr.14 ADR-015 cutover (tests expect STAGE_RESUME_ACTIONS-style dispatch; source moved to run-coherence-agent). Owner is the wlsr.14 source-code change author. Out of scope for ehp; flagged in ehp.2's marker `whats_open`."
+  ],
+  "recommendation_for_next": "Wave 2 (beads_web-ehp.3) is unblocked and may proceed. ehp.3 imports `readBeadStatus`, `BeadSnapshot`, `RECONCILER_ACTION_REFUSED`, `ReconcilerActionRefusedPayload`, and `ReconcilerActionRefusedEvent` from this Wave's modules; nothing in Wave 1 needs revision. Operator may want to address Observation 2 (missing wave:1 labels) at their convenience but this does not block Wave 2 (single-bead wave). The next pipeline action is to dispatch the ehp.3 builder once the operator approves this review or auto-chain progression is enabled.",
+  "next_agent": "builder",
+  "dispatch_context": {
+    "wave": 2,
+    "next_bead": "beads_web-ehp.3",
+    "verdict": "PASS",
+    "open_bugs": 0,
+    "review_file": ".beads/reviews/beads_web-ehp-wave-1-round-1.md",
+    "wave_1_commits": ["fd4ce89", "0476117"],
+    "wave_1_beads_closed": ["beads_web-ehp.1", "beads_web-ehp.2"]
+  },
+  "files_modified": [
+    ".beads/reviews/beads_web-ehp-wave-1-round-1.md (NEW)",
+    ".beads/markers/beads_web-ehp-reviewer-4-wave-1.json (NEW)"
+  ]
+}
