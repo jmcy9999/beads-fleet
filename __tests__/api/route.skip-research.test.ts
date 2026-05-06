@@ -135,6 +135,52 @@ jest.mock("@/lib/bead-prompt", () => ({
     mockBuildPerBeadPrompt(...(args as [unknown])),
 }));
 
+// beads_web-ehp.11: dispatch-preconditions default mock — see fleet-action
+// .test.ts for the rationale. start-research is wrapped at the top of its
+// case body; the existing skip:research happy-path / rejection tests must
+// keep passing unchanged (refusal default is ok=true).
+const mockBuildDispatchContextSr = jest.fn().mockResolvedValue({
+  action: "start-research",
+  bead: {
+    id: "test-bead",
+    status: "open",
+    pipelineStage: null,
+    currentWave: null,
+    currentQaRound: null,
+    hasAgentRunning: false,
+    hasReviewNeedsHuman: false,
+  },
+  marker: null,
+  epicLabels: [],
+  planFileExists: false,
+  openWaveBeadIds: [],
+  stageEnteredAt: null,
+  planFileMtime: undefined,
+});
+const mockEvaluatePreconditionsSr = jest.fn().mockReturnValue({ ok: true });
+const mockBuildPreconditionRefusalResponseSr = jest.fn().mockImplementation(
+  (result: { refusalCode: string; failedCheck: string; reason: string }, bead: { id?: string; status?: string } | null) => ({
+    refused: true,
+    refusalCode: result.refusalCode,
+    failedCheck: result.failedCheck,
+    reason: result.reason,
+    observedState: {
+      beadId: bead?.id ?? null,
+      status: bead?.status ?? null,
+      pipelineStage: null,
+      currentWave: null,
+      currentQaRound: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    },
+  }),
+);
+jest.mock("@/lib/dispatch-preconditions", () => ({
+  buildDispatchContext: (...args: unknown[]) => mockBuildDispatchContextSr(...args),
+  evaluatePreconditions: (...args: unknown[]) => mockEvaluatePreconditionsSr(...args),
+  buildPreconditionRefusalResponse: (...args: unknown[]) => mockBuildPreconditionRefusalResponseSr(...args),
+}));
+
 // ---------------------------------------------------------------------------
 // Import AFTER mocks
 // ---------------------------------------------------------------------------

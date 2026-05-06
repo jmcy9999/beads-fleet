@@ -34,8 +34,24 @@
  */
 
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
+import {
+  buildDispatchContext,
+  evaluatePreconditions,
+} from "../dispatch-preconditions";
+import { appendEvent, RECONCILER_ACTION_REFUSED } from "../event-log";
 
 export const REPEATED_QA_ROUND_RULE_NAME = "repeated-qa-round";
+
+/**
+ * Canonical action passed to `evaluatePreconditions` from this rule's
+ * `act()`. The rule itself does NOT dispatch a stage — it adds the
+ * `review:needs-human` label to flag stuck QA loops. The action below
+ * represents the next QA-round dispatch the system would otherwise
+ * perform if this flag did not fire; running the precondition library
+ * against it lets Class B `qa-round-monotonic` (QA_ROUND_OUT_OF_ORDER)
+ * gate the label-add when the QA round state is incoherent.
+ */
+const QA_ROUND_PRECOND_ACTION = "qa-fix-and-retest";
 
 /** Round threshold for Branch 1 (bugs-not-decreasing). 5 rounds of
  *  QA without resolution indicates the loop is stuck. Below this, give
@@ -102,6 +118,18 @@ export interface RepeatedQaRoundRuleOptions {
    * marker lives at <repo>/.beads/markers/<epicId>-qa-round-<N>.json.
    */
   readQaRoundMarker?: (epicId: string, round: number) => Promise<QaRoundMarkerData | null>;
+  /**
+   * beads_web-ehp.9: Repo path used by the dispatch-precondition gate
+   * in `act()`. When set, `act()` runs `buildDispatchContext` +
+   * `evaluatePreconditions` BEFORE the `addLabelsToEpic` call and
+   * refuses (logs + emits `reconciler-action-refused` event) when a
+   * Class B QA_ROUND_OUT_OF_ORDER (or any other registered)
+   * precondition fails. When undefined, the gate is skipped — the
+   * rule's `act()` falls back to the legacy unconditional label-add
+   * for backwards-compat with existing tests that pre-date the gate.
+   * Production callers (`reconciler-bootstrap.ts`) MUST set this.
+   */
+  repoPath?: string;
 }
 
 export function buildRepeatedQaRoundRule(
@@ -244,6 +272,75 @@ export function buildRepeatedQaRoundRule(
         console.log(
           `[zsjv.3] repeated-qa-round for ${match.epicId}: round ${context.round} with ${context.openBugCount} open bugs — flagging review:needs-human`,
         );
+      }
+
+      // -----------------------------------------------------------------
+      // beads_web-ehp.9: dispatch-precondition gate (Wave 4 integration).
+      //
+      // Architecture § Component Boundaries Contract 2 + § Seam 5: the
+      // precondition library runs BEFORE the label mutation. The Class B
+      // `qa-round-monotonic` predicate (QA_ROUND_OUT_OF_ORDER) is the
+      // canonical guard against advancing the QA loop when the current
+      // round-N marker is missing or status != success. On refusal:
+      // structured warn-line tagged `reconciler_dispatch_refused` + a
+      // `reconciler-action-refused` event-log entry + early return
+      // WITHOUT mutating any labels.
+      //
+      // Action argument: `qa-fix-and-retest` is the QA-progressing
+      // action whose dispatch the precondition library would gate. The
+      // reconciler rule itself does NOT make an HTTP fetch (its only
+      // side effect is `addLabelsToEpic("review:needs-human")`); it
+      // therefore consults the precondition library against the
+      // CONCEPTUAL action it is reacting to (the next QA round). This
+      // mirrors the marker-driven-routing × dispatch-preconditions
+      // pattern landed in beads_web-ehp.4 (commit 6bda934).
+      //
+      // Backwards-compat: the gate is OPT-IN via opts.repoPath. Legacy
+      // tests that pre-date the gate (do not pass repoPath) keep their
+      // unconditional label-add semantics; production callers
+      // (reconciler-bootstrap.ts) MUST set repoPath.
+      //
+      // FOLLOW-ON (architecture ADR-006): refusals consume the
+      // reconciler-action-taken idempotency bucket because reconciler.ts
+      // appends that event unconditionally after act() returns. The
+      // proper bucketing key for refusals is (epicId, ruleName,
+      // refusalCode, 15-min window); tracked as a separate reconciler-
+      // core bead. This rule's act() is correct: it returns cleanly so
+      // the loop continues.
+      //
+      // FOLLOW-ON (architect AC #3): the bead description's "Route
+      // returns 412 → log + return without throwing" AC is N/A by code
+      // structure — this rule's act() does not perform any HTTP fetch
+      // (the marker-driven-routing rule that ehp.4 wrapped DOES fetch,
+      // hence the AC made sense there). Surfaced in the ehp.9 marker
+      // as a deviations_from_ac entry per the STOP-and-surface
+      // discipline (precedent: beads_web-1nm 2026-05-01).
+      // -----------------------------------------------------------------
+      if (opts.repoPath) {
+        const precondCtx = await buildDispatchContext({
+          epicId: match.epicId,
+          repoPath: opts.repoPath,
+          action: QA_ROUND_PRECOND_ACTION,
+        });
+        const precondResult = evaluatePreconditions(precondCtx);
+        if (!precondResult.ok) {
+          console.warn(
+            `[ehp.9] reconciler_dispatch_refused: rule=${REPEATED_QA_ROUND_RULE_NAME} epicId=${match.epicId} action=${QA_ROUND_PRECOND_ACTION} refusalCode=${precondResult.refusalCode} failedCheck=${precondResult.failedCheck} reason="${precondResult.reason}"`,
+          );
+          await appendEvent(opts.repoPath, {
+            type: RECONCILER_ACTION_REFUSED,
+            epicId: match.epicId,
+            stage: "qa",
+            payload: {
+              ruleName: REPEATED_QA_ROUND_RULE_NAME,
+              action: QA_ROUND_PRECOND_ACTION,
+              refusalCode: precondResult.refusalCode,
+              failedCheck: precondResult.failedCheck,
+              reason: precondResult.reason,
+            },
+          });
+          return;
+        }
       }
 
       try {

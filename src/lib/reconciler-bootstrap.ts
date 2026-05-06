@@ -279,8 +279,12 @@ export function ensureReconcilerRunning(): void {
 
     // factory-core-zsjv.1: stuck-in-stage detector — generalises the
     // missed-wave-review recovery pattern to every pipeline stage.
+    // beads_web-ehp.5: repoPath wired so the rule's act() can call
+    // buildDispatchContext (precondition gate) + appendEvent (refusal
+    // event log).
     rec.registerRule(
       buildStuckInStageRule({
+        repoPath,
         readEpicSnapshot: async (epicId: string) => {
           const snap = await readEpicState(epicId, repoPath);
           const pipelineLabel = snap.labels.find((l) =>
@@ -311,6 +315,10 @@ export function ensureReconcilerRunning(): void {
     // labels back / dispatching start-wave directly.
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the dispatch-precondition
+        // gate (reads bead status, marker, epic labels, open wave beads
+        // via buildDispatchContext) and refusal-event emission.
+        repoPath,
         readEpicSnapshot: async (epicId: string) => {
           const snap = await readEpicState(epicId, repoPath);
           const pipelineLabel = snap.labels.find((l) =>
@@ -377,6 +385,10 @@ export function ensureReconcilerRunning(): void {
             title: readEpicTitle(epicId, repoPath),
           };
         },
+        // beads_web-ehp.9: enable the dispatch-precondition gate in act().
+        // Class B QA_ROUND_OUT_OF_ORDER refuses label-add when the QA
+        // round marker is incoherent (missing or status != success).
+        repoPath,
       }), 5 * 60_000), // factory-core-3akh.2: QA rounds take hours, poll every 5m
     );
 

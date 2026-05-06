@@ -217,6 +217,53 @@ jest.mock("@/lib/bead-prompt", () => ({
     mockFormatAgentStandingOrders(...args),
 }));
 
+// beads_web-ehp.11: dispatch-preconditions are evaluated at the TOP of every
+// DISPATCHING case body. Default mock: buildDispatchContext returns a benign
+// snapshot, evaluatePreconditions returns ok=true → existing 200-OK paths
+// preserved unchanged. Per-case 412 tests live in fleet-action-preconditions
+// .test.ts and override evaluatePreconditions inline.
+const mockBuildDispatchContext = jest.fn().mockResolvedValue({
+  action: "test",
+  bead: {
+    id: "test-bead",
+    status: "open",
+    pipelineStage: null,
+    currentWave: null,
+    currentQaRound: null,
+    hasAgentRunning: false,
+    hasReviewNeedsHuman: false,
+  },
+  marker: null,
+  epicLabels: [],
+  planFileExists: false,
+  openWaveBeadIds: [],
+  stageEnteredAt: null,
+  planFileMtime: undefined,
+});
+const mockEvaluatePreconditions = jest.fn().mockReturnValue({ ok: true });
+const mockBuildPreconditionRefusalResponse = jest.fn().mockImplementation(
+  (result: { refusalCode: string; failedCheck: string; reason: string }, bead: { id?: string; status?: string } | null) => ({
+    refused: true,
+    refusalCode: result.refusalCode,
+    failedCheck: result.failedCheck,
+    reason: result.reason,
+    observedState: {
+      beadId: bead?.id ?? null,
+      status: bead?.status ?? null,
+      pipelineStage: null,
+      currentWave: null,
+      currentQaRound: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    },
+  }),
+);
+jest.mock("@/lib/dispatch-preconditions", () => ({
+  buildDispatchContext: (...args: unknown[]) => mockBuildDispatchContext(...args),
+  evaluatePreconditions: (...args: unknown[]) => mockEvaluatePreconditions(...args),
+  buildPreconditionRefusalResponse: (...args: unknown[]) => mockBuildPreconditionRefusalResponse(...args),
+}));
+
 // ---------------------------------------------------------------------------
 // Import the route handler (AFTER mocks are set up)
 // ---------------------------------------------------------------------------

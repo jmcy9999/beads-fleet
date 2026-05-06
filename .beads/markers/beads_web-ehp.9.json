@@ -1,0 +1,38 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-ehp.9",
+  "epic_id": "beads_web-ehp",
+  "status": "success",
+  "stage": "build",
+  "started_at": "2026-05-06T00:00:00Z",
+  "exited_at": "2026-05-06T00:00:00Z",
+  "next_agent": "reviewer",
+  "what_was_done": [
+    {
+      "action": "Wrap repeated-qa-round.ts's act() with buildDispatchContext + evaluatePreconditions",
+      "result": "Class B QA_ROUND_OUT_OF_ORDER predicate is the canonical guard. Refusals log + emit reconciler-action-refused event + return without calling addLabelsToEpic. Universal A.5 (BD_STATUS_DEFERRED / BD_STATUS_CLOSED) and Class-C (OPERATOR_DECISION_PENDING / REVIEW_NEEDS_HUMAN) predicates also fire — load-bearing for the 372-bead mass-defer.",
+      "evidence": "src/lib/reconciler-rules/repeated-qa-round.ts:319-344 (precondition gate), src/lib/reconciler-rules/repeated-qa-round.ts:122-132 (repoPath option), src/lib/reconciler-bootstrap.ts:388-391 (production wiring)"
+    },
+    {
+      "action": "Action argument: 'qa-fix-and-retest'",
+      "result": "Selected because Class B qa-round-monotonic registers ONLY for ACTIONS_QA_ROUND_PROGRESSING ({send-for-qa, qa-fix-and-retest}). The rule itself does not dispatch this action — it consults the precondition library against the CONCEPTUAL action it is reacting to (the next QA round dispatch the system would otherwise perform). Mirrors the marker-driven-routing × dispatch-preconditions wiring shape established in beads_web-ehp.4.",
+      "evidence": "src/lib/dispatch-preconditions.ts:558-561 (ACTIONS_QA_ROUND_PROGRESSING), src/lib/dispatch-preconditions.ts:842 (appliesTo)"
+    },
+    {
+      "action": "Add integration test file with 4 active scenarios + 1 documented N/A skip",
+      "result": "Test 1 (load-bearing): per-bead QA marker stage=qa status=failure → QA_ROUND_OUT_OF_ORDER refusal, addLabelsToEpic NOT called, reconciler-action-refused event recorded with canonical payload (ruleName, action, refusalCode, failedCheck, reason). Test 2 (happy path): null marker → Class B falls open per its v1 limitation → addLabelsToEpic fires unchanged. Test 3 (happy path explicit): success marker → addLabelsToEpic fires. Test 4 (legacy back-compat): no repoPath → gate skipped, label-add unconditional. Test 5 (skip): AC #3 HTTP 412 documented as N/A.",
+      "evidence": "__tests__/lib/reconciler-rules/repeated-qa-round.precondition-integration.test.ts:173-236 (AC#1), :247-290 (AC#2 happy path), :294-340 (happy path with explicit success marker), :366-399 (legacy back-compat), :353-357 (AC#3 documented N/A skip)"
+    },
+    {
+      "action": "Update ARCHITECTURE.md with the precondition-gated repeated-qa-round entry",
+      "result": "New section under Wave-4 precondition-gated reconciler rules; documents the action-argument rationale (qa-fix-and-retest) and the AC#3 deviation.",
+      "evidence": "ARCHITECTURE.md:495-496"
+    }
+  ],
+  "what_was_tested": "AC#1 (Class B QA_ROUND_OUT_OF_ORDER): __tests__/lib/reconciler-rules/repeated-qa-round.precondition-integration.test.ts:173 — per-bead QA marker with stage=qa status=failure refuses round-N+1 dispatch, addLabelsToEpic NOT called, refusal event payload asserts refusalCode='QA_ROUND_OUT_OF_ORDER' + failedCheck='qa-round-monotonic' + action='qa-fix-and-retest' + ruleName='repeated-qa-round'. AC#2 (happy path): :247 — null marker falls open per Class B v1 limitation, addLabelsToEpic fires. AC#1' (defense-in-depth): :294 — explicit status=success QA marker passes Class B. Back-compat: :366 — omitting repoPath skips the gate (preserves legacy label-add semantics). All 4 active tests + 1 documented N/A skip pass; 240 reconciler-rules + dispatch-preconditions + repeated-qa-round tests pass in aggregate (npx jest --no-cache __tests__/lib/repeated-qa-round.test.ts __tests__/lib/dispatch-preconditions.test.ts __tests__/lib/reconciler-rules/).",
+  "deviations_from_ac": "AC #3 (bead description: 'GIVEN route returns 412, WHEN act() receives it, THEN log + return without throwing') is structurally N/A for repeated-qa-round.ts. The rule's act() performs no HTTP fetch — its only side effect is addLabelsToEpic('review:needs-human'), which calls 'bd label add' directly via execFile (src/lib/pipeline-labels.ts:168-181), not via /api/fleet/action. The 412-handling AC was inherited from the marker-driven-routing pattern (beads_web-ehp.4) which DOES fetch /api/fleet/action; that pattern's HTTP defense-in-depth path does not apply here. Surfaced per the STOP-and-surface discipline (precedent: beads_web-1nm 2026-05-01); test file pins the documentation at the test boundary with a `test.skip` containing the rationale. Operator decision options: (a) accept-as-shipped (preferred — semantics correct, cross-rule pattern preserved); (b) extend the rule with a route fetch (changes behaviour — addLabelsToEpic becomes redundant or moves to a route action handler); (c) re-bead the AC text to remove the HTTP 412 clause for rules that don't fetch.",
+  "surprises_or_findings": "(1) Architect prompt described 'snapshot re-read' before precondition; the rule's act() did not previously re-read (the snapshot used in match() was passed forward via match.context). The precondition gate's buildDispatchContext is ITSELF the snapshot read (calls readBeadStatus + readMarker + getEpicLabels) — no separate re-read needed. (2) Architect RISK FLAG noted potential marker filename ambiguity (QA marker shape '<epicId>-qa-round-<N>.json'). Verified empirically against src/lib/dispatch-preconditions.ts:822-838 — the v1 predicate inspects ctx.marker (per-bead '<epicId>.json' loaded by buildDispatchContext) and treats it as a QA-round marker if stage='qa' OR bead_id matches /-qa-round-\\d+/. The predicate's v1 limitation is documented in the precondition library (predicate falls open when ctx.marker doesn't carry qa-round metadata; route.ts:1665+ remains load-bearing). The integration test exercises the per-bead-marker surface (which is the surface buildDispatchContext actually populates) — not a synthetic <epicId>-qa-round-<N>.json fixture. This means the test passes against the predicate-as-implemented; if Wave-3 ehp.13 later refines buildDispatchContext to read the QA-round-specific marker, the test fixture should be updated alongside. (3) Test interaction surprise during early test development: when run as a full suite, the first test failed because reconciler idempotency state may have leaked across tests; resolved by ensuring each test uses a fresh temp repo (via makeRepo()) and unique epicId. Once isolated, all 4 active tests + 1 skip pass deterministically.",
+  "recommendation_for_next": "Reviewer: verify that (a) the action-argument 'qa-fix-and-retest' is the right concept-marker for THIS rule's intent (the rule flags review:needs-human when QA can't converge — the next mechanical dispatch WOULD be qa-fix-and-retest, so the precondition library is gating that conceptual dispatch via Class B); (b) the AC#3 HTTP 412 deviation is acceptable given the rule's no-fetch architecture (option a in deviations_from_ac); (c) the test file's mock pattern matches marker-driven-routing.precondition-integration.test.ts (it does — same jest.mock structure for bead-status-reader / marker-reader / pipeline-labels). If reviewer agrees, advance to QA. If reviewer wants the rule to also fetch /api/fleet/action (e.g., dispatching run-coherence-agent to subsume coherence-escalation work), surface as a separate bead — that's a behavioural change beyond the bead's stated SCOPE.",
+  "whats_open": [],
+  "ac_items_NOT_verified": "AC #3 (HTTP 412 handling) — see deviations_from_ac. AC #1 + AC #2 are verified by the integration test."
+}

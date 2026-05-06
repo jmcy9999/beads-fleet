@@ -31,6 +31,17 @@ import { getRepos, findRepoForIssue } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
 import { extractAppName } from "@/lib/extract-app-name";
 import { FLEET_CORE_PATH, resolveRepoPath } from "@/lib/repo-path-resolver";
+// beads_web-ehp.11: dispatch-preconditions gate — every DISPATCHING action
+// (34 of 37 cases; EXEMPT = stop-agent / human-approve / human-dismiss)
+// runs `checkPreconditionsOrRefuse` at the TOP of its case body BEFORE any
+// label mutation or agent launch. On refusal: HTTP 412 with structured
+// PreconditionRefusalResponse body + action + epicId. See ehp.13 library
+// (src/lib/dispatch-preconditions.ts) for predicate / table contracts.
+import {
+  buildDispatchContext,
+  evaluatePreconditions,
+  buildPreconditionRefusalResponse,
+} from "@/lib/dispatch-preconditions";
 import { promises as fs } from "fs";
 import path from "path";
 
@@ -443,6 +454,49 @@ async function getQaMaxRounds(fleetCorePath: string): Promise<number> {
 }
 
 /**
+ * beads_web-ehp.11 — precondition gate for every DISPATCHING action.
+ *
+ * Builds DispatchContext via `buildDispatchContext` (re-uses the published
+ * readers — readBeadStatus / readMarker / getEpicLabels / listOpenWaveBeads /
+ * readEvents — so the TOCTOU window is unchanged from today per architecture
+ * § Failure modes Seam 4), evaluates the registered predicates, and returns:
+ *
+ *   - `null`                          → preconditions pass; caller proceeds.
+ *   - `NextResponse` (HTTP 412 body)  → refusal; caller MUST `return` it
+ *                                       BEFORE any label mutation or agent
+ *                                       launch.
+ *
+ * 412 body shape (per AC + library Contract 3): merges
+ * `buildPreconditionRefusalResponse` (refused, refusalCode, failedCheck,
+ * reason, observedState) with `action` and `epicId` so coherence reasoning
+ * has both the structured refusal and the request identifiers.
+ *
+ * Helper is invoked ONLY from the 34 DISPATCHING case bodies. The 3 EXEMPT
+ * cases (stop-agent / human-approve / human-dismiss) deliberately do NOT
+ * call this helper — see the per-case `EXEMPT per beads_web-ehp.11` comment.
+ */
+async function checkPreconditionsOrRefuse(params: {
+  epicId: string;
+  fleetCorePath: string;
+  action: PipelineAction;
+  waveNumber?: number;
+}): Promise<NextResponse | null> {
+  const ctx = await buildDispatchContext({
+    epicId: params.epicId,
+    repoPath: params.fleetCorePath,
+    action: params.action,
+    waveNumber: params.waveNumber,
+  });
+  const result = evaluatePreconditions(ctx);
+  if (result.ok) return null;
+  const refusal = buildPreconditionRefusalResponse(result, ctx.bead);
+  return NextResponse.json(
+    { ...refusal, action: params.action, epicId: params.epicId },
+    { status: 412 },
+  );
+}
+
+/**
  * POST /api/fleet/action -- Execute a pipeline action on a fleet-core epic.
  *
  * Body: { epicId: string, epicTitle: string, action: PipelineAction, feedback?: string, currentLabels?: string[] }
@@ -499,6 +553,21 @@ export async function POST(request: NextRequest) {
   const isVenture = labels.includes("ship-type:venture");
   const shipTypeLabel = labels.find(l => l.startsWith("ship-type:"));
   const shipType = shipTypeLabel ? shipTypeLabel.replace("ship-type:", "") : "ios-app";
+
+  // beads_web-ehp.11: coerce optional waveNumber once for the precondition
+  // gate. Keep coercion lenient (accept number OR string) so the downstream
+  // case-body validation (start-wave / review-wave) still owns the strict
+  // 400 path. `undefined` here just means "no wave context".
+  const parsedWaveNumber: number | undefined = (() => {
+    if (typeof waveNumber === "number" && Number.isFinite(waveNumber) && waveNumber > 0) {
+      return waveNumber;
+    }
+    if (typeof waveNumber === "string" && waveNumber.trim() !== "") {
+      const n = parseInt(waveNumber, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return undefined;
+  })();
 
   try {
     switch (action as PipelineAction) {
