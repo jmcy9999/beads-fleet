@@ -53,6 +53,14 @@ import type {
   EscalationContext,
   EventSummary,
 } from "../coherence-journal";
+import {
+  buildDispatchContext,
+  evaluatePreconditions,
+} from "../dispatch-preconditions";
+import {
+  appendEvent,
+  RECONCILER_ACTION_REFUSED,
+} from "../event-log";
 
 export const STUCK_IN_STAGE_RULE_NAME = "stuck-in-stage";
 
@@ -130,6 +138,19 @@ export interface StuckInStageRuleOptions {
    * hitting bd. Production binds to a helper that wraps readEpicState.
    */
   readEpicSnapshot: (epicId: string) => Promise<EpicSnapshot | null>;
+  /**
+   * beads_web-ehp.5: repo path used by the precondition gate. Passed to
+   * `buildDispatchContext({ repoPath })` (which feeds `readBeadStatus` /
+   * `readMarker` / event-log reads via the dispatch-preconditions library)
+   * AND to `appendEvent` for the `reconciler-action-refused` records.
+   *
+   * Optional for backwards-compat with tests that constructed the rule
+   * before ehp.5 landed; when absent, the precondition gate falls open
+   * (logged warn-line) and the rule preserves pre-ehp.5 behaviour. Bootstrap
+   * passes the production repoPath unconditionally, so the production path
+   * is fully gated.
+   */
+  repoPath?: string;
 }
 
 /**
@@ -355,6 +376,90 @@ export function buildStuckInStageRule(
         return;
       }
 
+      // -----------------------------------------------------------------
+      // beads_web-ehp.5: dispatch-precondition gate (Wave 3 integration).
+      //
+      // Architecture § Component Boundaries Contract 2: precondition check
+      // runs AFTER the snapshot re-read and BEFORE the action-route fetch.
+      // Stuck-in-stage is the most-frequent re-dispatcher and the top
+      // source of phantom dispatches when stages have not actually
+      // completed (niii phantom-wave-N reproduction).
+      //
+      // The action this rule dispatches post-wlsr.14 is `run-coherence-
+      // agent`, but the gate evaluates against the rule's pre-wlsr.14
+      // `resumeAction` (e.g., start-wave for development, review-plan for
+      // plan-review). Rationale:
+      //   - The phantom-dispatch failure mode the niii reproduction
+      //     captures is "stuck-in-stage at development with no open
+      //     wave-N beads" → pre-wlsr.14 would have fired `start-wave`
+      //     against an empty wave set. The Class A NO_WAVE_BEADS
+      //     predicate's `appliesTo` returns true ONLY for start-wave /
+      //     review-wave / resume-build, NOT for run-coherence-agent.
+      //     If we evaluated against run-coherence-agent the predicate
+      //     wouldn't fire and the phantom would shift to coherence.
+      //   - Using resumeAction encodes the rule's INTENT: "I want stage
+      //     X to resume via action Y; refuse if action Y would be
+      //     unsafe." Even though wlsr.14 routes through coherence first,
+      //     coherence's typical decision for a stalled stage IS to
+      //     re-fire the canned action — refusing here avoids the round-
+      //     trip when the canned action is provably wrong.
+      //   - This mirrors the bead description's risk flag warning:
+      //     "Each rule has its own snapshot-re-read shape; do not
+      //      blindly copy [ehp.4's pattern]." resumeAction is the
+      //     stuck-in-stage-specific signal.
+      //
+      // The universal predicates (Class A.5 BD_STATUS_DEFERRED /
+      // BD_STATUS_CLOSED, Class C OPERATOR_DECISION_PENDING /
+      // REVIEW_NEEDS_HUMAN) ALWAYS fire — `appliesTo` returns true for
+      // every action — so closed/deferred protection lands regardless of
+      // which action name is passed.
+      //
+      // FOLLOW-ON (architecture ADR-006, mirrored from ehp.4): refusals
+      // currently consume the `reconciler-action-taken` idempotency bucket
+      // because reconciler.ts appends that event unconditionally after
+      // act() returns. The proper bucketing key for refusals is
+      // (epicId, ruleName, refusalCode, 15-min window). Implementing it
+      // requires a reconciler.ts change and is tracked separately. The
+      // existing 15-min idempotency window in this rule (matches() at
+      // line ~282) is preserved unchanged per AC scope.
+      // -----------------------------------------------------------------
+      // Use resumeAction when present; fall back to run-coherence-agent
+      // for the universal-class checks if a stage somehow lands here
+      // without a resumeAction in context (defensive — matches() filters
+      // STAGE_RESUME_ACTIONS membership at line 266 before accepting).
+      const precondAction = context.resumeAction ?? "run-coherence-agent";
+      if (opts.repoPath) {
+        const precondCtx = await buildDispatchContext({
+          epicId: match.epicId,
+          repoPath: opts.repoPath,
+          action: precondAction,
+          waveNumber: snapshot.currentWave,
+        });
+        const precondResult = evaluatePreconditions(precondCtx);
+        if (!precondResult.ok) {
+          console.warn(
+            `[stuck-in-stage] reconciler_dispatch_refused: rule=${STUCK_IN_STAGE_RULE_NAME} epicId=${match.epicId} action=${precondAction} stage=${context.stage} refusalCode=${precondResult.refusalCode} failedCheck=${precondResult.failedCheck} reason="${precondResult.reason}"`,
+          );
+          await appendEvent(opts.repoPath, {
+            type: RECONCILER_ACTION_REFUSED,
+            epicId: match.epicId,
+            stage: context.stage,
+            payload: {
+              ruleName: STUCK_IN_STAGE_RULE_NAME,
+              action: precondAction,
+              refusalCode: precondResult.refusalCode,
+              failedCheck: precondResult.failedCheck,
+              reason: precondResult.reason,
+            },
+          });
+          return;
+        }
+      } else {
+        console.warn(
+          `[stuck-in-stage] precondition gate skipped — no repoPath configured (rule built without ehp.5 wiring); proceeding with pre-ehp.5 dispatch`,
+        );
+      }
+
       // factory-core-wlsr.14: build EscalationContext per ADR-015 § 3.
       // - anomalyType: closed enum value "stuck-in-stage".
       // - epicId, ruleId: identification.
@@ -423,6 +528,44 @@ export function buildStuckInStageRule(
         });
       } finally {
         clearTimeout(timeoutHandle);
+      }
+
+      // -------------------------------------------------------------
+      // beads_web-ehp.5: route-side precondition refusal (HTTP 412).
+      //
+      // Architecture § Seam 5 (defense-in-depth): both the rule AND the
+      // action route validate preconditions. If the route refuses with
+      // 412 (route-side check caught state the rule's own check missed —
+      // race window, label mutated mid-flight, etc.), the rule must
+      // distinguish that from a genuine HTTP failure. 412 is a refusal:
+      // log a structured warn-line tagged `reconciler_dispatch_refused_
+      // at_route`, emit a `reconciler-action-refused` event with a
+      // ROUTE_REFUSED_412 marker code, and return WITHOUT throwing.
+      // Throwing would propagate to the reconciler tick handler and
+      // count as an act() failure (which dispatches a different recovery
+      // path — wrong semantics for a refusal). Mirrors ehp.4's 412 handler
+      // in marker-driven-routing.ts.
+      // -------------------------------------------------------------
+      if (res.status === 412) {
+        const text = await res.text().catch(() => "<unreadable>");
+        console.warn(
+          `[stuck-in-stage] reconciler_dispatch_refused_at_route: rule=${STUCK_IN_STAGE_RULE_NAME} epicId=${match.epicId} action=run-coherence-agent stage=${context.stage} httpStatus=412 body="${text}"`,
+        );
+        if (opts.repoPath) {
+          await appendEvent(opts.repoPath, {
+            type: RECONCILER_ACTION_REFUSED,
+            epicId: match.epicId,
+            stage: context.stage,
+            payload: {
+              ruleName: STUCK_IN_STAGE_RULE_NAME,
+              action: "run-coherence-agent",
+              refusalCode: "ROUTE_REFUSED_412",
+              failedCheck: "route-side-precondition",
+              reason: text,
+            },
+          });
+        }
+        return;
       }
 
       if (!res.ok) {

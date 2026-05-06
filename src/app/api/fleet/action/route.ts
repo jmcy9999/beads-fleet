@@ -593,6 +593,10 @@ export async function POST(request: NextRequest) {
       // rejection, short-description rejection, happy-path dispatch.
       // -------------------------------------------------------------------
       case "start-research": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "start-research", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         if (labels.includes("skip:research")) {
           if (shipType === "venture") {
             return NextResponse.json(
@@ -696,6 +700,10 @@ export async function POST(request: NextRequest) {
       // behaviour. Mixed labelling is an explicit error.
       // -------------------------------------------------------------------
       case "send-for-development": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "send-for-development", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         const {
           repoPath,
           repoName,
@@ -849,6 +857,10 @@ export async function POST(request: NextRequest) {
       // MORE RESEARCH: Research Complete -> In Research (loop)
       // -------------------------------------------------------------------
       case "more-research": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "more-research", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear ALL pipeline:* labels before adding the new
         // one so the epic never ends up with multiple simultaneously.
         const mrLabels = await getEpicLabels(epicId as string, fleetCorePath);
@@ -894,6 +906,10 @@ export async function POST(request: NextRequest) {
       // changing the request/response shape — ADR-003.)
       // -------------------------------------------------------------------
       case "run-pm": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "run-pm", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         const pmSession = await launchPmAgent({
           epicId,
           epicTitle: epicTitle as string,
@@ -911,6 +927,10 @@ export async function POST(request: NextRequest) {
       // (factory-core-lxc.5)
       // -------------------------------------------------------------------
       case "run-architect": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "run-architect", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear ALL pipeline:* labels first.
         const raLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, raLabelsNow, fleetCorePath);
@@ -949,6 +969,10 @@ export async function POST(request: NextRequest) {
       // (factory-core-lxc.5)
       // -------------------------------------------------------------------
       case "revise-spec": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "revise-spec", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -993,6 +1017,10 @@ export async function POST(request: NextRequest) {
       // (factory-core-lxc.5)
       // -------------------------------------------------------------------
       case "revise-architecture": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "revise-architecture", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -1037,6 +1065,10 @@ export async function POST(request: NextRequest) {
       // (factory-core-a7qf.10)
       // -------------------------------------------------------------------
       case "run-test-spec": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "run-test-spec", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear ALL pipeline:* labels first.
         const rtsLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, rtsLabelsNow, fleetCorePath);
@@ -1074,6 +1106,10 @@ export async function POST(request: NextRequest) {
       // (factory-core-a7qf.10)
       // -------------------------------------------------------------------
       case "revise-test-spec": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "revise-test-spec", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -1117,6 +1153,10 @@ export async function POST(request: NextRequest) {
       // ABANDON: Any stage -> Bad Ideas
       // -------------------------------------------------------------------
       case "deprioritise": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING — mutates pipeline:* + closes epic).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "deprioritise", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Stop any running agent before abandoning
         await stopAgent();
         await removeAllPipelineLabels(epicId, labels, fleetCorePath);
@@ -1135,6 +1175,10 @@ export async function POST(request: NextRequest) {
       // APPROVE SUBMISSION: Prepare for Submission -> Submitted
       // -------------------------------------------------------------------
       case "approve-submission": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "approve-submission", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -1158,6 +1202,10 @@ export async function POST(request: NextRequest) {
       // SEND BACK TO DEVELOPMENT: Prepare for Submission -> In Development
       // -------------------------------------------------------------------
       case "send-back-to-dev": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "send-back-to-dev", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Remove ALL pipeline:* labels to prevent orphans (factory-core-hnv.24)
         // Previously only removed submission-prep/deploying/qa, missing ux-polish etc.
         const sendBackLabels = await getEpicLabels(epicId as string, fleetCorePath);
@@ -1227,6 +1275,10 @@ export async function POST(request: NextRequest) {
       // MARK AS LIVE: Submitted -> Kit Management
       // -------------------------------------------------------------------
       case "mark-as-live": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "mark-as-live", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Remove submitted and submission:* labels
         const submissionLabels = labels.filter(
           (l) => l === "pipeline:submitted" || l.startsWith("submission:"),
@@ -1255,6 +1307,10 @@ export async function POST(request: NextRequest) {
       // GENERATE PLAN: Research Complete -> Planning (launch planning agent)
       // -------------------------------------------------------------------
       case "generate-plan": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "generate-plan", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Transition to plan-review from research-complete (ventures) or architecture (non-ventures)
         // (factory-core-lxc.5: architecture is the new pre-plan stage for non-ventures)
         await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "pipeline:architecture"], fleetCorePath);
@@ -1295,6 +1351,12 @@ export async function POST(request: NextRequest) {
       // APPROVE PLAN: plan:pending -> plan:approved (label change only)
       // -------------------------------------------------------------------
       case "approve-plan": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING per library —
+        // plan-label mutation gates downstream dispatch; see ehp.13's
+        // DISPATCHING_ACTIONS classification).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "approve-plan", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         await removeLabelsFromEpic(epicId, ["plan:pending"], fleetCorePath);
         await addLabelsToEpic(epicId, ["plan:approved"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
@@ -1306,6 +1368,10 @@ export async function POST(request: NextRequest) {
       // APPROVE & BUILD: Approve plan + immediately start development
       // -------------------------------------------------------------------
       case "approve-and-build": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "approve-and-build", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Approve the plan and route to test-spec (not development)
         // Test-spec writes test scenarios before the builder starts
         //
@@ -1374,6 +1440,10 @@ export async function POST(request: NextRequest) {
       // REVISE PLAN: Re-launch planning agent with feedback
       // -------------------------------------------------------------------
       case "revise-plan": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "revise-plan", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         await removeLabelsFromEpic(epicId, ["plan:approved", "plan:pending"], fleetCorePath);
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
@@ -1418,6 +1488,10 @@ export async function POST(request: NextRequest) {
       // SKIP TO PLAN: Candidates -> Planning (no research, straight to plan)
       // -------------------------------------------------------------------
       case "skip-to-plan": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "skip-to-plan", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear any existing pipeline:* labels first.
         const stpLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, stpLabelsNow, fleetCorePath);
@@ -1455,6 +1529,10 @@ export async function POST(request: NextRequest) {
       // REVISE PLAN FROM LAUNCH: Submission Prep -> Planning (with feedback)
       // -------------------------------------------------------------------
       case "revise-plan-from-launch": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "revise-plan-from-launch", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear ALL pipeline:* labels.
         const rpflLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, rpflLabelsNow, fleetCorePath);
@@ -1506,6 +1584,10 @@ export async function POST(request: NextRequest) {
       // dark mode. Files bugs or passes to next QA round.
       // -------------------------------------------------------------------
       case "run-polish": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "run-polish", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         const actualLabels = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, actualLabels, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:ux-polish", "agent:running"], fleetCorePath);
@@ -1584,6 +1666,10 @@ export async function POST(request: NextRequest) {
       // Ship types without a smoke-test skip straight to build-review.
       // -------------------------------------------------------------------
       case "run-smoke-test": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "run-smoke-test", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         const actualLabels = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, actualLabels, fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:smoke-test", "agent:running"], fleetCorePath);
@@ -1646,6 +1732,13 @@ export async function POST(request: NextRequest) {
       // actual work.
       // -------------------------------------------------------------------
       case "run-coherence-agent": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING). Note: coherence
+        // operates at the meta-layer and only adds agent:running (no
+        // pipeline:* mutation), but it DOES launch an agent — so the
+        // dispatching classification stands.
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "run-coherence-agent", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Read current epic state so the agent has a compact summary
         // alongside the raw tools it'll use to dig deeper.
         const actualLabels = await getEpicLabels(
@@ -1724,6 +1817,10 @@ export async function POST(request: NextRequest) {
       }
 
       case "send-for-qa": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "send-for-qa", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Read actual labels from the epic (not stale request body labels)
         // to correctly determine QA round (factory-core-hnv.19)
         const actualLabels = await getEpicLabels(epicId as string, fleetCorePath);
@@ -1980,6 +2077,10 @@ export async function POST(request: NextRequest) {
       // QA FIX AND RETEST: QA found bugs -> Back to dev, then auto-retest
       // -------------------------------------------------------------------
       case "qa-fix-and-retest": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "qa-fix-and-retest", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Called internally when QA finds bugs -- sends back to dev then auto-retests
         await removeLabelsFromEpic(epicId, ["pipeline:qa"], fleetCorePath);
         await addLabelsToEpic(epicId, ["pipeline:development", "agent:running"], fleetCorePath);
@@ -2014,6 +2115,10 @@ export async function POST(request: NextRequest) {
       // MARK READY TO DEPLOY: Building -> Deploying (venture only, label swap)
       // -------------------------------------------------------------------
       case "mark-ready-to-deploy": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING — label-only mutation).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "mark-ready-to-deploy", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear ALL pipeline:* labels first.
         const mrtdLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, mrtdLabelsNow, fleetCorePath);
@@ -2026,6 +2131,10 @@ export async function POST(request: NextRequest) {
       // MARK VENTURE LIVE: Deploying -> Live (venture only, label swap)
       // -------------------------------------------------------------------
       case "mark-venture-live": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING — label-only mutation).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "mark-venture-live", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear ALL pipeline:* labels first.
         const mvlLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, mvlLabelsNow, fleetCorePath);
@@ -2038,6 +2147,10 @@ export async function POST(request: NextRequest) {
       // MARK VENTURE COMPLETE: Live -> Completed (venture only, close epic)
       // -------------------------------------------------------------------
       case "mark-venture-complete": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING — pipeline mutation + closeEpic).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "mark-venture-complete", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear ALL pipeline:* labels first.
         const mvcLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, mvcLabelsNow, fleetCorePath);
@@ -2052,6 +2165,10 @@ export async function POST(request: NextRequest) {
       // (factory-core-cur.1.17)
       // -------------------------------------------------------------------
       case "resume-build": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "resume-build", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -2114,6 +2231,12 @@ export async function POST(request: NextRequest) {
       // existing epics still work.
       // -------------------------------------------------------------------
       case "start-wave": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING). Wave-bead
+        // predicates need the wave number — already coerced into
+        // parsedWaveNumber at the top of POST.
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "start-wave", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         const wave = typeof waveNumber === "number" ? waveNumber : parseInt(String(waveNumber), 10);
         if (isNaN(wave) || wave < 1) {
           return NextResponse.json({ error: "Invalid waveNumber" }, { status: 400 });
@@ -2435,6 +2558,10 @@ export async function POST(request: NextRequest) {
       // REVIEW WAVE: Launch reviewer scoped to a specific wave's changes
       // -------------------------------------------------------------------
       case "review-wave": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "review-wave", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         const rWave = typeof waveNumber === "number" ? waveNumber : parseInt(String(waveNumber), 10);
         if (isNaN(rWave) || rWave < 1) {
           return NextResponse.json({ error: "Invalid waveNumber" }, { status: 400 });
@@ -2480,6 +2607,10 @@ export async function POST(request: NextRequest) {
       // (factory-core-hnv.10)
       // -------------------------------------------------------------------
       case "send-for-review": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "send-for-review", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // zsjv.4 fix: clear ALL pipeline:* labels first.
         const sfrLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, sfrLabelsNow, fleetCorePath);
@@ -2523,6 +2654,10 @@ export async function POST(request: NextRequest) {
       // (factory-core-hnv.11)
       // -------------------------------------------------------------------
       case "send-for-polish": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "send-for-polish", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         // Check if this is a non-UI ship type that should skip polish
         const noPolishTypes = ["python-tool"];
         const isNonUI = noPolishTypes.includes(shipType) ||
@@ -2782,6 +2917,7 @@ export async function POST(request: NextRequest) {
       // STOP AGENT: Kill the currently running agent
       // -------------------------------------------------------------------
       case "stop-agent": {
+        // EXEMPT per beads_web-ehp.11: only removes agent:running + stops a running agent — no pipeline:* mutation, no agent launch.
         await removeLabelsFromEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
         const result = await stopAgent();
@@ -2795,6 +2931,7 @@ export async function POST(request: NextRequest) {
       // (factory-core-509.2)
       // -------------------------------------------------------------------
       case "human-approve": {
+        // EXEMPT per beads_web-ehp.11: only mutates a human-decision-class label (targetLabel) — no pipeline:* mutation, no agent launch.
         if (!targetLabel || typeof targetLabel !== "string") {
           return NextResponse.json(
             { error: "human-approve requires targetLabel" },
@@ -2818,6 +2955,7 @@ export async function POST(request: NextRequest) {
       // (factory-core-509.2)
       // -------------------------------------------------------------------
       case "human-dismiss": {
+        // EXEMPT per beads_web-ehp.11: only mutates a human-decision-class label OR clears the per-bead human flag — no pipeline:* mutation, no agent launch.
         const hasLabel = typeof targetLabel === "string" && targetLabel.length > 0;
         const hasBeadId = typeof targetBeadId === "string" && targetBeadId.length > 0;
         if (!hasLabel && !hasBeadId) {
@@ -2863,6 +3001,10 @@ export async function POST(request: NextRequest) {
       // is still available.
       // -------------------------------------------------------------------
       case "review-plan": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "review-plan", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         const priorLabels = [...labels];
         // zsjv.4 fix: clear ALL pipeline:* labels first. Previously only
         // plan:pending was removed, so an epic at pipeline:product-spec
@@ -2952,6 +3094,10 @@ export async function POST(request: NextRequest) {
       // the owner-click override path is still reachable.
       // -------------------------------------------------------------------
       case "revise-plan-from-review": {
+        // beads_web-ehp.11: precondition gate (DISPATCHING).
+        const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "revise-plan-from-review", waveNumber: parsedWaveNumber });
+        if (refusal) return refusal;
+
         if (typeof reviewFilePath !== "string" || reviewFilePath.trim() === "") {
           return NextResponse.json(
             { error: "revise-plan-from-review requires reviewFilePath" },
