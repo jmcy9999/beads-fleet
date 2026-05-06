@@ -500,10 +500,14 @@ describe("evaluatePreconditions (AC: verdict over PRECONDITION_TABLE)", () => {
   });
 
   test("unregistered action → ok=true with warn (Wave-2 minimal pass-through policy)", () => {
+    // ehp.13 update: 'start-research' is now in DISPATCHING_ACTIONS so it
+    // IS registered. To preserve the original intent (unregistered actions
+    // warn + pass), use a truly never-registered action name. The
+    // pass-through policy itself is unchanged.
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const result = evaluatePreconditions(
-        ctx({ action: "start-research" /* not in Wave-2 table */ }),
+        ctx({ action: "totally-fake-not-registered-action" }),
       );
       expect(result).toEqual({ ok: true });
       expect(warn).toHaveBeenCalledWith(
@@ -515,11 +519,19 @@ describe("evaluatePreconditions (AC: verdict over PRECONDITION_TABLE)", () => {
   });
 
   test("predicates are pure — two calls on the same ctx return equal results", () => {
+    // ehp.13 update: send-for-qa now has additional per-action predicates
+    // (Class A plan-file-exists, Class B qa-round-monotonic) which fire
+    // against this ctx. The PURITY assertion (r1 === r2) is the
+    // load-bearing claim of this test and remains valid regardless of
+    // verdict. Construct the ctx so the verdict is also `ok: true` to
+    // preserve the original test's complete shape: planFileExists=true,
+    // marker null (no Class E mismatch).
     const sameCtx = ctx({
       action: "send-for-qa",
       bead: snapshot({ status: "open" }),
-      marker: marker({ next_agent: "builder" }),
-      epicLabels: ["pipeline:development"],
+      marker: null,
+      epicLabels: ["pipeline:qa"],
+      planFileExists: true,
     });
     const r1 = evaluatePreconditions(sameCtx);
     const r2 = evaluatePreconditions(sameCtx);
@@ -735,3 +747,867 @@ const _typeImports: ReadonlyArray<unknown> = [
   null as unknown as PreconditionResult,
 ];
 void _typeImports;
+
+// =============================================================================
+// ehp.13 — extended tests: Class A/B/D/E predicates + extended PRECONDITION_TABLE
+//                          + buildPreconditionRefusalResponse helper
+//
+// Append-only per ehp.13 bead: the file ehp.3 created is extended; existing
+// ehp.3 tests are preserved (the two minor surgical updates above are
+// commented inline as ehp.13-required reality alignment, not rewrites).
+// =============================================================================
+
+import {
+  PRECOND_PLAN_FILE_EXISTS,
+  PRECOND_PLAN_NOT_PENDING,
+  PRECOND_WAVE_BEADS_EXIST,
+  PRECOND_WAVE_BEADS_NOT_ALL_CLOSED,
+  PRECOND_ARCHITECT_MARKER_NOT_SUCCESS,
+  PRECOND_PIPELINE_LABEL_SINGLETON,
+  PRECOND_AGENT_RUNNING_HAS_SESSION,
+  PRECOND_QA_ROUND_MONOTONIC,
+  PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED,
+  PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT,
+  PER_ACTION_PRECONDITIONS,
+  EXTENDED_PRECONDITION_TABLE,
+  DISPATCHING_ACTIONS,
+  EXEMPT_ACTIONS,
+  buildPreconditionRefusalResponse,
+  type PreconditionRefusalResponse,
+  type PreconditionRefusal,
+} from "../../src/lib/dispatch-preconditions";
+
+// ---------------------------------------------------------------------------
+// Class A — PLAN_FILE_MISSING
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_PLAN_FILE_EXISTS (Class A — PLAN_FILE_MISSING)", () => {
+  test("happy path — planFileExists=true → ok=true", () => {
+    expect(
+      PRECOND_PLAN_FILE_EXISTS.evaluate(
+        ctx({ action: "review-plan", planFileExists: true }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — planFileExists=false + applicable action → PLAN_FILE_MISSING", () => {
+    const result = PRECOND_PLAN_FILE_EXISTS.evaluate(
+      ctx({ action: "review-plan", planFileExists: false }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PLAN_FILE_MISSING");
+      expect(result.failedCheck).toBe("plan-file-exists");
+      expect(result.reason).toMatch(/plan/i);
+    }
+  });
+
+  test("appliesTo — review-plan / approve-plan / start-wave / review-wave", () => {
+    expect(PRECOND_PLAN_FILE_EXISTS.appliesTo("review-plan")).toBe(true);
+    expect(PRECOND_PLAN_FILE_EXISTS.appliesTo("approve-plan")).toBe(true);
+    expect(PRECOND_PLAN_FILE_EXISTS.appliesTo("start-wave")).toBe(true);
+    expect(PRECOND_PLAN_FILE_EXISTS.appliesTo("review-wave")).toBe(true);
+    expect(PRECOND_PLAN_FILE_EXISTS.appliesTo("send-for-qa")).toBe(true);
+  });
+
+  test("appliesTo — pre-plan stages excluded (start-research, run-pm, run-architect)", () => {
+    expect(PRECOND_PLAN_FILE_EXISTS.appliesTo("start-research")).toBe(false);
+    expect(PRECOND_PLAN_FILE_EXISTS.appliesTo("run-pm")).toBe(false);
+    expect(PRECOND_PLAN_FILE_EXISTS.appliesTo("run-architect")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class A — PLAN_PENDING
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_PLAN_NOT_PENDING (Class A — PLAN_PENDING)", () => {
+  test("happy path — no 'plan:pending' label → ok=true", () => {
+    expect(
+      PRECOND_PLAN_NOT_PENDING.evaluate(
+        ctx({ action: "review-plan", epicLabels: ["pipeline:plan-review"] }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — 'plan:pending' label set + applicable action → PLAN_PENDING", () => {
+    const result = PRECOND_PLAN_NOT_PENDING.evaluate(
+      ctx({
+        action: "approve-plan",
+        epicLabels: ["pipeline:plan-review", "plan:pending"],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PLAN_PENDING");
+      expect(result.failedCheck).toBe("plan-not-pending");
+      expect(result.reason).toMatch(/plan:pending/);
+    }
+  });
+
+  test("appliesTo — only plan-consuming actions", () => {
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("review-plan")).toBe(true);
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("approve-plan")).toBe(true);
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("approve-and-build")).toBe(true);
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("start-wave")).toBe(true);
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("review-wave")).toBe(true);
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("run-pm")).toBe(false);
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("run-architect")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class A — NO_WAVE_BEADS
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_WAVE_BEADS_EXIST (Class A — NO_WAVE_BEADS)", () => {
+  test("happy path — openWaveBeadIds non-empty → ok=true", () => {
+    expect(
+      PRECOND_WAVE_BEADS_EXIST.evaluate(
+        ctx({ action: "start-wave", openWaveBeadIds: ["bead-1", "bead-2"] }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — openWaveBeadIds empty + start-wave → NO_WAVE_BEADS", () => {
+    const result = PRECOND_WAVE_BEADS_EXIST.evaluate(
+      ctx({ action: "start-wave", openWaveBeadIds: [] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("NO_WAVE_BEADS");
+      expect(result.failedCheck).toBe("wave-beads-exist");
+    }
+  });
+
+  test("appliesTo — start-wave / review-wave / resume-build only", () => {
+    expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("start-wave")).toBe(true);
+    expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("review-wave")).toBe(true);
+    expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("resume-build")).toBe(true);
+    expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("run-architect")).toBe(false);
+    expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("send-for-qa")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class A — ALL_WAVE_BEADS_CLOSED
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_WAVE_BEADS_NOT_ALL_CLOSED (Class A — ALL_WAVE_BEADS_CLOSED)", () => {
+  test("happy path — openWaveBeadIds non-empty → ok=true", () => {
+    expect(
+      PRECOND_WAVE_BEADS_NOT_ALL_CLOSED.evaluate(
+        ctx({ action: "review-wave", openWaveBeadIds: ["bead-1"] }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — openWaveBeadIds empty + review-wave → ALL_WAVE_BEADS_CLOSED", () => {
+    const result = PRECOND_WAVE_BEADS_NOT_ALL_CLOSED.evaluate(
+      ctx({ action: "review-wave", openWaveBeadIds: [] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("ALL_WAVE_BEADS_CLOSED");
+      expect(result.failedCheck).toBe("wave-beads-not-all-closed");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class A — ARCHITECT_MARKER_SUCCESS
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_ARCHITECT_MARKER_NOT_SUCCESS (Class A — ARCHITECT_MARKER_SUCCESS)", () => {
+  test("happy path — no marker → ok=true", () => {
+    expect(
+      PRECOND_ARCHITECT_MARKER_NOT_SUCCESS.evaluate(
+        ctx({ action: "run-architect", marker: null }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("happy path — marker has stage='architect' but status='blocked' → ok=true", () => {
+    expect(
+      PRECOND_ARCHITECT_MARKER_NOT_SUCCESS.evaluate(
+        ctx({
+          action: "run-architect",
+          marker: marker({ stage: "architect", status: "blocked" }),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — marker stage=architect AND status=success → ARCHITECT_MARKER_SUCCESS", () => {
+    const result = PRECOND_ARCHITECT_MARKER_NOT_SUCCESS.evaluate(
+      ctx({
+        action: "run-architect",
+        marker: marker({ stage: "architect", status: "success" }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("ARCHITECT_MARKER_SUCCESS");
+      expect(result.failedCheck).toBe("architect-marker-not-success");
+    }
+  });
+
+  test("appliesTo — only run-architect", () => {
+    expect(PRECOND_ARCHITECT_MARKER_NOT_SUCCESS.appliesTo("run-architect")).toBe(
+      true,
+    );
+    expect(PRECOND_ARCHITECT_MARKER_NOT_SUCCESS.appliesTo("revise-architecture")).toBe(
+      false,
+    );
+    expect(PRECOND_ARCHITECT_MARKER_NOT_SUCCESS.appliesTo("run-pm")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class B — PIPELINE_LABEL_CONFLICT
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_PIPELINE_LABEL_SINGLETON (Class B — PIPELINE_LABEL_CONFLICT)", () => {
+  test("happy path — single pipeline:* label → ok=true", () => {
+    expect(
+      PRECOND_PIPELINE_LABEL_SINGLETON.evaluate(
+        ctx({ epicLabels: ["pipeline:development", "wave:1"] }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("happy path — zero pipeline:* labels → ok=true", () => {
+    expect(
+      PRECOND_PIPELINE_LABEL_SINGLETON.evaluate(ctx({ epicLabels: [] })),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — multiple pipeline:* labels → PIPELINE_LABEL_CONFLICT", () => {
+    const result = PRECOND_PIPELINE_LABEL_SINGLETON.evaluate(
+      ctx({ epicLabels: ["pipeline:development", "pipeline:qa"] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PIPELINE_LABEL_CONFLICT");
+      expect(result.failedCheck).toBe("pipeline-label-singleton");
+      expect(result.reason).toMatch(/pipeline:development/);
+      expect(result.reason).toMatch(/pipeline:qa/);
+    }
+  });
+
+  test("appliesTo — universal across every action", () => {
+    expect(PRECOND_PIPELINE_LABEL_SINGLETON.appliesTo("any-action")).toBe(true);
+    expect(PRECOND_PIPELINE_LABEL_SINGLETON.appliesTo("run-pm")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class B — AGENT_RUNNING_NO_SESSION
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_AGENT_RUNNING_HAS_SESSION (Class B — AGENT_RUNNING_NO_SESSION)", () => {
+  test("happy path — agent:running not set → ok=true", () => {
+    expect(
+      PRECOND_AGENT_RUNNING_HAS_SESSION.evaluate(
+        ctx({
+          action: "run-pm",
+          bead: snapshot({ hasAgentRunning: false }),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — agent:running set + agent-launching action → AGENT_RUNNING_NO_SESSION", () => {
+    const result = PRECOND_AGENT_RUNNING_HAS_SESSION.evaluate(
+      ctx({
+        action: "run-pm",
+        bead: snapshot({ hasAgentRunning: true, id: "test-bead-1" }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("AGENT_RUNNING_NO_SESSION");
+      expect(result.failedCheck).toBe("agent-running-has-session");
+      expect(result.reason).toMatch(/test-bead-1/);
+    }
+  });
+
+  test("null bead → ok=true (defers to A.5 BD_READ_FAILED)", () => {
+    expect(
+      PRECOND_AGENT_RUNNING_HAS_SESSION.evaluate(
+        ctx({ action: "run-pm", bead: null }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("appliesTo — agent-launching actions only; not label-mutation-only", () => {
+    expect(PRECOND_AGENT_RUNNING_HAS_SESSION.appliesTo("run-pm")).toBe(true);
+    expect(PRECOND_AGENT_RUNNING_HAS_SESSION.appliesTo("start-wave")).toBe(true);
+    expect(PRECOND_AGENT_RUNNING_HAS_SESSION.appliesTo("send-for-qa")).toBe(true);
+    expect(PRECOND_AGENT_RUNNING_HAS_SESSION.appliesTo("approve-plan")).toBe(false);
+    expect(PRECOND_AGENT_RUNNING_HAS_SESSION.appliesTo("mark-as-live")).toBe(false);
+    expect(PRECOND_AGENT_RUNNING_HAS_SESSION.appliesTo("deprioritise")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class B — QA_ROUND_OUT_OF_ORDER
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_QA_ROUND_MONOTONIC (Class B — QA_ROUND_OUT_OF_ORDER)", () => {
+  test("happy path — no QA round in progress → ok=true", () => {
+    expect(
+      PRECOND_QA_ROUND_MONOTONIC.evaluate(
+        ctx({
+          action: "send-for-qa",
+          bead: snapshot({ currentQaRound: null }),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("happy path — QA round-N marker has status=success → ok=true", () => {
+    expect(
+      PRECOND_QA_ROUND_MONOTONIC.evaluate(
+        ctx({
+          action: "qa-fix-and-retest",
+          bead: snapshot({ currentQaRound: 2 }),
+          marker: marker({
+            stage: "qa",
+            status: "success",
+            bead_id: "epic-x-qa-round-2",
+          }),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — QA marker stage=qa with status=blocked → QA_ROUND_OUT_OF_ORDER", () => {
+    const result = PRECOND_QA_ROUND_MONOTONIC.evaluate(
+      ctx({
+        action: "qa-fix-and-retest",
+        bead: snapshot({ currentQaRound: 1 }),
+        marker: marker({ stage: "qa", status: "blocked" }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("QA_ROUND_OUT_OF_ORDER");
+      expect(result.failedCheck).toBe("qa-round-monotonic");
+    }
+  });
+
+  test("falls open — non-QA marker → ok=true (route inline check is load-bearing)", () => {
+    expect(
+      PRECOND_QA_ROUND_MONOTONIC.evaluate(
+        ctx({
+          action: "send-for-qa",
+          bead: snapshot({ currentQaRound: 1 }),
+          marker: marker({ stage: "architect", status: "success" }),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("appliesTo — send-for-qa / qa-fix-and-retest only", () => {
+    expect(PRECOND_QA_ROUND_MONOTONIC.appliesTo("send-for-qa")).toBe(true);
+    expect(PRECOND_QA_ROUND_MONOTONIC.appliesTo("qa-fix-and-retest")).toBe(true);
+    expect(PRECOND_QA_ROUND_MONOTONIC.appliesTo("start-wave")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class D — PLAN_INSTABILITY (fail-OPEN posture)
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED (Class D — PLAN_INSTABILITY, fail-OPEN)", () => {
+  test("happy path — plan mtime older than stageEnteredAt → ok=true", () => {
+    expect(
+      PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.evaluate(
+        ctx({
+          action: "review-plan",
+          stageEnteredAt: "2026-05-06T12:00:00Z",
+          planFileMtime: Date.parse("2026-05-06T11:00:00Z"),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — plan mtime newer than stageEnteredAt → PLAN_INSTABILITY", () => {
+    const result = PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.evaluate(
+      ctx({
+        action: "review-plan",
+        stageEnteredAt: "2026-05-06T10:00:00Z",
+        planFileMtime: Date.parse("2026-05-06T12:00:00Z"),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PLAN_INSTABILITY");
+      expect(result.failedCheck).toBe("plan-not-modified-since-stage-entered");
+    }
+  });
+
+  test("FAIL-OPEN — stageEnteredAt=null → ok=true (event-log read failed/missing)", () => {
+    expect(
+      PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.evaluate(
+        ctx({
+          action: "review-plan",
+          stageEnteredAt: null,
+          planFileMtime: Date.parse("2026-05-06T12:00:00Z"),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("FAIL-OPEN — planFileMtime undefined → ok=true (Class A handles missing)", () => {
+    expect(
+      PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.evaluate(
+        ctx({
+          action: "review-plan",
+          stageEnteredAt: "2026-05-06T12:00:00Z",
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("FAIL-OPEN — planFileMtime explicit null → ok=true", () => {
+    expect(
+      PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.evaluate(
+        ctx({
+          action: "review-plan",
+          stageEnteredAt: "2026-05-06T12:00:00Z",
+          planFileMtime: null,
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("FAIL-OPEN — malformed stageEnteredAt timestamp → ok=true", () => {
+    expect(
+      PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.evaluate(
+        ctx({
+          action: "review-plan",
+          stageEnteredAt: "not-a-date",
+          planFileMtime: 0,
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("appliesTo — plan-stability-sensitive actions only", () => {
+    expect(
+      PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.appliesTo("review-plan"),
+    ).toBe(true);
+    expect(
+      PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.appliesTo("review-wave"),
+    ).toBe(true);
+    expect(
+      PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED.appliesTo("run-pm"),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class E — ACTION_NEXT_AGENT_MISMATCH
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT (Class E — ACTION_NEXT_AGENT_MISMATCH)", () => {
+  test("happy path — no marker → ok=true", () => {
+    expect(
+      PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT.evaluate(
+        ctx({ action: "run-architect", marker: null }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("happy path — marker next_agent matches action's canonical agent → ok=true", () => {
+    expect(
+      PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT.evaluate(
+        ctx({
+          action: "run-architect",
+          marker: marker({
+            next_agent: "architect",
+            status: "needs-decision",
+          }),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — marker next_agent='builder' but action='run-pm' → ACTION_NEXT_AGENT_MISMATCH", () => {
+    const result = PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT.evaluate(
+      ctx({
+        action: "run-pm",
+        marker: marker({
+          next_agent: "builder",
+          status: "needs-decision",
+        }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("ACTION_NEXT_AGENT_MISMATCH");
+      expect(result.failedCheck).toBe("action-matches-marker-next-agent");
+      expect(result.reason).toMatch(/builder/);
+      expect(result.reason).toMatch(/run-pm/);
+    }
+  });
+
+  test("happy path — marker status=success with no next_agent → ok=true (override=false)", () => {
+    expect(
+      PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT.evaluate(
+        ctx({
+          action: "run-pm",
+          marker: marker({ status: "success" }),
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("appliesTo — universal", () => {
+    expect(
+      PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT.appliesTo("any-action"),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EXTENDED PRECONDITION_TABLE coverage tests
+// ---------------------------------------------------------------------------
+
+describe("EXTENDED_PRECONDITION_TABLE coverage (ehp.13 — full 34 dispatching actions)", () => {
+  test("registers exactly 34 dispatching actions (matches DISPATCHING_ACTIONS)", () => {
+    expect(EXTENDED_PRECONDITION_TABLE.size).toBe(DISPATCHING_ACTIONS.length);
+    expect(EXTENDED_PRECONDITION_TABLE.size).toBe(34);
+    for (const action of DISPATCHING_ACTIONS) {
+      expect(EXTENDED_PRECONDITION_TABLE.has(action)).toBe(true);
+    }
+  });
+
+  test("EVERY dispatching action has all 4 universal predicates registered", () => {
+    const universalNames = [
+      "bd-status-not-deferred",
+      "bd-status-not-closed",
+      "operator-decision-not-pending",
+      "review-needs-human-not-set",
+    ];
+    for (const action of DISPATCHING_ACTIONS) {
+      const preconditions = EXTENDED_PRECONDITION_TABLE.get(action) ?? [];
+      const names = preconditions.map((p) => p.name);
+      for (const universal of universalNames) {
+        expect(names).toContain(universal);
+      }
+    }
+  });
+
+  test("EXEMPT actions are NOT in EXTENDED_PRECONDITION_TABLE", () => {
+    for (const action of EXEMPT_ACTIONS) {
+      expect(EXTENDED_PRECONDITION_TABLE.has(action)).toBe(false);
+    }
+  });
+
+  test("review-wave registers BOTH NO_WAVE_BEADS and ALL_WAVE_BEADS_CLOSED predicates (per ehp.7)", () => {
+    const preconditions = EXTENDED_PRECONDITION_TABLE.get("review-wave") ?? [];
+    const codes = preconditions.map((p) => p.refusalCode);
+    expect(codes).toContain("NO_WAVE_BEADS");
+    expect(codes).toContain("ALL_WAVE_BEADS_CLOSED");
+  });
+
+  test("start-wave includes plan-file-exists + wave-beads-exist predicates", () => {
+    const preconditions = EXTENDED_PRECONDITION_TABLE.get("start-wave") ?? [];
+    const names = preconditions.map((p) => p.name);
+    expect(names).toContain("plan-file-exists");
+    expect(names).toContain("wave-beads-exist");
+  });
+
+  test("run-architect includes architect-marker-not-success predicate", () => {
+    const preconditions = EXTENDED_PRECONDITION_TABLE.get("run-architect") ?? [];
+    const codes = preconditions.map((p) => p.refusalCode);
+    expect(codes).toContain("ARCHITECT_MARKER_SUCCESS");
+  });
+
+  test("send-for-qa includes qa-round-monotonic predicate", () => {
+    const preconditions = EXTENDED_PRECONDITION_TABLE.get("send-for-qa") ?? [];
+    const codes = preconditions.map((p) => p.refusalCode);
+    expect(codes).toContain("QA_ROUND_OUT_OF_ORDER");
+  });
+
+  test("review-plan includes plan-not-pending + plan-instability predicates", () => {
+    const preconditions = EXTENDED_PRECONDITION_TABLE.get("review-plan") ?? [];
+    const codes = preconditions.map((p) => p.refusalCode);
+    expect(codes).toContain("PLAN_PENDING");
+    expect(codes).toContain("PLAN_INSTABILITY");
+  });
+
+  test("PER_ACTION_PRECONDITIONS exposes all 10 ehp.13 predicates", () => {
+    expect(PER_ACTION_PRECONDITIONS).toHaveLength(10);
+    const codes = PER_ACTION_PRECONDITIONS.map((p) => p.refusalCode).sort();
+    expect(codes).toEqual(
+      [
+        "PLAN_FILE_MISSING",
+        "PLAN_PENDING",
+        "NO_WAVE_BEADS",
+        "ALL_WAVE_BEADS_CLOSED",
+        "ARCHITECT_MARKER_SUCCESS",
+        "PIPELINE_LABEL_CONFLICT",
+        "AGENT_RUNNING_NO_SESSION",
+        "QA_ROUND_OUT_OF_ORDER",
+        "PLAN_INSTABILITY",
+        "ACTION_NEXT_AGENT_MISMATCH",
+      ].sort(),
+    );
+  });
+
+  test("evaluatePreconditions on a dispatching action runs the extended table", () => {
+    // start-wave with no plan file → PLAN_FILE_MISSING
+    const result = evaluatePreconditions(
+      ctx({
+        action: "start-wave",
+        bead: snapshot({ status: "open" }),
+        planFileExists: false,
+        openWaveBeadIds: ["bead-1"],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PLAN_FILE_MISSING");
+    }
+  });
+
+  test("EXEMPT actions warn + pass through evaluatePreconditions", () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const action of EXEMPT_ACTIONS) {
+        const result = evaluatePreconditions(ctx({ action }));
+        expect(result).toEqual({ ok: true });
+      }
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPreconditionRefusalResponse helper (HTTP 412 body shape)
+// ---------------------------------------------------------------------------
+
+describe("buildPreconditionRefusalResponse (ehp.13 — HTTP 412 body helper)", () => {
+  test("projects refusal + bead snapshot into HTTP 412 body shape", () => {
+    const refusal: PreconditionRefusal = {
+      ok: false,
+      refusalCode: "BD_STATUS_DEFERRED",
+      failedCheck: "bd-status-not-deferred",
+      reason: "bead deferred",
+    };
+    const bead = snapshot({
+      id: "bead-x",
+      status: "deferred",
+      pipelineStage: "development",
+      currentWave: 2,
+      currentQaRound: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    });
+    const response = buildPreconditionRefusalResponse(refusal, bead);
+    const expected: PreconditionRefusalResponse = {
+      refused: true,
+      refusalCode: "BD_STATUS_DEFERRED",
+      failedCheck: "bd-status-not-deferred",
+      reason: "bead deferred",
+      observedState: {
+        beadId: "bead-x",
+        status: "deferred",
+        pipelineStage: "development",
+        currentWave: 2,
+        currentQaRound: null,
+        hasAgentRunning: false,
+        hasReviewNeedsHuman: false,
+      },
+    };
+    expect(response).toEqual(expected);
+  });
+
+  test("null bead → safe sentinel observedState (all unknowns)", () => {
+    const refusal: PreconditionRefusal = {
+      ok: false,
+      refusalCode: "BD_READ_FAILED",
+      failedCheck: "bd-read-succeeded",
+      reason: "bd unreachable",
+    };
+    const response = buildPreconditionRefusalResponse(refusal, null);
+    expect(response.observedState).toEqual({
+      beadId: null,
+      status: null,
+      pipelineStage: null,
+      currentWave: null,
+      currentQaRound: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    });
+    expect(response.refused).toBe(true);
+    expect(response.refusalCode).toBe("BD_READ_FAILED");
+  });
+
+  test("response.refused is the literal `true` discriminator (type-narrowing)", () => {
+    const refusal: PreconditionRefusal = {
+      ok: false,
+      refusalCode: "PLAN_FILE_MISSING",
+      failedCheck: "plan-file-exists",
+      reason: "no plan",
+    };
+    const response = buildPreconditionRefusalResponse(refusal, null);
+    // TypeScript narrows on `response.refused === true` (literal type).
+    expect(response.refused).toBe(true);
+    // @ts-expect-error — `refused` is `true` literal, not arbitrary boolean
+    const _bad: false = response.refused;
+    void _bad;
+  });
+
+  test("preserves all RefusalCode union values (regression guard)", () => {
+    const codes: ReadonlyArray<RefusalCode> = [
+      "PLAN_FILE_MISSING",
+      "PLAN_PENDING",
+      "NO_WAVE_BEADS",
+      "ALL_WAVE_BEADS_CLOSED",
+      "ARCHITECT_MARKER_SUCCESS",
+      "BD_STATUS_DEFERRED",
+      "BD_STATUS_CLOSED",
+      "BD_READ_FAILED",
+      "PIPELINE_LABEL_CONFLICT",
+      "AGENT_RUNNING_NO_SESSION",
+      "QA_ROUND_OUT_OF_ORDER",
+      "OPERATOR_DECISION_PENDING",
+      "REVIEW_NEEDS_HUMAN",
+      "PLAN_INSTABILITY",
+      "ACTION_NEXT_AGENT_MISMATCH",
+    ];
+    for (const code of codes) {
+      const refusal: PreconditionRefusal = {
+        ok: false,
+        refusalCode: code,
+        failedCheck: `check-${code}`,
+        reason: `reason-${code}`,
+      };
+      const response = buildPreconditionRefusalResponse(refusal, null);
+      expect(response.refusalCode).toBe(code);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end evaluatePreconditions across the extended table — refusal scenarios
+// ---------------------------------------------------------------------------
+
+describe("evaluatePreconditions (ehp.13 — extended table refusal scenarios)", () => {
+  test("review-wave with no wave beads → NO_WAVE_BEADS or ALL_WAVE_BEADS_CLOSED", () => {
+    const result = evaluatePreconditions(
+      ctx({
+        action: "review-wave",
+        bead: snapshot({ currentWave: 2 }),
+        openWaveBeadIds: [],
+        planFileExists: true,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Per ehp.7 + ehp.12 risk flag: assert refusal code is in canonical
+      // enum, not a specific code (predicate ordering may evolve).
+      expect(["NO_WAVE_BEADS", "ALL_WAVE_BEADS_CLOSED"]).toContain(
+        result.refusalCode,
+      );
+    }
+  });
+
+  test("approve-plan with plan:pending label → PLAN_PENDING", () => {
+    const result = evaluatePreconditions(
+      ctx({
+        action: "approve-plan",
+        bead: snapshot({ status: "open" }),
+        epicLabels: ["pipeline:plan-review", "plan:pending"],
+        planFileExists: true,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusalCode).toBe("PLAN_PENDING");
+  });
+
+  test("run-architect with prior success marker → ARCHITECT_MARKER_SUCCESS", () => {
+    const result = evaluatePreconditions(
+      ctx({
+        action: "run-architect",
+        bead: snapshot({ status: "open" }),
+        marker: marker({ stage: "architect", status: "success" }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusalCode).toBe("ARCHITECT_MARKER_SUCCESS");
+  });
+
+  test("run-pm with bead.hasAgentRunning=true → AGENT_RUNNING_NO_SESSION", () => {
+    const result = evaluatePreconditions(
+      ctx({
+        action: "run-pm",
+        bead: snapshot({ hasAgentRunning: true }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("AGENT_RUNNING_NO_SESSION");
+    }
+  });
+
+  test("any action with conflicting pipeline labels → PIPELINE_LABEL_CONFLICT", () => {
+    const result = evaluatePreconditions(
+      ctx({
+        action: "deprioritise",
+        epicLabels: ["pipeline:development", "pipeline:qa"],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PIPELINE_LABEL_CONFLICT");
+    }
+  });
+
+  test("review-plan with PLAN_INSTABILITY: plan mtime > stageEnteredAt → PLAN_INSTABILITY", () => {
+    const result = evaluatePreconditions(
+      ctx({
+        action: "review-plan",
+        bead: snapshot({ status: "open" }),
+        epicLabels: ["pipeline:plan-review"],
+        planFileExists: true,
+        stageEnteredAt: "2026-05-06T10:00:00Z",
+        planFileMtime: Date.parse("2026-05-06T12:00:00Z"),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusalCode).toBe("PLAN_INSTABILITY");
+  });
+
+  test("Class E — action mismatches marker.next_agent → ACTION_NEXT_AGENT_MISMATCH", () => {
+    // Marker says next_agent=architect; we dispatch run-pm → mismatch.
+    const result = evaluatePreconditions(
+      ctx({
+        action: "run-pm",
+        bead: snapshot({ status: "open" }),
+        marker: marker({ next_agent: "architect", status: "needs-decision" }),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("ACTION_NEXT_AGENT_MISMATCH");
+    }
+  });
+
+  test("happy path — clean ctx for run-pm → ok=true", () => {
+    const result = evaluatePreconditions(
+      ctx({
+        action: "run-pm",
+        bead: snapshot({ status: "open" }),
+      }),
+    );
+    expect(result).toEqual({ ok: true });
+  });
+});

@@ -53,11 +53,33 @@
 //     functions of the snapshot; I/O lives in `buildDispatchContext` only.
 // =============================================================================
 
+import { promises as fs } from "fs";
+import path from "path";
 import type { BeadSnapshot } from "./bead-status-reader";
 import { readBeadStatus } from "./bead-status-reader";
 import type { MarkerData } from "./marker-reader";
 import { readMarker } from "./marker-reader";
 import { getEpicLabels } from "./pipeline-labels";
+// ehp.13: Class D + E predicates and full buildDispatchContext.
+// listOpenWaveBeads is the published wave-bead reader (agent-launcher.ts ~1437)
+// that ehp.3's "do not duplicate readers" risk flag explicitly cites.
+import { listOpenWaveBeads } from "./agent-launcher";
+// ehp.13 Class E: reuse marker-routing's interpretMarkerForRouting + agent-
+// action-map's getActionForAgent rather than re-deriving the routing logic.
+// Both are existing pure functions; predicate composes them at evaluation time.
+import {
+  interpretMarkerForRouting,
+  type AgentType,
+  type EpicStateSnapshot,
+} from "./marker-routing";
+import { getActionForAgent } from "./agent-action-map";
+// ehp.13 Class D: stage-entered-at is derived from the event-log. We use the
+// EXISTING readEvents export (event-log.ts) to find the most-recent
+// stage-dispatched event for the (epicId, stage) pair. See § Surprises in
+// the marker for the architect-spec → codebase divergence: the architecture
+// memo names "pipeline-label-set" but the actual event-log emits
+// "stage-dispatched" (verified empirically — see marker for grep evidence).
+import { readEvents } from "./event-log";
 
 // ---------------------------------------------------------------------------
 // RefusalCode — exhaustive 12-code union (per architecture § Refusal Codes)
@@ -180,6 +202,19 @@ export interface DispatchContext {
    * predicate references this field.
    */
   readonly stageEnteredAt: string | null;
+  /**
+   * ehp.13 ADDITIVE — optional plan-file mtime in epoch milliseconds.
+   * Populated by `buildDispatchContext` via `fs.stat(<plan>).mtimeMs` when
+   * `planFileExists === true`; left undefined (NOT null) when plan file
+   * absent OR fs.stat fails.
+   *
+   * Class D's `plan-not-modified-since-stage-entered` predicate compares
+   * this against `stageEnteredAt`. Optional (`?:`) so ehp.3's helpers
+   * and any caller that constructs DispatchContext literals without
+   * mtime knowledge continue to type-check (additive surface; does not
+   * narrow ehp.3's contract).
+   */
+  readonly planFileMtime?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +448,564 @@ export const UNIVERSAL_PRECONDITIONS: readonly Precondition[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// ehp.13 — Per-action predicates (Class A: 5; Class B: 3; Class D: 1; Class E: 1)
+//
+// Each predicate's `appliesTo(action)` declares the action set it gates.
+// The PRECONDITION_TABLE registration (further down) selects the union of
+// universal predicates (always) plus the per-action predicates whose
+// appliesTo returns true for that action.
+//
+// Action-set helpers — kept here at the predicate site so each predicate's
+// applicability is co-located with its definition (audit-friendly per
+// ADR-004 self-documentation).
+// ---------------------------------------------------------------------------
+
+/**
+ * Actions that REQUIRE a plan file at `.beads/plans/<epicId>.md`.
+ *
+ * Source: per-action handler audits in route.ts (review-plan reads the plan;
+ * approve-plan / approve-and-build promote it; review-wave compares plan
+ * against built work; revise-plan-* expects the plan to exist for diffing;
+ * start-wave consumes the plan to derive Files manifests).
+ *
+ * NOT included: research / spec / architecture / pre-plan stages, which
+ * legitimately predate the plan file.
+ */
+const ACTIONS_REQUIRING_PLAN_FILE: ReadonlySet<string> = new Set([
+  "review-plan",
+  "approve-plan",
+  "approve-and-build",
+  "revise-plan",
+  "revise-plan-from-launch",
+  "revise-plan-from-review",
+  "start-wave",
+  "review-wave",
+  "send-for-qa",
+  "qa-fix-and-retest",
+  "send-for-polish",
+  "run-polish",
+  "run-smoke-test",
+]);
+
+/**
+ * Actions for which `plan:pending` is a refusal: the plan is not yet
+ * finalised so any action that consumes the finalised plan must wait.
+ */
+const ACTIONS_REFUSED_BY_PLAN_PENDING: ReadonlySet<string> = new Set([
+  "review-plan",
+  "approve-plan",
+  "approve-and-build",
+  "start-wave",
+  "review-wave",
+]);
+
+/**
+ * Actions that operate on a wave-N bead set. Both `wave-beads-exist`
+ * (NO_WAVE_BEADS) and `wave-beads-not-all-closed` (ALL_WAVE_BEADS_CLOSED)
+ * apply here (per ehp.7's explicit "register both" requirement).
+ */
+const ACTIONS_REQUIRING_WAVE_BEADS: ReadonlySet<string> = new Set([
+  "start-wave",
+  "review-wave",
+  "resume-build",
+]);
+
+/**
+ * Actions that, if a prior architect marker reports status=success, MUST NOT
+ * fire (re-architecting on top of a successful architecture is the
+ * "premature re-dispatch" failure mode that Class A catches).
+ */
+const ACTIONS_REFUSED_BY_ARCHITECT_SUCCESS: ReadonlySet<string> = new Set([
+  "run-architect",
+]);
+
+/**
+ * Actions whose handler launches an agent (vs. only mutating labels).
+ * `agent-running-has-session` (Class B) refuses these when the bead already
+ * has `agent:running` — preventing double-launch.
+ */
+const ACTIONS_LAUNCHING_AGENT: ReadonlySet<string> = new Set([
+  "start-research",
+  "more-research",
+  "run-pm",
+  "run-architect",
+  "generate-plan",
+  "review-plan",
+  "revise-plan",
+  "revise-plan-from-launch",
+  "revise-plan-from-review",
+  "revise-spec",
+  "revise-architecture",
+  "run-test-spec",
+  "revise-test-spec",
+  "start-wave",
+  "review-wave",
+  "resume-build",
+  "send-for-qa",
+  "qa-fix-and-retest",
+  "send-for-polish",
+  "run-polish",
+  "run-smoke-test",
+  "run-coherence-agent",
+  "send-for-review",
+  "send-for-development",
+]);
+
+/**
+ * Actions that progress QA rounds. `qa-round-monotonic` (Class B) gates
+ * round-N+1 dispatch on round-N marker existence + status=success.
+ */
+const ACTIONS_QA_ROUND_PROGRESSING: ReadonlySet<string> = new Set([
+  "send-for-qa",
+  "qa-fix-and-retest",
+]);
+
+/**
+ * Actions sensitive to plan-file modification after the current pipeline
+ * stage was entered (Class D: PLAN_INSTABILITY).
+ */
+const ACTIONS_PLAN_STABILITY_SENSITIVE: ReadonlySet<string> = new Set([
+  "review-plan",
+  "approve-plan",
+  "approve-and-build",
+  "review-wave",
+  "start-wave",
+]);
+
+// ---------------------------------------------------------------------------
+// Class A predicates (ehp.13 — 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * A — plan-file-exists → PLAN_FILE_MISSING
+ *
+ * Refuses dispatch when the plan file at `.beads/plans/<epicId>.md` is
+ * absent and the action requires it. `planFileExists` is populated by
+ * `buildDispatchContext` via `fs.access`. Per Seam 3 (architecture) the
+ * fail-closed posture: any fs error other than ENOENT becomes
+ * `planFileExists=false` (treated as missing → PLAN_FILE_MISSING).
+ */
+export const PRECOND_PLAN_FILE_EXISTS: Precondition = {
+  name: "plan-file-exists",
+  refusalCode: "PLAN_FILE_MISSING",
+  appliesTo(action) {
+    return ACTIONS_REQUIRING_PLAN_FILE.has(action);
+  },
+  evaluate(ctx) {
+    if (!ctx.planFileExists) {
+      return {
+        ok: false,
+        refusalCode: "PLAN_FILE_MISSING",
+        failedCheck: "plan-file-exists",
+        reason: `no plan file at .beads/plans/<epicId>.md (action=${ctx.action} requires the plan file to exist)`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
+ * A — plan-not-pending → PLAN_PENDING
+ *
+ * Refuses when the epic still carries the `plan:pending` label and the
+ * action is one that consumes a finalised plan (review-plan, approve-plan,
+ * approve-and-build, start-wave, review-wave).
+ *
+ * The label spelling `plan:pending` mirrors what the planner sets when
+ * the plan is drafted but awaiting review (verified against existing
+ * pipeline-labels usage in factory-core's standing orders).
+ */
+export const PRECOND_PLAN_NOT_PENDING: Precondition = {
+  name: "plan-not-pending",
+  refusalCode: "PLAN_PENDING",
+  appliesTo(action) {
+    return ACTIONS_REFUSED_BY_PLAN_PENDING.has(action);
+  },
+  evaluate(ctx) {
+    if (ctx.epicLabels.includes("plan:pending")) {
+      return {
+        ok: false,
+        refusalCode: "PLAN_PENDING",
+        failedCheck: "plan-not-pending",
+        reason: `epic carries 'plan:pending' label — plan not finalised; action=${ctx.action} requires the finalised plan`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
+ * A — wave-beads-exist → NO_WAVE_BEADS
+ *
+ * Refuses wave-related dispatch when no open wave-N beads exist. The
+ * predicate fires when `openWaveBeadIds.length === 0`. v1 limitation: this
+ * predicate cannot distinguish "no wave-N beads at all" (NO_WAVE_BEADS)
+ * from "wave-N beads exist but all are closed" (ALL_WAVE_BEADS_CLOSED) —
+ * both cases produce an empty `openWaveBeadIds` from the existing
+ * `listOpenWaveBeads` reader. The `wave-beads-not-all-closed` sibling
+ * predicate (registered alongside) provides defensive double-coverage; the
+ * first predicate to fire wins. Both refusal codes are valid per the
+ * canonical RefusalCode enum so downstream tests should accept either
+ * (per beads_web-ehp.12 risk flag #3 — assert refusalCode ∈ enum, not
+ * specific code).
+ */
+export const PRECOND_WAVE_BEADS_EXIST: Precondition = {
+  name: "wave-beads-exist",
+  refusalCode: "NO_WAVE_BEADS",
+  appliesTo(action) {
+    return ACTIONS_REQUIRING_WAVE_BEADS.has(action);
+  },
+  evaluate(ctx) {
+    if (ctx.openWaveBeadIds.length === 0) {
+      return {
+        ok: false,
+        refusalCode: "NO_WAVE_BEADS",
+        failedCheck: "wave-beads-exist",
+        reason: `no open wave beads found for action=${ctx.action} (openWaveBeadIds is empty — either no wave-N beads exist or all are closed)`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
+ * A — wave-beads-not-all-closed → ALL_WAVE_BEADS_CLOSED
+ *
+ * Sibling to `wave-beads-exist`. Same fire condition (openWaveBeadIds
+ * empty) — registered for defensive double-coverage at review-wave
+ * (per ehp.7 prompt: "the library's PRECONDITION_TABLE for review-wave
+ * should register both"). The first predicate to fire wins; v1 cannot
+ * disambiguate the two states from `openWaveBeadIds` alone without an
+ * additional bd query.
+ */
+export const PRECOND_WAVE_BEADS_NOT_ALL_CLOSED: Precondition = {
+  name: "wave-beads-not-all-closed",
+  refusalCode: "ALL_WAVE_BEADS_CLOSED",
+  appliesTo(action) {
+    return ACTIONS_REQUIRING_WAVE_BEADS.has(action);
+  },
+  evaluate(ctx) {
+    if (ctx.openWaveBeadIds.length === 0) {
+      return {
+        ok: false,
+        refusalCode: "ALL_WAVE_BEADS_CLOSED",
+        failedCheck: "wave-beads-not-all-closed",
+        reason: `no open wave beads for action=${ctx.action} — likely all wave beads are already closed (review/redispatch redundant)`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
+ * A — architect-marker-not-success → ARCHITECT_MARKER_SUCCESS
+ *
+ * Refuses re-dispatch of run-architect when the prior architect marker
+ * reports status=success (reading would re-do work that's already done).
+ * Marker filename derivation matches `buildDispatchContext`'s convention
+ * (per-bead marker `<epicId>.json`) — the routing-aware schema's stage
+ * field carries the agent name; we check stage==='architect' and
+ * status==='success'.
+ */
+export const PRECOND_ARCHITECT_MARKER_NOT_SUCCESS: Precondition = {
+  name: "architect-marker-not-success",
+  refusalCode: "ARCHITECT_MARKER_SUCCESS",
+  appliesTo(action) {
+    return ACTIONS_REFUSED_BY_ARCHITECT_SUCCESS.has(action);
+  },
+  evaluate(ctx) {
+    const m = ctx.marker;
+    if (!m) return { ok: true };
+    if (m.stage === "architect" && m.status === "success") {
+      return {
+        ok: false,
+        refusalCode: "ARCHITECT_MARKER_SUCCESS",
+        failedCheck: "architect-marker-not-success",
+        reason: `prior architect marker has status=success — re-dispatching run-architect would re-do completed work`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Class B predicates (ehp.13 — 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * B — pipeline-label-singleton → PIPELINE_LABEL_CONFLICT
+ *
+ * Refuses when the epic already carries multiple `pipeline:*` labels. This
+ * is a state-already-conflicted check: the next mutation would not be
+ * able to cleanly add a new pipeline label without first removing the
+ * conflicting set, and the route handler's existing
+ * `removeAllPipelineLabels` + `addLabelsToEpic` pattern is not atomic.
+ * Refusing here forces the operator to clean up the existing conflict
+ * before further dispatch.
+ *
+ * applicability: every action that mutates pipeline labels (most
+ * dispatching actions). The check is cheap (single label scan).
+ */
+export const PRECOND_PIPELINE_LABEL_SINGLETON: Precondition = {
+  name: "pipeline-label-singleton",
+  refusalCode: "PIPELINE_LABEL_CONFLICT",
+  appliesTo(_action) {
+    return true; // applies to every dispatching action — pipeline label
+    //              singleton is an epic-level invariant, not action-specific.
+  },
+  evaluate(ctx) {
+    const pipelineLabels = ctx.epicLabels.filter((l) =>
+      l.startsWith("pipeline:"),
+    );
+    if (pipelineLabels.length > 1) {
+      return {
+        ok: false,
+        refusalCode: "PIPELINE_LABEL_CONFLICT",
+        failedCheck: "pipeline-label-singleton",
+        reason: `epic has multiple pipeline:* labels [${pipelineLabels.join(", ")}] — cannot dispatch without first resolving the label conflict`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
+ * B — agent-running-has-session → AGENT_RUNNING_NO_SESSION
+ *
+ * Refuses agent-launching actions when the bead already has the
+ * `agent:running` label set. The label semantically means "an agent is
+ * already claimed for this bead"; launching another would race.
+ *
+ * v1 simplification: we cannot synchronously verify a tmux session
+ * exists from the precondition layer (no published reader for tmux state
+ * in the predicate-pure-sync contract). The `bead.hasAgentRunning` flag
+ * IS the proxy — if the label is set, refuse the launch. This catches
+ * the actual production failure mode (orphaned `agent:running` label
+ * after a tmux session crash); operator clears the label, dispatch
+ * resumes.
+ *
+ * Naming note: the refusal code is `AGENT_RUNNING_NO_SESSION` (architecture
+ * spec) which conflates "label set + no session" with "label set". v1 fires
+ * on label-set; the "no session" half is the post-condition the operator
+ * verifies during cleanup. Documented as a v1 limitation.
+ */
+export const PRECOND_AGENT_RUNNING_HAS_SESSION: Precondition = {
+  name: "agent-running-has-session",
+  refusalCode: "AGENT_RUNNING_NO_SESSION",
+  appliesTo(action) {
+    return ACTIONS_LAUNCHING_AGENT.has(action);
+  },
+  evaluate(ctx) {
+    if (ctx.bead === null) {
+      // Defer to A.5 BD_READ_FAILED — universal predicates run first.
+      return { ok: true };
+    }
+    if (ctx.bead.hasAgentRunning) {
+      return {
+        ok: false,
+        refusalCode: "AGENT_RUNNING_NO_SESSION",
+        failedCheck: "agent-running-has-session",
+        reason: `bead ${ctx.bead.id} has 'agent:running' label set — launching another agent for action=${ctx.action} would race`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
+ * B — qa-round-monotonic → QA_ROUND_OUT_OF_ORDER
+ *
+ * For QA-progressing actions, refuse round-(N+1) dispatch if the
+ * round-N marker is missing or its status is not 'success'. The current
+ * round N is sourced from `bead.currentQaRound` (derived from
+ * `qa:round-N` labels at snapshot time).
+ *
+ * v1 limitation: the predicate only inspects ctx.marker (the per-bead
+ * marker). The QA round marker filename pattern is
+ * `<epicId>-qa-round-<N>.json` (verified against route.ts:1716/2512 and
+ * repeated-qa-round.ts:17). buildDispatchContext does NOT today read
+ * the QA-round-specific marker (the architecture's Seam 2 calls this
+ * "action-classifying for marker reads"); the predicate falls open
+ * (returns ok=true) when ctx.marker doesn't carry qa-round metadata.
+ *
+ * Concrete v1 behaviour: refuse only when ctx.bead.currentQaRound > 0
+ * AND ctx.marker is non-null AND its `stage`/`bead_id` indicate a
+ * QA-round marker AND its status !== 'success'. Otherwise pass. This
+ * is conservative: false negatives possible (real QA-round marker
+ * absent), but no false positives. The action route's existing inline
+ * QA-round check at route.ts:1665+ remains the load-bearing gate;
+ * Class B here adds defense-in-depth at the precondition layer.
+ */
+export const PRECOND_QA_ROUND_MONOTONIC: Precondition = {
+  name: "qa-round-monotonic",
+  refusalCode: "QA_ROUND_OUT_OF_ORDER",
+  appliesTo(action) {
+    return ACTIONS_QA_ROUND_PROGRESSING.has(action);
+  },
+  evaluate(ctx) {
+    if (ctx.bead === null) return { ok: true }; // defer to A.5
+    const round = ctx.bead.currentQaRound;
+    if (round === null || round < 1) return { ok: true };
+    const m = ctx.marker;
+    // If no marker is loaded, fall open — the route handler's inline
+    // QA-round check (route.ts:1665+) remains load-bearing.
+    if (!m) return { ok: true };
+    // Heuristic: a QA-round marker has stage 'qa' or 'qa-round' or its
+    // bead_id contains '-qa-round-'. If we identify it as a QA-round
+    // marker AND its status is not success, refuse.
+    const stage = typeof m.stage === "string" ? m.stage.trim() : "";
+    const beadId = typeof m.bead_id === "string" ? m.bead_id : "";
+    const isQaRoundMarker =
+      stage === "qa" ||
+      stage === "qa-round" ||
+      stage.startsWith("qa-round") ||
+      /-qa-round-\d+/.test(beadId);
+    if (isQaRoundMarker && m.status !== "success") {
+      return {
+        ok: false,
+        refusalCode: "QA_ROUND_OUT_OF_ORDER",
+        failedCheck: "qa-round-monotonic",
+        reason: `QA round marker (stage=${stage}, status=${m.status}) does not report success — round-${round + 1} dispatch refused until current round resolves`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Class D predicate (ehp.13 — 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * D — plan-not-modified-since-stage-entered → PLAN_INSTABILITY
+ *
+ * Refuses dispatch when the plan file's mtime is newer than when the
+ * epic entered its current pipeline stage. Indicates the plan was
+ * revised after the stage transition; downstream review/build is
+ * operating on a moving target.
+ *
+ * **Fail-OPEN posture (deliberate exception to ADR-002's fail-closed
+ * default for bd reads).** Class D's source signal is the event-log,
+ * which per `event-log.ts` is RESILIENCE-FIRST: read failures are
+ * documented as "missed events are tolerable; broken pipelines are not"
+ * (event-log.ts comment at line 26-30). When `stageEnteredAt` is null
+ * (event-log read returned no matching event OR the read itself
+ * failed), the predicate skips — returning ok=true. This is the
+ * INVERSE of A.5's BD_READ_FAILED behaviour: bd reads are fail-closed
+ * (a phantom dispatch is worse than a missed legitimate dispatch),
+ * but event-log reads are fail-open (the event log is telemetry,
+ * not source of truth). Both postures are documented in their
+ * respective ADRs.
+ *
+ * Similarly, when `planFileMtime` is undefined or null (file absent
+ * OR fs.stat failed), the predicate skips — Class A's PLAN_FILE_MISSING
+ * already gates plan-required actions; Class D layers on top.
+ */
+export const PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED: Precondition = {
+  name: "plan-not-modified-since-stage-entered",
+  refusalCode: "PLAN_INSTABILITY",
+  appliesTo(action) {
+    return ACTIONS_PLAN_STABILITY_SENSITIVE.has(action);
+  },
+  evaluate(ctx) {
+    // Fail-OPEN: missing telemetry → skip (cannot determine staleness).
+    if (ctx.stageEnteredAt === null) return { ok: true };
+    if (ctx.planFileMtime === undefined || ctx.planFileMtime === null) {
+      return { ok: true };
+    }
+    const stageEnteredMs = Date.parse(ctx.stageEnteredAt);
+    if (Number.isNaN(stageEnteredMs)) return { ok: true }; // malformed → skip
+    if (ctx.planFileMtime > stageEnteredMs) {
+      return {
+        ok: false,
+        refusalCode: "PLAN_INSTABILITY",
+        failedCheck: "plan-not-modified-since-stage-entered",
+        reason: `plan file modified at ${new Date(ctx.planFileMtime).toISOString()} — newer than stage entered at ${ctx.stageEnteredAt}; review/build would target a moving plan`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Class E predicate (ehp.13 — 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * E — action-matches-marker-next-agent → ACTION_NEXT_AGENT_MISMATCH
+ *
+ * Refuses when the action being dispatched does not match the canonical
+ * action for the marker's `next_agent` (after marker-routing's loop-agent
+ * rewrite per ADR-001). Reuses existing `interpretMarkerForRouting` +
+ * `getActionForAgent` rather than re-deriving the routing logic.
+ *
+ * Pass conditions (predicate skips with ok=true):
+ *   - No marker loaded.
+ *   - Marker loaded but `interpretMarkerForRouting` returns
+ *     `override=false` (the marker doesn't dictate a specific next
+ *     action; pipeline-routes default progression applies).
+ *   - Marker's routing decision matches the action being dispatched.
+ *
+ * Refuse condition: marker has explicit override AND the canonical
+ * action for the routed agent differs from `ctx.action`.
+ */
+export const PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT: Precondition = {
+  name: "action-matches-marker-next-agent",
+  refusalCode: "ACTION_NEXT_AGENT_MISMATCH",
+  appliesTo(_action) {
+    return true; // applies universally — Class E is "action vs marker"
+    //              consistency, valid for every dispatching action.
+  },
+  evaluate(ctx) {
+    const m = ctx.marker;
+    if (!m) return { ok: true };
+    // Build a minimal EpicStateSnapshot — interpretMarkerForRouting's
+    // EpicStateSnapshot parameter is currently unused by the function
+    // (see marker-routing.ts: `_snapshot` underscore-prefixed),
+    // but constructing a real snapshot keeps us future-proof if the
+    // function later consumes it.
+    const beadId = ctx.bead?.id ?? (typeof m.bead_id === "string" ? m.bead_id : "");
+    const snapshot: EpicStateSnapshot = {
+      epicId: beadId,
+      currentStage: ctx.bead?.pipelineStage ?? "",
+      labels: [...ctx.epicLabels],
+    };
+    const decision = interpretMarkerForRouting(m, snapshot);
+    if (!decision.override) return { ok: true };
+    if (!decision.nextAgent) return { ok: true };
+    const canonicalAction = getActionForAgent(decision.nextAgent as AgentType);
+    if (canonicalAction === ctx.action) return { ok: true };
+    return {
+      ok: false,
+      refusalCode: "ACTION_NEXT_AGENT_MISMATCH",
+      failedCheck: "action-matches-marker-next-agent",
+      reason: `action='${ctx.action}' contradicts marker routing decision (next_agent='${decision.nextAgent}' → canonical action='${canonicalAction}'; reason: ${decision.reason})`,
+    };
+  },
+};
+
+/**
+ * Snapshot of every per-action predicate ehp.13 ships — exported for tests
+ * that assert PRECONDITION_TABLE coverage and for the table builder.
+ */
+export const PER_ACTION_PRECONDITIONS: readonly Precondition[] = [
+  // Class A
+  PRECOND_PLAN_FILE_EXISTS,
+  PRECOND_PLAN_NOT_PENDING,
+  PRECOND_WAVE_BEADS_EXIST,
+  PRECOND_WAVE_BEADS_NOT_ALL_CLOSED,
+  PRECOND_ARCHITECT_MARKER_NOT_SUCCESS,
+  // Class B
+  PRECOND_PIPELINE_LABEL_SINGLETON,
+  PRECOND_AGENT_RUNNING_HAS_SESSION,
+  PRECOND_QA_ROUND_MONOTONIC,
+  // Class D
+  PRECOND_PLAN_NOT_MODIFIED_SINCE_STAGE_ENTERED,
+  // Class E
+  PRECOND_ACTION_MATCHES_MARKER_NEXT_AGENT,
+];
+
+// ---------------------------------------------------------------------------
 // PRECONDITION_TABLE — minimal Wave-2 registration
 //
 // Maps action names to ordered predicate lists. ehp.13 will extend each
@@ -452,6 +1045,121 @@ export const PRECONDITION_TABLE: ReadonlyMap<string, readonly Precondition[]> =
   buildTable();
 
 // ---------------------------------------------------------------------------
+// ehp.13 — DISPATCHING_ACTIONS + extended PRECONDITION_TABLE
+//
+// Audit basis: route.ts has 37 unique action case branches (verified via
+// `grep -n "case ['\"]" src/app/api/fleet/action/route.ts | sort -u`).
+// Of those, 3 are EXEMPT per beads_web-ehp.11 (only mutate `human-decision:*`
+// labels OR stop a running agent — no pipeline:* mutation, no agent launch):
+//   - stop-agent     (only stops a running agent)
+//   - human-approve  (only mutates human-decision:* labels)
+//   - human-dismiss  (only mutates human-decision:* labels)
+//
+// The remaining 34 actions are DISPATCHING and registered in the extended
+// table. Reconciler-rule actions (run-coherence-agent, start-wave,
+// run-smoke-test, etc.) are all subsets of route.ts's action set; no
+// reconciler-only action exists outside this 34-element set.
+//
+// The bead description's "~38 dispatching actions" count tracks the
+// architecture's File Structure Plan (~38 case branches), which includes
+// the 3 EXEMPT cases. ehp.13 honours the dispatching subset — exempt
+// cases are not in the table by design.
+// ---------------------------------------------------------------------------
+
+/**
+ * The 34 dispatching actions that ehp.13 registers in the extended
+ * PRECONDITION_TABLE. EXEMPT actions (stop-agent, human-approve,
+ * human-dismiss) are intentionally NOT in this set.
+ */
+export const DISPATCHING_ACTIONS: ReadonlyArray<string> = [
+  // From route.ts case branches — DISPATCHING subset (34 total).
+  "start-research",
+  "send-for-development",
+  "more-research",
+  "deprioritise",
+  "approve-submission",
+  "send-back-to-dev",
+  "mark-as-live",
+  "generate-plan",
+  "approve-plan",
+  "approve-and-build",
+  "revise-plan",
+  "skip-to-plan",
+  "revise-plan-from-launch",
+  "send-for-qa",
+  "qa-fix-and-retest",
+  "mark-ready-to-deploy",
+  "mark-venture-live",
+  "mark-venture-complete",
+  "start-wave",
+  "review-wave",
+  "resume-build",
+  "send-for-review",
+  "send-for-polish",
+  "run-pm",
+  "run-architect",
+  "run-smoke-test",
+  "run-polish",
+  "revise-spec",
+  "revise-architecture",
+  "run-test-spec",
+  "revise-test-spec",
+  "review-plan",
+  "revise-plan-from-review",
+  "run-coherence-agent",
+];
+
+/**
+ * The 3 EXEMPT actions (per beads_web-ehp.11 audit). Exported for tests
+ * that assert "exempt actions are NOT in PRECONDITION_TABLE".
+ */
+export const EXEMPT_ACTIONS: ReadonlyArray<string> = [
+  "stop-agent",
+  "human-approve",
+  "human-dismiss",
+];
+
+/**
+ * Build the extended PRECONDITION_TABLE that includes ALL 34 dispatching
+ * actions, registering universal predicates + per-action predicates whose
+ * `appliesTo(action)` returns true.
+ *
+ * Ordering invariant per architecture § predicate priority:
+ *   1. Universal predicates first (BD_READ_FAILED branches via A.5
+ *      take precedence over per-action checks).
+ *   2. Per-action predicates in PER_ACTION_PRECONDITIONS list order
+ *      (Class A → B → D → E).
+ */
+function buildExtendedTable(): ReadonlyMap<string, readonly Precondition[]> {
+  const table = new Map<string, readonly Precondition[]>();
+  for (const action of DISPATCHING_ACTIONS) {
+    const universal = UNIVERSAL_PRECONDITIONS.filter((p) =>
+      p.appliesTo(action),
+    );
+    const perAction = PER_ACTION_PRECONDITIONS.filter((p) =>
+      p.appliesTo(action),
+    );
+    table.set(action, [...universal, ...perAction]);
+  }
+  return table;
+}
+
+/**
+ * The full PRECONDITION_TABLE used by `evaluatePreconditions` after ehp.13
+ * lands. Replaces the Wave-2 minimal `PRECONDITION_TABLE` for
+ * lookup purposes (the Wave-2 export remains for backwards-compatibility
+ * with ehp.3 tests that asserted the minimal 10-action shape).
+ *
+ * `evaluatePreconditions` consults `EXTENDED_PRECONDITION_TABLE` first
+ * for any action in `DISPATCHING_ACTIONS`; falls back to the minimal
+ * table for the universal-action set; warns + passes for unknown actions.
+ */
+export const EXTENDED_PRECONDITION_TABLE: ReadonlyMap<
+  string,
+  readonly Precondition[]
+> = buildExtendedTable();
+
+// ---------------------------------------------------------------------------
 // evaluatePreconditions — pure synchronous verdict
 //
 // Iterates the action's predicate list in order. Returns the FIRST refusal
@@ -468,13 +1176,18 @@ export const PRECONDITION_TABLE: ReadonlyMap<string, readonly Precondition[]> =
 // ---------------------------------------------------------------------------
 
 export function evaluatePreconditions(ctx: DispatchContext): PreconditionResult {
-  const preconditions = PRECONDITION_TABLE.get(ctx.action);
+  // ehp.13: consult the EXTENDED table first (covers all 34 dispatching
+  // actions with universal + per-action predicates). Fall back to the
+  // Wave-2 minimal table for the 10 universal-action set (preserves
+  // ehp.3's contract — minimal table coverage tests still pass). Unknown
+  // actions: warn + pass (preserves ehp.3's fail-OPEN policy for
+  // unregistered actions; EXEMPT_ACTIONS land here intentionally).
+  const preconditions =
+    EXTENDED_PRECONDITION_TABLE.get(ctx.action) ??
+    PRECONDITION_TABLE.get(ctx.action);
   if (!preconditions) {
-    // Action not yet registered in the minimal Wave-2 table. ehp.13
-    // extends this; until then, do not block. This is the documented
-    // fail-OPEN policy for unregistered actions.
     console.warn(
-      `[dispatch-preconditions] action='${ctx.action}' not registered in PRECONDITION_TABLE — passing through. Wave-3 (beads_web-ehp.13) will register it.`,
+      `[dispatch-preconditions] action='${ctx.action}' not registered in PRECONDITION_TABLE — passing through (EXEMPT actions land here by design; unregistered dispatching actions are a coverage gap).`,
     );
     return { ok: true };
   }
@@ -558,20 +1271,213 @@ export async function buildDispatchContext(
   // No internal mocks beyond the readers' own implementations. Each reader
   // tolerates failures internally (returns null / [] on error); we surface
   // those signals via the DispatchContext fields.
-  const [bead, marker, epicLabels] = await Promise.all([
-    readBeadStatus(input.epicId, input.repoPath),
-    readMarker(input.repoPath, input.epicId),
-    getEpicLabels(input.epicId, input.repoPath),
-  ]);
+  const [bead, marker, epicLabels, planFileMeta, openWaveBeadIds] =
+    await Promise.all([
+      readBeadStatus(input.epicId, input.repoPath),
+      readMarker(input.repoPath, input.epicId),
+      getEpicLabels(input.epicId, input.repoPath),
+      // ehp.13: plan-file existence + mtime (Class A PLAN_FILE_MISSING +
+      // Class D PLAN_INSTABILITY). Per architecture Seam 3, fail-closed:
+      // any fs error other than ENOENT is treated as exists=false.
+      readPlanFileMeta(input.repoPath, input.epicId),
+      // ehp.13: open wave beads (Class A NO_WAVE_BEADS / ALL_WAVE_BEADS_CLOSED).
+      // Reuses the existing `listOpenWaveBeads` reader — does NOT duplicate.
+      // When waveNumber is undefined, we skip the read (no wave context).
+      input.waveNumber !== undefined
+        ? safeListOpenWaveBeads(
+            input.epicId,
+            input.waveNumber,
+            input.repoPath,
+          )
+        : Promise.resolve<readonly string[]>([]),
+    ]);
+
+  // ehp.13: Class D stageEnteredAt — read event-log for the most-recent
+  // stage-dispatched event matching this epic+stage. Sequenced AFTER the
+  // bead read because we need bead.pipelineStage to know which stage to
+  // filter on. Fail-OPEN per Class D commentary (event-log read failure
+  // → null → predicate skips). The architecture spec named the event
+  // type "pipeline-label-set" but the codebase actually emits
+  // "stage-dispatched" (verified empirically — see ehp.13 marker
+  // surprises_or_findings).
+  let stageEnteredAt: string | null = null;
+  if (bead && bead.pipelineStage) {
+    try {
+      const events = await readEvents(input.repoPath, {
+        type: "stage-dispatched",
+        epicId: input.epicId,
+        limit: 50, // small lookback; events are newest-first
+      });
+      // Find the most-recent event matching this stage. readEvents returns
+      // newest-first; the first match is the most-recent transition INTO
+      // the current stage.
+      const match = events.find((e) => e.stage === bead.pipelineStage);
+      if (match) stageEnteredAt = match.timestamp;
+    } catch (err) {
+      // Fail-OPEN per Class D commentary — event-log is telemetry, not
+      // source of truth. Predicate will skip when stageEnteredAt is null.
+      console.warn(
+        `[dispatch-preconditions] event-log read failed for epic=${input.epicId} stage=${bead.pipelineStage} — Class D PLAN_INSTABILITY will skip:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 
   return {
     action: input.action,
     bead,
     marker,
     epicLabels,
-    // ---- Wave-2 SCAFFOLDED fields (ehp.13 fills) -------------------------
-    planFileExists: false,
-    openWaveBeadIds: [],
-    stageEnteredAt: null,
+    planFileExists: planFileMeta.exists,
+    openWaveBeadIds,
+    stageEnteredAt,
+    planFileMtime: planFileMeta.mtimeMs,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ehp.13 helpers — small wrappers around the published readers. These live
+// in this file (not in a separate reader module) per ADR-003 single-file
+// library and to avoid creating new exports that downstream callers might
+// import for non-precondition use (single responsibility).
+// ---------------------------------------------------------------------------
+
+interface PlanFileMeta {
+  readonly exists: boolean;
+  readonly mtimeMs: number | null;
+}
+
+/**
+ * Read the plan file's existence + mtime. Per architecture Seam 3:
+ * - File present + readable → exists=true, mtimeMs=fs.stat.mtimeMs.
+ * - ENOENT → exists=false, mtimeMs=null (the documented "no plan file" case).
+ * - Other fs errors (EACCES, EIO) → exists=false, mtimeMs=null with a
+ *   single-line warn (fail-closed: PLAN_FILE_MISSING fires, operator
+ *   re-triggers after fixing the filesystem).
+ */
+async function readPlanFileMeta(
+  repoPath: string,
+  epicId: string,
+): Promise<PlanFileMeta> {
+  const planPath = path.join(repoPath, ".beads", "plans", `${epicId}.md`);
+  try {
+    const stat = await fs.stat(planPath);
+    return { exists: true, mtimeMs: stat.mtimeMs };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      console.warn(
+        `[dispatch-preconditions] fs.stat failed for plan ${planPath} (code=${code}) — treating as missing per Seam 3 fail-closed`,
+      );
+    }
+    return { exists: false, mtimeMs: null };
+  }
+}
+
+/**
+ * Wrap `listOpenWaveBeads` with a try/catch that returns `[]` on error.
+ * The underlying reader THROWS on bd failures (per factory-core-z9h.9
+ * contract — see agent-launcher.ts:1437); the precondition library
+ * cannot let those throws propagate or `buildDispatchContext` would
+ * become a non-total function. Instead we surface bd-read failures
+ * here as an empty array (consistent with the other reader's
+ * "null on failure" pattern); the NO_WAVE_BEADS / ALL_WAVE_BEADS_CLOSED
+ * predicates will fire as the structured signal of "wave state
+ * could not be determined". Logged for observability.
+ */
+async function safeListOpenWaveBeads(
+  epicId: string,
+  wave: number,
+  repoPath: string,
+): Promise<readonly string[]> {
+  try {
+    const beads = await listOpenWaveBeads(epicId, wave, repoPath);
+    return beads.map((b) => b.id);
+  } catch (err) {
+    console.warn(
+      `[dispatch-preconditions] listOpenWaveBeads threw for epic=${epicId} wave=${wave} — treating as empty:`,
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PreconditionRefusalResponse — HTTP 412 body helper (ehp.13 Contract 3)
+//
+// Projects a refusal `PreconditionResult` into the HTTP-412 response body
+// shape consumed by route.ts (per architecture § Component Boundaries
+// Contract 3). Includes `observedState` so coherence reasoning can
+// pattern-match on the bead/marker/labels at refusal time without re-
+// reading.
+//
+// Used by route.ts (ehp.11 integration site) to emit:
+//   return NextResponse.json(
+//     buildPreconditionRefusalResponse(result, ctx.bead),
+//     { status: 412 }
+//   );
+// ---------------------------------------------------------------------------
+
+/**
+ * The HTTP 412 body shape returned by route.ts when a precondition refuses.
+ *
+ * Mirrors architecture § Component Boundaries Contract 3:
+ *   - `refused: true` is the discriminator.
+ *   - `refusalCode`, `failedCheck`, `reason` from the PreconditionResult.
+ *   - `observedState` is a small bead snapshot for downstream pattern-
+ *     matching (coherence reasoning consumes this).
+ */
+export interface PreconditionRefusalResponse {
+  readonly refused: true;
+  readonly refusalCode: RefusalCode;
+  readonly failedCheck: string;
+  readonly reason: string;
+  readonly observedState: {
+    readonly beadId: string | null;
+    readonly status: string | null;
+    readonly pipelineStage: string | null;
+    readonly currentWave: number | null;
+    readonly currentQaRound: number | null;
+    readonly hasAgentRunning: boolean;
+    readonly hasReviewNeedsHuman: boolean;
+  };
+}
+
+/**
+ * Type for the refusal branch of PreconditionResult — exported so callers
+ * can write `if (!result.ok) buildPreconditionRefusalResponse(result, …)`
+ * with full type narrowing.
+ */
+export type PreconditionRefusal = Extract<PreconditionResult, { ok: false }>;
+
+/**
+ * Project a refusal `PreconditionResult` + bead snapshot into the HTTP 412
+ * response body shape.
+ *
+ * The function is total — accepts any refusal shape (every RefusalCode
+ * value is in the canonical enum) and any BeadSnapshot (or null when bd
+ * read failed). When bead is null, observedState fields default to safe
+ * "unknown" sentinels (null / false / 0).
+ *
+ * Pure function: no I/O, no side effects. Safe to call from any context.
+ */
+export function buildPreconditionRefusalResponse(
+  result: PreconditionRefusal,
+  bead: BeadSnapshot | null,
+): PreconditionRefusalResponse {
+  return {
+    refused: true,
+    refusalCode: result.refusalCode,
+    failedCheck: result.failedCheck,
+    reason: result.reason,
+    observedState: {
+      beadId: bead?.id ?? null,
+      status: bead?.status ?? null,
+      pipelineStage: bead?.pipelineStage ?? null,
+      currentWave: bead?.currentWave ?? null,
+      currentQaRound: bead?.currentQaRound ?? null,
+      hasAgentRunning: bead?.hasAgentRunning ?? false,
+      hasReviewNeedsHuman: bead?.hasReviewNeedsHuman ?? false,
+    },
   };
 }

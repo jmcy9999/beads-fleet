@@ -52,7 +52,9 @@ import * as path from "path";
 import {
   buildDispatchContext,
   evaluatePreconditions,
+  buildPreconditionRefusalResponse,
 } from "../../src/lib/dispatch-preconditions";
+import { appendEvent, __resetEventLogForTests } from "../../src/lib/event-log";
 
 // ---------------------------------------------------------------------------
 // Skip-condition helpers
@@ -426,5 +428,391 @@ describeIfEnabled("dispatch-preconditions integration (real bd + dolt)", () => {
     const r2 = evaluatePreconditions(failCtx);
     expect(r2.ok).toBe(false);
     if (!r2.ok) expect(r2.refusalCode).toBe("BD_READ_FAILED");
+  }, 30_000);
+
+  // =========================================================================
+  // ehp.13 — extended integration tests: Class A/B/D/E + scaffolded fields
+  //          filled via real fs + real event-log
+  // =========================================================================
+
+  // ---------------------------------------------------------------------------
+  // Class A — PLAN_FILE_MISSING (real fs.access against tmp plan dir)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 Class A — PLAN_FILE_MISSING fires when no plan file exists at .beads/plans/<epicId>.md", async () => {
+    // Use a fresh bead with NO marker (openBeadId has the operator-pending
+    // marker fixture from beforeAll, which would refuse with
+    // OPERATOR_DECISION_PENDING before reaching PLAN_FILE_MISSING).
+    const noPlanBeadId = bdRun([
+      "q",
+      "Bead with no plan file (Class A test)",
+    ]).trim();
+
+    const dctx = await buildDispatchContext({
+      epicId: noPlanBeadId,
+      repoPath,
+      action: "review-plan",
+    });
+    expect(dctx.planFileExists).toBe(false); // real fs.stat returned ENOENT
+    expect(dctx.marker).toBeNull(); // no marker fixture for this bead
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PLAN_FILE_MISSING");
+      expect(result.failedCheck).toBe("plan-file-exists");
+    }
+  }, 30_000);
+
+  test("ehp.13 Class A — planFileExists=true + planFileMtime populated when real plan file written", async () => {
+    const planBeadId = bdRun(["q", "Bead with real plan file"]).trim();
+    const planDir = path.join(repoPath, ".beads", "plans");
+    await fs.mkdir(planDir, { recursive: true });
+    const planPath = path.join(planDir, `${planBeadId}.md`);
+    await fs.writeFile(planPath, "# Plan\n\nContent.\n");
+
+    const dctx = await buildDispatchContext({
+      epicId: planBeadId,
+      repoPath,
+      action: "review-plan",
+    });
+    expect(dctx.planFileExists).toBe(true);
+    expect(typeof dctx.planFileMtime).toBe("number");
+    expect(dctx.planFileMtime).toBeGreaterThan(0);
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Class A — PLAN_PENDING (real bd label fixture)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 Class A — PLAN_PENDING fires when 'plan:pending' label set on epic", async () => {
+    const pendBeadId = bdRun(["q", "Bead with plan:pending label"]).trim();
+    bdRun(["label", "add", pendBeadId, "plan:pending"]);
+
+    // Plan file must exist for plan-pending to be the first refusal (else
+    // PLAN_FILE_MISSING fires first per table order).
+    const planDir = path.join(repoPath, ".beads", "plans");
+    await fs.mkdir(planDir, { recursive: true });
+    await fs.writeFile(
+      path.join(planDir, `${pendBeadId}.md`),
+      "# Pending plan\n",
+    );
+
+    const dctx = await buildDispatchContext({
+      epicId: pendBeadId,
+      repoPath,
+      action: "approve-plan",
+    });
+    expect(dctx.epicLabels).toContain("plan:pending");
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusalCode).toBe("PLAN_PENDING");
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Class A — NO_WAVE_BEADS (real listOpenWaveBeads returning empty)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 Class A — NO_WAVE_BEADS / ALL_WAVE_BEADS_CLOSED fires for start-wave with no wave-N beads", async () => {
+    // Open bead with no children at all → openWaveBeadIds=[].
+    const waveBeadId = bdRun(["q", "Epic with no wave beads"]).trim();
+
+    // Plan file present so PLAN_FILE_MISSING doesn't fire first.
+    const planDir = path.join(repoPath, ".beads", "plans");
+    await fs.mkdir(planDir, { recursive: true });
+    await fs.writeFile(
+      path.join(planDir, `${waveBeadId}.md`),
+      "# Wave plan\n",
+    );
+
+    const dctx = await buildDispatchContext({
+      epicId: waveBeadId,
+      repoPath,
+      action: "start-wave",
+      waveNumber: 1,
+    });
+    expect(dctx.openWaveBeadIds).toEqual([]);
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Per ehp.7/ehp.12 risk flag: assert ∈ enum, not specific code.
+      expect(["NO_WAVE_BEADS", "ALL_WAVE_BEADS_CLOSED"]).toContain(
+        result.refusalCode,
+      );
+    }
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Class A — ARCHITECT_MARKER_SUCCESS (real marker file fixture)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 Class A — ARCHITECT_MARKER_SUCCESS fires for run-architect with prior success marker", async () => {
+    const archBeadId = bdRun(["q", "Bead with architect-success marker"]).trim();
+    const markerDir = path.join(repoPath, ".beads", "markers");
+    await fs.mkdir(markerDir, { recursive: true });
+    await fs.writeFile(
+      path.join(markerDir, `${archBeadId}.json`),
+      JSON.stringify({
+        version: "1",
+        bead_id: archBeadId,
+        status: "success",
+        stage: "architect",
+        started_at: "2026-05-06T00:00:00Z",
+        exited_at: "2026-05-06T00:30:00Z",
+        what_was_done: "architect succeeded — fixture for ehp.13 Class A test",
+      }),
+    );
+
+    const dctx = await buildDispatchContext({
+      epicId: archBeadId,
+      repoPath,
+      action: "run-architect",
+    });
+    expect(dctx.marker?.status).toBe("success");
+    expect(dctx.marker?.stage).toBe("architect");
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("ARCHITECT_MARKER_SUCCESS");
+    }
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Class B — PIPELINE_LABEL_CONFLICT (real bd label fixture)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 Class B — PIPELINE_LABEL_CONFLICT fires when epic has multiple pipeline:* labels", async () => {
+    const conflictBeadId = bdRun(["q", "Bead with conflicting pipeline labels"]).trim();
+    bdRun(["label", "add", conflictBeadId, "pipeline:development"]);
+    bdRun(["label", "add", conflictBeadId, "pipeline:qa"]);
+
+    const dctx = await buildDispatchContext({
+      epicId: conflictBeadId,
+      repoPath,
+      action: "deprioritise",
+    });
+    expect(dctx.epicLabels).toContain("pipeline:development");
+    expect(dctx.epicLabels).toContain("pipeline:qa");
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PIPELINE_LABEL_CONFLICT");
+    }
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Class B — AGENT_RUNNING_NO_SESSION (real bd label fixture)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 Class B — AGENT_RUNNING_NO_SESSION fires when bead has 'agent:running' label", async () => {
+    const runningBeadId = bdRun(["q", "Bead with agent:running label"]).trim();
+    bdRun(["label", "add", runningBeadId, "agent:running"]);
+
+    const dctx = await buildDispatchContext({
+      epicId: runningBeadId,
+      repoPath,
+      action: "run-pm",
+    });
+    expect(dctx.bead?.hasAgentRunning).toBe(true);
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("AGENT_RUNNING_NO_SESSION");
+    }
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Class D — PLAN_INSTABILITY (real plan file mtime + real event-log entry)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 Class D — PLAN_INSTABILITY fires when plan mtime > stageEnteredAt (real event-log + fs.stat)", async () => {
+    const instBeadId = bdRun(["q", "Bead with plan-instability fixture"]).trim();
+
+    // Step 1: write a stage-dispatched event for this epic at T0 in the
+    // past, with a stage label to anchor.
+    const stageEntryTimestamp = "2026-05-06T08:00:00Z";
+    await appendEvent(repoPath, {
+      type: "stage-dispatched",
+      timestamp: stageEntryTimestamp,
+      epicId: instBeadId,
+      stage: "plan-review",
+      payload: { toAction: "review-plan" },
+    });
+
+    // Step 2: tag the epic with the matching pipeline:plan-review label so
+    // bead.pipelineStage matches.
+    bdRun(["label", "add", instBeadId, "pipeline:plan-review"]);
+
+    // Step 3: write a plan file (mtime = now, AFTER stageEnteredAt).
+    const planDir = path.join(repoPath, ".beads", "plans");
+    await fs.mkdir(planDir, { recursive: true });
+    await fs.writeFile(
+      path.join(planDir, `${instBeadId}.md`),
+      "# Plan modified after stage entered\n",
+    );
+
+    const dctx = await buildDispatchContext({
+      epicId: instBeadId,
+      repoPath,
+      action: "review-plan",
+    });
+    expect(dctx.bead?.pipelineStage).toBe("plan-review");
+    expect(dctx.stageEnteredAt).toBe(stageEntryTimestamp);
+    expect(dctx.planFileExists).toBe(true);
+    expect(typeof dctx.planFileMtime).toBe("number");
+    // The plan was written ~now (year 2026, May 6 or later); event was
+    // T0 stageEntryTimestamp. Mtime > stageEnteredAt holds.
+    expect(dctx.planFileMtime!).toBeGreaterThan(Date.parse(stageEntryTimestamp));
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("PLAN_INSTABILITY");
+      expect(result.failedCheck).toBe("plan-not-modified-since-stage-entered");
+    }
+  }, 30_000);
+
+  test("ehp.13 Class D — fail-OPEN: when no stage-dispatched event exists, predicate skips", async () => {
+    const skipBeadId = bdRun(["q", "Bead with no stage-dispatched event"]).trim();
+    // Apply a stage label but DON'T write any event.
+    bdRun(["label", "add", skipBeadId, "pipeline:plan-review"]);
+    const planDir = path.join(repoPath, ".beads", "plans");
+    await fs.mkdir(planDir, { recursive: true });
+    await fs.writeFile(path.join(planDir, `${skipBeadId}.md`), "# Plan\n");
+
+    const dctx = await buildDispatchContext({
+      epicId: skipBeadId,
+      repoPath,
+      action: "review-plan",
+    });
+    // No matching stage-dispatched event in the log → stageEnteredAt is null.
+    expect(dctx.stageEnteredAt).toBeNull();
+    // Class D skips fail-OPEN; the only universal predicates fire. With
+    // an open bead, no marker, no human label, single pipeline label, the
+    // overall verdict is ok=true.
+    const result = evaluatePreconditions(dctx);
+    expect(result).toEqual({ ok: true });
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Class E — ACTION_NEXT_AGENT_MISMATCH (real marker fixture + real routing)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 Class E — ACTION_NEXT_AGENT_MISMATCH fires when action contradicts marker.next_agent", async () => {
+    const mismatchBeadId = bdRun(["q", "Bead with marker routing mismatch"]).trim();
+    const markerDir = path.join(repoPath, ".beads", "markers");
+    await fs.mkdir(markerDir, { recursive: true });
+    await fs.writeFile(
+      path.join(markerDir, `${mismatchBeadId}.json`),
+      JSON.stringify({
+        version: "1",
+        bead_id: mismatchBeadId,
+        status: "needs-decision",
+        stage: "architect",
+        started_at: "2026-05-06T00:00:00Z",
+        exited_at: "2026-05-06T00:01:00Z",
+        next_agent: "architect",
+        what_was_done: "architect needs to redo something",
+      }),
+    );
+
+    // Marker says next_agent=architect → canonical action 'run-architect'.
+    // We dispatch 'run-pm' → mismatch.
+    const dctx = await buildDispatchContext({
+      epicId: mismatchBeadId,
+      repoPath,
+      action: "run-pm",
+    });
+    expect(dctx.marker?.next_agent).toBe("architect");
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("ACTION_NEXT_AGENT_MISMATCH");
+      expect(result.failedCheck).toBe("action-matches-marker-next-agent");
+    }
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // SCAFFOLDED-fields are now FILLED with real reads (post-ehp.13)
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 — SCAFFOLDED fields are now FILLED with real reads (planFileExists + openWaveBeadIds + stageEnteredAt)", async () => {
+    // For an open bead with: a plan file, no wave beads, and a
+    // stage-dispatched event matching the bead's stage → all 3 fields populated.
+    const filledBeadId = bdRun(["q", "Bead exercising filled context fields"]).trim();
+    bdRun(["label", "add", filledBeadId, "pipeline:development"]);
+
+    // Plan file
+    const planDir = path.join(repoPath, ".beads", "plans");
+    await fs.mkdir(planDir, { recursive: true });
+    await fs.writeFile(path.join(planDir, `${filledBeadId}.md`), "# Plan\n");
+
+    // Stage event
+    await appendEvent(repoPath, {
+      type: "stage-dispatched",
+      timestamp: "2026-05-06T07:00:00Z",
+      epicId: filledBeadId,
+      stage: "development",
+      payload: { toAction: "start-wave" },
+    });
+
+    const dctx = await buildDispatchContext({
+      epicId: filledBeadId,
+      repoPath,
+      action: "start-wave",
+      waveNumber: 1,
+    });
+    expect(dctx.planFileExists).toBe(true); // real fs.stat
+    expect(dctx.openWaveBeadIds).toEqual([]); // real listOpenWaveBeads (no children)
+    expect(dctx.stageEnteredAt).toBe("2026-05-06T07:00:00Z"); // real event-log read
+    expect(typeof dctx.planFileMtime).toBe("number");
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // PreconditionRefusalResponse — projects refusal into HTTP-412 body shape
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 — buildPreconditionRefusalResponse projects real refusal into HTTP-412 body", async () => {
+    // Reuse deferredBeadId — known to refuse with BD_STATUS_DEFERRED.
+    const dctx = await buildDispatchContext({
+      epicId: deferredBeadId,
+      repoPath,
+      action: "run-architect",
+    });
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const response = buildPreconditionRefusalResponse(result, dctx.bead);
+      expect(response.refused).toBe(true);
+      expect(response.refusalCode).toBe("BD_STATUS_DEFERRED");
+      expect(response.failedCheck).toBe("bd-status-not-deferred");
+      expect(response.observedState.beadId).toBe(deferredBeadId);
+      expect(response.observedState.status).toBe("deferred");
+    }
+  }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Cleanup helper — reset event log between event-sensitive tests
+  // ---------------------------------------------------------------------------
+
+  test("ehp.13 — __resetEventLogForTests clears the event log (smoke check)", async () => {
+    await __resetEventLogForTests(repoPath);
+    // After reset, a buildDispatchContext for an arbitrary bead should
+    // see stageEnteredAt=null (no events to match).
+    const dctx = await buildDispatchContext({
+      epicId: openBeadId,
+      repoPath,
+      action: "run-architect",
+    });
+    // openBeadId has no pipeline label set in beforeAll (only "pipeline:
+    // development" was added in the original beforeAll). After reset the
+    // event log is empty so stageEnteredAt is null regardless.
+    expect(dctx.stageEnteredAt).toBeNull();
   }, 30_000);
 });

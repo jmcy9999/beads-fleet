@@ -316,6 +316,15 @@ describe("marker-driven-routing reconciler rule (beads_web-xfc)", () => {
   //          events by definition mean the agent has exited. Stale
   //          agent:running labels are liveness-check's job. xfc dispatches
   //          regardless.
+  //
+  // ehp.13 cross-bead alignment (2026-05-06): this test dispatches
+  // send-for-qa, which after ehp.13's per-action predicate addition
+  // requires a plan file at .beads/plans/<epicId>.md. Without a fixture,
+  // PLAN_FILE_MISSING fires before dispatch. Adding a real plan file
+  // fixture preserves the test's original intent (verify dispatch fires
+  // despite agent:running label) without disabling the new precondition
+  // protection. This is a 4-line fixture addition by ehp.13's builder,
+  // documented as a deviation in beads_web-ehp.13's marker.
   test("agent-exited with agent:running label still dispatches (belt-and-suspenders)", async () => {
     const marker = makeMarker({
       epic_id: "factory-core-bbbb",
@@ -323,6 +332,12 @@ describe("marker-driven-routing reconciler rule (beads_web-xfc)", () => {
       stage: "build-review",
       next_agent: "qa",
     });
+
+    // ehp.13 fixture: plan file required by send-for-qa precondition.
+    const repoPath = "/tmp/xfc-test-running";
+    const planDir = path.join(repoPath, ".beads", "plans");
+    await fs.mkdir(planDir, { recursive: true });
+    await fs.writeFile(path.join(planDir, "factory-core-bbbb.md"), "# Plan\n");
 
     const rule = buildMarkerDrivenRoutingRule({
       readMarker: async () => marker,
@@ -336,7 +351,7 @@ describe("marker-driven-routing reconciler rule (beads_web-xfc)", () => {
           ],
           title: "BBBB Test Epic",
         }),
-      repoPath: "/tmp/xfc-test-running",
+      repoPath,
       actionUrl: "http://localhost:3000/api/fleet/action",
     });
 
