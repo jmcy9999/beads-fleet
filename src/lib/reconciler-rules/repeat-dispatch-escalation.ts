@@ -40,6 +40,11 @@
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
 import { getDefaultActionUrl } from "../orchestrator-url";
 import type { ActiveDispatchProbeResult } from "./active-dispatch-probe";
+import {
+  buildDispatchContext,
+  evaluatePreconditions,
+} from "../dispatch-preconditions";
+import { appendEvent, RECONCILER_ACTION_REFUSED } from "../event-log";
 
 export const REPEAT_DISPATCH_ESCALATION_RULE_NAME =
   "repeat-dispatch-escalation";
@@ -108,6 +113,21 @@ export interface RepeatDispatchEscalationRuleOptions {
     jsonlMtime?: string;
     lastActivityAt?: string;
   }) => Promise<void>;
+  /**
+   * beads_web-ehp.8: repo path used by the dispatch-preconditions gate.
+   * Passed to `buildDispatchContext({ repoPath })` (which feeds
+   * `readBeadStatus` / `readMarker` / event-log reads via the dispatch-
+   * preconditions library) AND to `appendEvent` for the
+   * `reconciler-action-refused` records.
+   *
+   * Optional for backwards-compat with tests that constructed the rule
+   * before ehp.8 landed; when absent, the precondition gate falls open
+   * (logged warn-line) and the rule preserves pre-ehp.8 behaviour.
+   * Bootstrap passes the production repoPath unconditionally so the
+   * production path is fully gated. Mirrors the optional-repoPath
+   * convention established by stuck-in-stage.ts (ehp.5).
+   */
+  repoPath?: string;
 }
 
 interface RepeatGroup {
@@ -262,6 +282,60 @@ export function buildRepeatDispatchEscalationRule(
         );
       }
 
+      // -----------------------------------------------------------------
+      // beads_web-ehp.8: dispatch-precondition gate (Wave 4 integration).
+      //
+      // Architecture § Component Boundaries Contract 2 + § Seam 5:
+      // precondition check runs AFTER snapshot re-read and BEFORE the
+      // action-route fetch. Load-bearing for the 372-bead mass-defer
+      // (BD_STATUS_DEFERRED) and operator-decision-pending Class C
+      // protection. On refusal: structured warn-log tagged
+      // `reconciler_dispatch_refused` + a `reconciler-action-refused`
+      // event (Wave-1 variant) + early return WITHOUT dispatching.
+      //
+      // Action coverage: this rule dispatches a single action,
+      // `run-coherence-agent`, which is registered in the
+      // EXTENDED_PRECONDITION_TABLE (universal predicates apply: A.5
+      // BD_STATUS_DEFERRED / BD_STATUS_CLOSED / BD_READ_FAILED, plus
+      // Class C OPERATOR_DECISION_PENDING / REVIEW_NEEDS_HUMAN). No
+      // additional action keys to register.
+      //
+      // repoPath optional: when absent (legacy tests constructed before
+      // ehp.8 landed), the gate falls open with a warn-line — preserves
+      // pre-ehp.8 behaviour. Production bootstrap passes repoPath
+      // unconditionally so the gate is always active in prod.
+      // -----------------------------------------------------------------
+      if (opts.repoPath) {
+        const precondCtx = await buildDispatchContext({
+          epicId: match.epicId,
+          repoPath: opts.repoPath,
+          action: "run-coherence-agent",
+        });
+        const precondResult = evaluatePreconditions(precondCtx);
+        if (!precondResult.ok) {
+          console.warn(
+            `[zsjv.6] reconciler_dispatch_refused: rule=${REPEAT_DISPATCH_ESCALATION_RULE_NAME} epicId=${match.epicId} action=run-coherence-agent stage=${context.stage} refusalCode=${precondResult.refusalCode} failedCheck=${precondResult.failedCheck} reason="${precondResult.reason}"`,
+          );
+          await appendEvent(opts.repoPath, {
+            type: RECONCILER_ACTION_REFUSED,
+            epicId: match.epicId,
+            stage: context.stage,
+            payload: {
+              ruleName: REPEAT_DISPATCH_ESCALATION_RULE_NAME,
+              action: "run-coherence-agent",
+              refusalCode: precondResult.refusalCode,
+              failedCheck: precondResult.failedCheck,
+              reason: precondResult.reason,
+            },
+          });
+          return;
+        }
+      } else {
+        console.warn(
+          `[zsjv.6] precondition gate skipped — no repoPath configured (rule built without ehp.8 wiring); proceeding with pre-ehp.8 dispatch`,
+        );
+      }
+
       const controller = new AbortController();
       const timeoutHandle = setTimeout(() => controller.abort(), 15_000);
       let res: Response;
@@ -285,6 +359,44 @@ export function buildRepeatDispatchEscalationRule(
         });
       } finally {
         clearTimeout(timeoutHandle);
+      }
+
+      // -------------------------------------------------------------
+      // beads_web-ehp.8: route-side precondition refusal (HTTP 412).
+      //
+      // Architecture § Seam 5 (defense-in-depth): both the rule AND the
+      // action route validate preconditions. If the route refuses with
+      // 412 (route-side check caught state the rule's own check missed
+      // — race window, label mutated mid-flight, etc.), the rule must
+      // distinguish that from a genuine HTTP failure. 412 is a refusal:
+      // log a structured warn-line tagged `reconciler_dispatch_refused_
+      // at_route`, emit a `reconciler-action-refused` event with the
+      // ROUTE_REFUSED_412 marker code, and return WITHOUT throwing.
+      // Throwing would propagate to the reconciler tick handler and
+      // count as an act() failure (which dispatches a different recovery
+      // path — wrong semantics for a refusal). Mirrors ehp.4/ehp.5's 412
+      // handler in marker-driven-routing.ts / stuck-in-stage.ts.
+      // -------------------------------------------------------------
+      if (res.status === 412) {
+        const text = await res.text().catch(() => "<unreadable>");
+        console.warn(
+          `[zsjv.6] reconciler_dispatch_refused_at_route: rule=${REPEAT_DISPATCH_ESCALATION_RULE_NAME} epicId=${match.epicId} action=run-coherence-agent stage=${context.stage} httpStatus=412 body="${text}"`,
+        );
+        if (opts.repoPath) {
+          await appendEvent(opts.repoPath, {
+            type: RECONCILER_ACTION_REFUSED,
+            epicId: match.epicId,
+            stage: context.stage,
+            payload: {
+              ruleName: REPEAT_DISPATCH_ESCALATION_RULE_NAME,
+              action: "run-coherence-agent",
+              refusalCode: "ROUTE_REFUSED_412",
+              failedCheck: "route-side-precondition",
+              reason: text,
+            },
+          });
+        }
+        return;
       }
 
       if (!res.ok) {

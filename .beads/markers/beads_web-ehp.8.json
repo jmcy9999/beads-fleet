@@ -1,0 +1,56 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-ehp.8",
+  "epic_id": "beads_web-ehp",
+  "status": "success",
+  "stage": "build",
+  "started_at": "2026-05-06T00:00:00Z",
+  "exited_at": "2026-05-06T00:30:00Z",
+  "next_agent": "reviewer",
+  "what_was_done": [
+    {
+      "action": "Wrapped repeat-dispatch-escalation.ts act() with dispatch-preconditions gate",
+      "result": "After snapshot re-read and BEFORE the action-route fetch, act() builds DispatchContext + evaluates preconditions. Refusal → structured warn-log tagged reconciler_dispatch_refused + reconciler-action-refused event (Wave-1 variant) + early return without dispatching.",
+      "evidence": "src/lib/reconciler-rules/repeat-dispatch-escalation.ts:282-339 (precondition gate block)"
+    },
+    {
+      "action": "Added HTTP 412 route-side refusal handling",
+      "result": "After fetch, if res.status === 412 → warn-log tagged reconciler_dispatch_refused_at_route + reconciler-action-refused event with refusalCode=ROUTE_REFUSED_412 + return WITHOUT throwing. Distinguishes route-side refusal from genuine HTTP failure (which would propagate as an act() error and trigger different recovery).",
+      "evidence": "src/lib/reconciler-rules/repeat-dispatch-escalation.ts:374-400 (412 handling block)"
+    },
+    {
+      "action": "Added optional repoPath option to RepeatDispatchEscalationRuleOptions",
+      "result": "Mirrors stuck-in-stage.ts (ehp.5) pattern: repoPath optional for backwards-compat with pre-ehp.8 tests; when absent, gate falls open with warn-line and pre-ehp.8 behaviour preserved. Bootstrap passes production repoPath unconditionally so production path is fully gated.",
+      "evidence": "src/lib/reconciler-rules/repeat-dispatch-escalation.ts:103-118 (option doc + field)"
+    },
+    {
+      "action": "Wired repoPath into bootstrap call",
+      "result": "src/lib/reconciler-bootstrap.ts updated to pass repoPath to buildRepeatDispatchEscalationRule, activating the gate in production. Without this 1-line addition the gate would be dormant in production and the bead would ship cosmetically only.",
+      "evidence": "src/lib/reconciler-bootstrap.ts (added repoPath: repoPath in the rule options block, after appendSuppressedEvent)"
+    },
+    {
+      "action": "Confirmed action coverage: only run-coherence-agent is dispatched by this rule",
+      "result": "Single dispatched action verified by grep (only fetch() body uses action: 'run-coherence-agent'; no conditional/dynamic action selection). 'run-coherence-agent' is registered in DISPATCHING_ACTIONS at src/lib/dispatch-preconditions.ts:1109, so EXTENDED_PRECONDITION_TABLE includes it with all universal predicates (BD_STATUS_DEFERRED/CLOSED/READ_FAILED + OPERATOR_DECISION_PENDING + REVIEW_NEEDS_HUMAN). No additional table entries needed. Risk-flag in the dispatch prompt is satisfied.",
+      "evidence": "src/lib/dispatch-preconditions.ts:1074-1110 (DISPATCHING_ACTIONS list); src/lib/reconciler-rules/repeat-dispatch-escalation.ts:359 (single fetch with hard-coded action)"
+    },
+    {
+      "action": "New integration test file with 3 ACs covered",
+      "result": "__tests__/lib/reconciler-rules/repeat-dispatch-escalation.precondition-integration.test.ts with: AC#1 (LOAD-BEARING) bd status=deferred → BD_STATUS_DEFERRED refusal, no fetch, refusal event recorded; AC#2 happy-path open bead → fetch fires unchanged with attemptCount=3 and stuckStage in coherenceContext, no refusal event; AC#3 route returns HTTP 412 → reconciler-action-refused event with ROUTE_REFUSED_412, act() resolves without throwing. All 3 tests pass.",
+      "evidence": "Test run: 3/3 pass (Time: 0.578 s). Existing repeat-dispatch-escalation.test.ts 22/22 pass (backwards-compat). Combined run with dispatch-preconditions.test.ts: 137/137 pass."
+    },
+    {
+      "action": "Updated ARCHITECTURE.md with new section for the gated rule",
+      "result": "Added subsection 'src/lib/reconciler-rules/repeat-dispatch-escalation.ts (Wave-4 precondition-gated)' immediately after the marker-driven-routing.ts subsection — same prose pattern used for ehp.4/ehp.5 documentation.",
+      "evidence": "ARCHITECTURE.md (new subsection after line 490)"
+    }
+  ],
+  "what_was_tested": "All 3 ACs verified via the new integration test file: BD_STATUS_DEFERRED refusal (load-bearing), happy-path fetch fires unchanged with payload assertions, HTTP 412 route-side refusal is handled without throwing. Backwards-compat verified by running the existing 22 tests in repeat-dispatch-escalation.test.ts (all pass — the optional repoPath emits a warn-line on the 'pre-ehp.8 wiring' branch but does not regress behaviour). Dispatch-preconditions library tests (112 tests) also pass. TypeScript: no new errors introduced in any file in the change set (repeat-dispatch-escalation.ts, reconciler-bootstrap.ts, integration test, ARCHITECTURE.md); pre-existing unrelated TS errors in research.test.ts, agent-launcher-marker-detection.test.ts, dolt-lifecycle.test.ts, git/commit-manager.test.ts, wave-bead-mismatch.precondition-integration.test.ts, stuck-in-stage.test.ts are NOT introduced by this change.",
+  "deviations_from_ac": "None. All 3 ACs from the bead description are covered.",
+  "recommendation_for_next": "Reviewer should verify: (1) the integration test follows the marker-driven-routing.precondition-integration.test.ts pattern exactly (it does — same mock structure, same assertion pattern, same module-boundary mocking); (2) the bootstrap wiring is correct (1-line addition of repoPath: repoPath in the existing rule options block); (3) the optional-repoPath choice mirrors stuck-in-stage.ts ehp.5 (it does — copied the same doc-comment + warn-line phrasing); (4) the FOLLOW-ON note about refusals consuming the reconciler-action-taken idempotency bucket (architecture ADR-006) applies here too and is already tracked as a separate reconciler-core bead in marker-driven-routing.ts's docstring.",
+  "surprises_or_findings": "Two scope deviations from the literal FILES manifest, surfaced rather than hidden per STOP-and-surface discipline: (1) src/lib/reconciler-bootstrap.ts (1-line addition: pass repoPath to enable the gate in production — without this the bead ships cosmetic code with the gate dormant); (2) ARCHITECTURE.md (new subsection per project rule that mandates ARCHITECTURE.md updates in the same commit when a feature/component changes). Both are mechanically required for the bead's load-bearing intent. The optional-repoPath choice avoided modifying the existing repeat-dispatch-escalation.test.ts (~15 buildRepeatDispatchEscalationRule calls would have needed the repoPath field added). Pre-existing in-flight Wave-3/Wave-4 work in the working tree (stuck-in-stage.precondition-integration.test.ts, wave-bead-mismatch.precondition-integration.test.ts) has 8 failing tests — confirmed pre-existing, NOT introduced by this change.",
+  "whats_open": [
+    "Refusal events still consume the reconciler-action-taken idempotency bucket per architecture ADR-006; proper bucketing key (epicId, ruleName, refusalCode, 15-min window) requires a reconciler.ts core change tracked separately. Same FOLLOW-ON noted for marker-driven-routing.ts/ehp.4 and stuck-in-stage.ts/ehp.5.",
+    "API tightening opportunity: making repoPath REQUIRED on RepeatDispatchEscalationRuleOptions (vs the current optional-with-warn) would force-error any future caller that forgets to wire it. Deferred to avoid mechanical updates to ~15 existing test calls (out-of-manifest scope)."
+  ],
+  "ac_items_NOT_verified": "None — all 3 acceptance criteria from the bead description are verified by the new integration test file."
+}

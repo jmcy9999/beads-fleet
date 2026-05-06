@@ -513,6 +513,11 @@ export function ensureReconcilerRunning(): void {
             },
           });
         },
+        // beads_web-ehp.8: enable the dispatch-precondition gate by passing
+        // the production repoPath. Without this wiring the gate falls open
+        // (warn-line) and the 372-bead mass-defer protection is dormant
+        // for the repeat-dispatch-escalation path.
+        repoPath,
       }), 60_000), // factory-core-3akh.2: 1-min poll for pattern-maturation rule
     );
 
