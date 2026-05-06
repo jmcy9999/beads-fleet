@@ -78,8 +78,16 @@ describe("marker-routing (beads_web-gc2)", () => {
     expect(result.reason).toContain("blocker_class=test-fail");
   });
 
-  // Test 4: blocked + orchestrator-down → operator (AC 5 test 4)
-  test("status=blocked, blocker_class=orchestrator-down → operator", () => {
+  // Test 4: blocked + orchestrator-down → coherence (factory-core-wlsr.18
+  // divergence fix). Per ADR-008 (universal-coherence-routing-agents-
+  // never-architecture.md lines 925-933), the architect explicitly REJECTED
+  // a separate operator-direct routing path for orchestrator-down.
+  // orchestrator-down → coherence; coherence then escalates to operator
+  // with escalationReason="external-dependency-failure" via its own
+  // marker. This test guards the divergence fix (was: operator).
+  // Standing-order alignment: marker-protocol.md § 2 routing table
+  // line 137 maps orchestrator-down → coherence (post-wlsr.5).
+  test("status=blocked, blocker_class=orchestrator-down → coherence (wlsr.18 divergence fix per ADR-008)", () => {
     const marker: MarkerData = {
       version: "1",
       epic_id: "factory-core-lmxb",
@@ -93,8 +101,12 @@ describe("marker-routing (beads_web-gc2)", () => {
     const result = interpretMarkerForRouting(marker, mockSnapshot);
 
     expect(result.override).toBe(true);
-    expect(result.nextAgent).toBe("operator");
+    // wlsr.18: was "operator" pre-fix; now "coherence" per ADR-008.
+    // Coherence handles the orchestrator-down → escalate-to-operator path
+    // with escalationReason="external-dependency-failure".
+    expect(result.nextAgent).toBe("coherence");
     expect(result.reason).toContain("blocker_class=orchestrator-down");
+    expect(result.reason).toContain("coherence");
   });
 
   // Test 5: blocked + unknown blocker_class → coherence fallback (AC 5 test 5)

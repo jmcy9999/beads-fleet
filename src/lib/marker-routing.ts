@@ -107,6 +107,22 @@ export interface EpicStateSnapshot {
 // ---------------------------------------------------------------------------
 // Blocker-class → next_agent mapping table (per architect memo § 4, lines
 // 279-289). Canonical. Unknown blocker_class values fall back to coherence.
+//
+// Universal coherence routing (factory-core-wlsr.18 — divergence fix):
+//   orchestrator-down maps to "coherence" rather than "operator". Per
+//   ADR-008 (universal-coherence-routing-agents-never-architecture.md
+//   lines 925-933), the architect explicitly REJECTED a separate
+//   operator-direct routing path for orchestrator-down. Coherence is the
+//   universal conduit for ANY non-success outcome including environment
+//   failures; coherence then escalates to operator via its own marker
+//   with escalationReason="external-dependency-failure" (ADR-008,
+//   lines 905-942).
+//   Standing-order alignment: marker-protocol.md § 2 routing table
+//   line 137 maps orchestrator-down → coherence (post-wlsr.5).
+//   Discovered as code/standing-order divergence during Wave 1 reviewer
+//   Stage 4 review of factory-core-wlsr (the wlsr.3 rewrite preserved
+//   Precedence 2 verbatim per its AC #8; wlsr.5 updated the standing
+//   order; neither bead's manifest covered this code site).
 // ---------------------------------------------------------------------------
 
 const BLOCKER_CLASS_TO_AGENT: Record<string, AgentType> = {
@@ -115,7 +131,10 @@ const BLOCKER_CLASS_TO_AGENT: Record<string, AgentType> = {
   "scope-conflict": "coherence",
   "test-fail": "builder",
   "file-conflict": "planner",
-  "orchestrator-down": "operator",
+  // wlsr.18: orchestrator-down → coherence (NOT operator). Coherence
+  // detects HTTP failure on /api/fleet/action and escalates to operator
+  // with escalationReason=external-dependency-failure (ADR-008).
+  "orchestrator-down": "coherence",
 };
 
 // ---------------------------------------------------------------------------
