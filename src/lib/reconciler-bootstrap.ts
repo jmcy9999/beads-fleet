@@ -260,6 +260,11 @@ export function ensureReconcilerRunning(): void {
     // them here — keeps the wiring in one place.
     rec.registerRule(
       buildMissedWaveReviewDispatchRule({
+        // beads_web-ehp.7: repoPath required for the dispatch-precondition
+        // gate (reads bead status, marker, epic labels, plan-file existence,
+        // open wave beads via buildDispatchContext) and refusal-event
+        // emission via appendEvent.
+        repoPath,
         readEpicSnapshot: async (epicId: string) => {
           const snap = await readEpicState(epicId, repoPath);
           return {

@@ -51,9 +51,38 @@ import type { PipelineEvent } from "../event-log";
 import type { ReconcilerRule, ReconcilerMatch } from "../reconciler";
 import { getDefaultActionUrl } from "../orchestrator-url";
 import type { EscalationContext, EventSummary } from "../coherence-journal";
+import {
+  buildDispatchContext,
+  evaluatePreconditions,
+} from "../dispatch-preconditions";
+import { appendEvent, RECONCILER_ACTION_REFUSED } from "../event-log";
 
 export const MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME =
   "missed-wave-review-dispatch";
+
+/**
+ * The action this rule actually dispatches over HTTP. Pinned as a constant so
+ * the fetch body, the 412-refusal log, and the refusal-event payload always
+ * agree on one literal (mirrors the wave-bead-mismatch / stuck-in-stage
+ * pattern).
+ */
+const DISPATCH_ACTION = "run-coherence-agent";
+
+/**
+ * The LOGICAL action this rule is recovering — a missed `review-wave`
+ * dispatch after a successful `build-review` exit. The dispatch-precondition
+ * gate runs against THIS action (not DISPATCH_ACTION), because the predicates
+ * we care about (PLAN_FILE_MISSING, NO_WAVE_BEADS / ALL_WAVE_BEADS_CLOSED)
+ * are registered for `review-wave` in the EXTENDED_PRECONDITION_TABLE — they
+ * are NOT registered for `run-coherence-agent` (other coherence escalations
+ * like stuck-in-stage / repeated-qa-round target non-wave anomalies, so
+ * extending those predicates to every coherence escalation would be wrong).
+ *
+ * Mirrors stuck-in-stage.ts's `precondAction` pattern (line ~430): the gate
+ * runs against the action the rule INTENDS to recover, not the action it
+ * actually dispatches.
+ */
+const PRECONDITION_ACTION = "review-wave";
 
 /**
  * AnomalyType for this rule (closed enum value from ADR-015 § 3).
@@ -122,6 +151,20 @@ export interface MissedWaveReviewDispatchRuleOptions {
    * readEpicState from agent-launcher.ts.
    */
   readEpicSnapshot: (epicId: string) => Promise<EpicSnapshot>;
+  /**
+   * beads_web-ehp.7: bd repo path used by the dispatch-precondition gate.
+   * Passed to `buildDispatchContext({ repoPath })` (which feeds
+   * `readBeadStatus` / `readMarker` / `listOpenWaveBeads` / event-log reads
+   * via the dispatch-preconditions library) AND to `appendEvent` for the
+   * `reconciler-action-refused` records.
+   *
+   * Optional for backwards-compat with legacy tests that constructed the
+   * rule before ehp.7 landed; when absent, the precondition gate falls open
+   * (logged warn-line) and the rule preserves pre-ehp.7 behaviour. The
+   * production wiring at reconciler-bootstrap.ts passes the production
+   * repoPath unconditionally, so the production path is fully gated.
+   */
+  repoPath?: string;
 }
 
 /**
@@ -357,6 +400,96 @@ export function buildMissedWaveReviewDispatchRule(
         },
       };
 
+      // -----------------------------------------------------------------
+      // beads_web-ehp.7: dispatch-precondition gate.
+      //
+      // Architecture § Seam 5 (defense-in-depth): the gate runs BEFORE the
+      // action-route fetch so the rule never escalates to coherence (and
+      // never pollutes the event log with a downstream agent dispatch)
+      // when the LOGICAL recovery action — `review-wave` — would itself
+      // be unsafe. The two load-bearing refusals this gate produces:
+      //   - PLAN_FILE_MISSING — no plan file at .beads/plans/<epic>.md;
+      //     coherence can't sensibly review a wave whose plan is absent.
+      //   - NO_WAVE_BEADS / ALL_WAVE_BEADS_CLOSED — no open wave-N beads
+      //     exist for the wave we'd recover; the niii reviewer-4-wave-4-
+      //     redundant reproduction (epic at wave:4 but every wave:4 bead
+      //     is closed) MUST refuse here so the redispatch loop stops.
+      //
+      // Per the ehp.7 risk flag: NO_WAVE_BEADS and ALL_WAVE_BEADS_CLOSED
+      // are both registered against `review-wave` in the EXTENDED_
+      // PRECONDITION_TABLE (per ehp.13's PRECOND_WAVE_BEADS_EXIST and
+      // PRECOND_WAVE_BEADS_NOT_ALL_CLOSED — both have the same fire
+      // condition: openWaveBeadIds.length === 0). The first predicate
+      // to fire wins; v1 cannot disambiguate "no beads at all" from
+      // "all closed" via openWaveBeadIds alone. Tests assert the refusal
+      // code is in {NO_WAVE_BEADS, ALL_WAVE_BEADS_CLOSED} per the v1
+      // limitation noted at dispatch-preconditions.ts § PRECOND_WAVE_BEADS_*.
+      //
+      // Why use PRECONDITION_ACTION (`review-wave`) and not DISPATCH_ACTION
+      // (`run-coherence-agent`): the predicates we need (PLAN_FILE_MISSING,
+      // NO_WAVE_BEADS) are registered for `review-wave` because that's the
+      // canonical "wave-related" action; they are NOT registered for
+      // `run-coherence-agent` because other coherence escalations target
+      // non-wave anomalies. Mirrors stuck-in-stage.ts's `precondAction`
+      // pattern (line ~430): the gate runs against the action the rule
+      // INTENDS to recover, not the action it actually dispatches.
+      //
+      // Universal predicates (Class A.5 BD_STATUS_DEFERRED / BD_STATUS_CLOSED,
+      // Class C OPERATOR_DECISION_PENDING / REVIEW_NEEDS_HUMAN) ALWAYS fire
+      // — `appliesTo` returns true for every action — so closed/deferred
+      // protection lands regardless of which action name is passed.
+      //
+      // On refusal: structured warn-line tagged `reconciler_dispatch_refused`
+      // + appendEvent of type RECONCILER_ACTION_REFUSED to opts.repoPath
+      // with payload.ruleName + action + refusalCode + failedCheck + reason
+      // + stage='build-review' (the missed-dispatch stage); early return
+      // WITHOUT dispatching.
+      //
+      // FOLLOW-ON (architecture ADR-006, mirrored from ehp.4 / .5 / .6):
+      // refusals currently consume the `reconciler-action-taken` idempotency
+      // bucket because reconciler.ts appends that event unconditionally
+      // after act() returns. The proper bucketing key for refusals is
+      // (epicId, ruleName, refusalCode, 15-min window). Implementing it
+      // requires a reconciler.ts change tracked separately.
+      // -----------------------------------------------------------------
+      if (opts.repoPath) {
+        const precondCtx = await buildDispatchContext({
+          epicId,
+          repoPath: opts.repoPath,
+          action: PRECONDITION_ACTION,
+          // waveNumber required for the wave-beads predicates (NO_WAVE_BEADS
+          // / ALL_WAVE_BEADS_CLOSED). When the snapshot reports no waves,
+          // skip passing it — those predicates only apply to wave actions
+          // when waveNumber is meaningful.
+          waveNumber: snapshot.waveStatus.hasWaves
+            ? snapshot.waveStatus.currentWave
+            : undefined,
+        });
+        const precondResult = evaluatePreconditions(precondCtx);
+        if (!precondResult.ok) {
+          console.warn(
+            `[missed-wave-review-dispatch] reconciler_dispatch_refused: rule=${MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME} epicId=${epicId} action=${PRECONDITION_ACTION} stage=${MISSED_WAVE_REVIEW_DISPATCH_STAGE} refusalCode=${precondResult.refusalCode} failedCheck=${precondResult.failedCheck} reason="${precondResult.reason}"`,
+          );
+          await appendEvent(opts.repoPath, {
+            type: RECONCILER_ACTION_REFUSED,
+            epicId,
+            stage: MISSED_WAVE_REVIEW_DISPATCH_STAGE,
+            payload: {
+              ruleName: MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME,
+              action: PRECONDITION_ACTION,
+              refusalCode: precondResult.refusalCode,
+              failedCheck: precondResult.failedCheck,
+              reason: precondResult.reason,
+            },
+          });
+          return;
+        }
+      } else {
+        console.warn(
+          `[missed-wave-review-dispatch] precondition gate skipped — no repoPath configured (rule built without ehp.7 wiring); proceeding with pre-ehp.7 dispatch`,
+        );
+      }
+
       // factory-core-wlsr.15: dispatch run-coherence-agent (NOT the
       // pre-cutover start-wave / run-smoke-test action chosen by
       // legacyActionSelection). Mirrors the coherence-escalation rule's
@@ -380,7 +513,7 @@ export function buildMissedWaveReviewDispatchRule(
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: "run-coherence-agent",
+            action: DISPATCH_ACTION,
             epicId,
             epicTitle: snapshot.title,
             currentLabels: snapshot.labels,
@@ -392,6 +525,44 @@ export function buildMissedWaveReviewDispatchRule(
         });
       } finally {
         clearTimeout(timeoutHandle);
+      }
+
+      // -----------------------------------------------------------------
+      // beads_web-ehp.7: route-side precondition refusal (HTTP 412).
+      //
+      // Architecture § Seam 5 defense-in-depth: both the rule AND the
+      // action route validate preconditions. If the route refuses with
+      // 412 (route-side check caught state the rule's own check missed —
+      // race window, label mutated mid-flight, etc.), the rule must
+      // distinguish that from a genuine HTTP failure. 412 is a refusal:
+      // log a structured warn-line tagged `reconciler_dispatch_refused_
+      // at_route`, emit a `reconciler-action-refused` event with the
+      // ROUTE_REFUSED_412 marker code, and return WITHOUT throwing.
+      // Throwing would propagate to the reconciler tick handler and
+      // count as an act() failure (which dispatches a different recovery
+      // path — wrong semantics for a refusal). Mirrors ehp.4 / .5 / .6
+      // 412 handling verbatim.
+      // -----------------------------------------------------------------
+      if (res.status === 412) {
+        const text = await res.text().catch(() => "<unreadable>");
+        console.warn(
+          `[missed-wave-review-dispatch] reconciler_dispatch_refused_at_route: rule=${MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME} epicId=${epicId} action=${DISPATCH_ACTION} stage=${MISSED_WAVE_REVIEW_DISPATCH_STAGE} httpStatus=412 body="${text}"`,
+        );
+        if (opts.repoPath) {
+          await appendEvent(opts.repoPath, {
+            type: RECONCILER_ACTION_REFUSED,
+            epicId,
+            stage: MISSED_WAVE_REVIEW_DISPATCH_STAGE,
+            payload: {
+              ruleName: MISSED_WAVE_REVIEW_DISPATCH_RULE_NAME,
+              action: DISPATCH_ACTION,
+              refusalCode: "ROUTE_REFUSED_412",
+              failedCheck: "route-side-precondition",
+              reason: text,
+            },
+          });
+        }
+        return;
       }
 
       if (!res.ok) {
