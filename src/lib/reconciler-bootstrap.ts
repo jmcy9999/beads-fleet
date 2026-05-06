@@ -381,16 +381,34 @@ export function ensureReconcilerRunning(): void {
     // factory-core-zsjv.4 — coherence escalation rule: dispatches the
     // coherence agent for epics flagged review:needs-human.
     // factory-core-3akh.2: escalation feels fine at 1-min granularity.
+    // factory-core-wlsr.7: extended with path (b) — universal trigger via
+    // marker routing. readMarker + repoPath are wired so the rule can read
+    // the latest marker for each epic and fire when interpretMarkerForRouting
+    // returns nextAgent=coherence (any non-success outcome from a loop
+    // agent). Snapshot now includes currentStage (derived from pipeline:
+    // label) for stage-aware idempotency keys per ADR-009.
     rec.registerRule(
       throttled(buildCoherenceEscalationRule({
         readEpicSnapshot: async (epicId: string) => {
           const snap = await readEpicState(epicId, repoPath);
+          const pipelineLabel = snap.labels.find((l) =>
+            l.startsWith("pipeline:"),
+          );
+          const currentStage = pipelineLabel
+            ? pipelineLabel.replace("pipeline:", "")
+            : null;
           return {
             hasNeedsHuman: snap.labels.includes("review:needs-human"),
             labels: snap.labels,
             title: readEpicTitle(epicId, repoPath),
+            currentStage,
           };
         },
+        readMarker: async (rp: string, markerId: string) => {
+          const { readMarker } = await import("./marker-reader");
+          return readMarker(rp, markerId);
+        },
+        repoPath,
       }), 60_000), // factory-core-3akh.2: escalation at 1-min granularity
     );
 

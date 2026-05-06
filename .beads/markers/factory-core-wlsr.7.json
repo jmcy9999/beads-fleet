@@ -1,0 +1,84 @@
+{
+  "version": "1",
+  "bead_id": "factory-core-wlsr.7",
+  "status": "success",
+  "stage": "builder",
+  "started_at": "2026-05-06T00:00:00Z",
+  "exited_at": "2026-05-06T00:00:00Z",
+  "what_was_done": [
+    {
+      "action": "AC 1: Extended buildCoherenceEscalationRule's matches() with path (b). For each unique epicId in events: read snapshot, short-circuit on hasRecentCoherenceDispatch (cross-rule dedup via stage-dispatched(run-coherence-agent) events), then evaluate path (a) (review:needs-human) OR path (b) (latest marker → interpretMarkerForRouting → nextAgent=coherence). Path (b) discovers latestAgentExitedFor() to find the most recent agent-exited event's stage, builds markerId=<epicId>-<stage>, calls injected readMarker, calls interpretMarkerForRouting; only enqueues a match when override=true AND nextAgent=coherence.",
+      "result": "Both paths produce ReconcilerMatch objects with rule-name-prefixed idempotency keys (coherence-escalation::<epicId>::<stage>). Path (a) preserved bit-for-bit when readMarker is undefined (back-compat). Path (a) and path (b) are mutually exclusive per epic per tick (path a wins via continue) — single dispatch per epic per tick.",
+      "evidence": "src/lib/reconciler-rules/coherence-escalation.ts (MODIFIED — 13250 bytes); rule structure documented in module-level docblock § 'Idempotency' and § 'Cross-rule dedup with marker-driven-routing'."
+    },
+    {
+      "action": "AC 2: Path (a) behaviour preserved. EpicSnapshot.currentStage made OPTIONAL (string | null | undefined) so existing call sites in reconciler-bootstrap.ts compile without modification (defensive); path (a) idempotency key falls back to synthetic 'needs-human' stage when currentStage is absent. The legacy 5-test suite at __tests__/lib/coherence-escalation.test.ts is UNMODIFIED and continues to pass (5/5).",
+      "result": "Existing tests pass without modification. Verified by running both test files: 5 legacy tests (path (a) only) + 18 new tests (path (b) + cross-rule dedup) = 23 tests pass.",
+      "evidence": "jest output 'Test Suites: 2 passed, 2 total. Tests: 23 passed, 23 total.' across __tests__/lib/coherence-escalation.test.ts (legacy) + __tests__/lib/reconciler-rules/coherence-escalation.test.ts (new)."
+    },
+    {
+      "action": "AC 3: Path (b) trigger cases tested with named tests. (a) status=needs-decision + BLOCKER → coherence (via Precedence 3 in marker-routing). (b) status=blocked + blocker_class=scope-conflict → coherence (via Precedence 2 BLOCKER_CLASS_TO_AGENT['scope-conflict']='coherence'). (c) status=failure → coherence (via Precedence 5 wlsr.3 rewrite). (d) loop-agent stage (qa) + next_agent=operator → coherence (via Precedence 1.5 stage-aware rewrite, post-wlsr.3).",
+      "result": "All four named tests pass. Tests use real readMarker (fs-backed) reading actual marker JSON files written to tmpdir; marker-routing module is exercised end-to-end (no mocks of interpretMarkerForRouting).",
+      "evidence": "tests 'AC 3a/b/c/d' in __tests__/lib/reconciler-rules/coherence-escalation.test.ts; jest log lines 'dispatching coherence agent for factory-core-need1/block1/fail1/op1 (path=b, trigger=marker-routing, decision=...)'."
+    },
+    {
+      "action": "AC 4: Idempotency key includes (epicId, stage) per ADR-009. Verified two named tests: 'idempotency — same (epicId, stage) within horizon does NOT refire' (single dispatch across two ticks) AND 'idempotency — stage transition (builder→reviewer) allows refire' (different markers for different stages produce two dispatches because the key changes).",
+      "result": "Both tests pass. The stage-transition test verifies that a builder-marker dispatch followed by a reviewer-marker dispatch produces 2 fetch calls (different idempotency keys). The same-stage test verifies a single dispatch across two ticks (same idempotency key consumed on first tick).",
+      "evidence": "tests 'AC 4: idempotency — same (epicId, stage) within horizon does NOT refire' and 'AC 4: idempotency — stage transition (builder→reviewer) allows refire' in __tests__/lib/reconciler-rules/coherence-escalation.test.ts."
+    },
+    {
+      "action": "AC 5: Cross-rule dedup with marker-driven-routing. Two named tests. (1) 'cross-rule dedup — both rules on same marker each fire once (different rule-name prefix)' registers BOTH rules in a single Reconciler, sees marker status=needs-decision, expects 2 dispatches in tick 1 (one per rule, different idempotency keys), then 0 dispatches on tick 2 (each rule's reconciler-action-taken event blocks its own re-fire). (2) 'idempotency keys are rule-scoped — marker-driven-routing's prior action does NOT block coherence-escalation' pre-seeds a reconciler-action-taken event from marker-driven-routing and verifies coherence-escalation still fires (proves the rule-name prefix in keys prevents collision).",
+      "result": "Both tests pass. Confirms reconciler core's (rule-name, idempotencyKey) dedup works as documented; the rule-name prefix in path (b)'s key (coherence-escalation::) is the load-bearing element preventing accidental cross-rule dedup.",
+      "evidence": "tests 'AC 5: cross-rule dedup ...' and 'AC 5: idempotency keys are rule-scoped ...' in __tests__/lib/reconciler-rules/coherence-escalation.test.ts."
+    },
+    {
+      "action": "AC 6/7: Tests use the real Reconciler harness with synthesised events + real readMarker reading marker JSON files written to fs.mkdtemp() tmpdirs. Mocks limited to global.fetch (orchestrator dispatch only); readMarker is the real implementation from src/lib/marker-reader.ts; interpretMarkerForRouting is the real implementation from src/lib/marker-routing.ts. EpicSnapshot helper (snap()) and writeMarker() helper centralise fixture construction.",
+      "result": "Test fixture matches the bead's acceptance criteria spec. The Reconciler instance drives ticks; rule's matches() and act() execute as in production. fetch calls are captured for assertion.",
+      "evidence": "Helper functions makeRepo/snap/seedAgentExited/writeMarker at the top of __tests__/lib/reconciler-rules/coherence-escalation.test.ts (lines 32-79). Real Reconciler usage verified by `new Reconciler({ repoPath: repo })` and `await rec.tick()` calls in every test."
+    },
+    {
+      "action": "AC 8: Orchestrator-down behaviour verified. Test 'AC 8: orchestrator HTTP failure throws (reconciler retries next tick)' mocks fetch to return HTTP 500. The rule's act() throws (preserved zsjv hotfix behaviour: HTTP non-2xx → Error). The reconciler core swallows the error per its always-emit reconciler-action-taken contract; this consumes the idempotency bucket for the horizon, which is the documented 'logs and retries when bucket rotates' behaviour. No operator escalation from inside the rule (per ADR-008).",
+      "result": "Test passes. Asserts fetch was called (dispatch attempted) and reconciler logged the error. No path (b) cross-fall to operator routing happens — coherence is the universal handler for routing failures including orchestrator-down per ADR-008 (already enforced via wlsr.18 BLOCKER_CLASS_TO_AGENT['orchestrator-down']='coherence').",
+      "evidence": "test 'AC 8: orchestrator HTTP failure throws' in __tests__/lib/reconciler-rules/coherence-escalation.test.ts; rule act() error path at src/lib/reconciler-rules/coherence-escalation.ts lines 297-302."
+    },
+    {
+      "action": "Production wiring: reconciler-bootstrap.ts updated to plumb readMarker + repoPath options and to derive currentStage from the pipeline:<stage> label. Without this wiring, path (b) is dormant in production. The change is additive (callbacks added; existing path (a) wiring preserved) and small (15 lines net).",
+      "result": "Path (b) production-enabled. Bootstrap typechecks clean and lint clean (the lone @typescript-eslint/no-require-imports warning at line 598 is pre-existing in unrelated code — see Surprises).",
+      "evidence": "src/lib/reconciler-bootstrap.ts lines 381-407 (rule registration block). typecheck baseline diff = 0 errors introduced."
+    },
+    {
+      "action": "Anomaly-class differentiation: path (a) preserves the legacy anomalyClass 'review-needs-human' for downstream consumers (dashboard CTA, journal entries). Path (b) uses 'marker-routing-coherence' as a generic anomalyClass — coherence reads the marker context itself, so a fine-grained taxonomy is not required (per operator-set principle P3 'principle-driven, not rule-table driven').",
+      "result": "Existing path (a) consumers see no behavioural change (anomalyClass='review-needs-human' on the dispatch payload). Path (b) consumers see a new anomalyClass that signals 'marker-driven coherence escalation, see marker for context'.",
+      "evidence": "rule act() lines 269-280; verified by tests 'AC 2: path (a) ... legacy anomalyClass' and 'AC 3a' (asserts 'marker-routing-coherence' on path (b) dispatches)."
+    }
+  ],
+  "what_was_tested": "Standard implementation depth per builder.md § 5c (rule logic + injected dependencies). Verified via:\n(1) 18 new unit tests at __tests__/lib/reconciler-rules/coherence-escalation.test.ts covering AC 1-8 with named tests per AC item.\n(2) 5 legacy unit tests at __tests__/lib/coherence-escalation.test.ts unchanged, all pass (path (a) preservation per AC 2).\n(3) Full beads_web jest suite: 2097 tests pass, 1 skipped, 0 failures across 104 test suites.\n(4) typecheck: zero new errors introduced; pre-existing typecheck errors (research.test.ts NextJS params, agent-launcher-marker-detection.test.ts node:fs/promises Stats import, dolt-lifecycle.test.ts unknown type, commit-manager.test.ts unused @ts-expect-error) are unrelated to wlsr.7 and exist on main.\n(5) lint clean on the two new/modified rule + test files; reconciler-bootstrap.ts has one pre-existing @typescript-eslint/no-require-imports warning at line 598 (in unrelated hs5 fallback code, not introduced by wlsr.7).\n(6) Cross-rule dedup tests register BOTH coherence-escalation AND marker-driven-routing rules in a single Reconciler instance, exercising the (rule-name, key) dedup contract end-to-end.\n(7) Path (b) tests use real readMarker (fs-backed) reading actual marker JSON files in fs.mkdtemp() tmpdirs — exercises the marker-reader → marker-routing → rule chain end-to-end with no mocks beyond fetch.\n(8) Stage-transition refire test verifies the ADR-009 stage-scoping by writing two distinct marker files for the same epic at different stages and asserting two dispatches.\n(9) Orchestrator-down test verifies the rule throws on HTTP 500, the reconciler swallows the throw, and emits reconciler-action-taken with success=false (per AC 8).",
+  "deviations_from_ac": "(1) PATH CORRECTION (declared per Step 5d Step 3): bead's Files: manifest listed test file at 'beads_web/src/__tests__/lib/reconciler-rules/coherence-escalation.test.ts' but jest.config.js scans only '<rootDir>/__tests__/lib/**/*.test.ts'. A file under src/__tests__/ would not run. New test file written to 'beads_web/__tests__/lib/reconciler-rules/coherence-escalation.test.ts' matching the project's existing test layout (same correction as wlsr.2 + wlsr.3 deviations notes). (2) SPILLOVER (Step 5d Step 3a, small same-scope): added 'beads_web/src/lib/reconciler-bootstrap.ts' to the manifest via bd update --append-notes during build. The bootstrap update is required to plumb readMarker + repoPath in production; without it, the rule's path (b) is dormant. Change is minimal (15 lines net, additive) and clearly within the bead's intent ('fire on any non-success marker outcome' implies production-firing). All other call sites of buildCoherenceEscalationRule unchanged. Both deviations are mechanical metadata corrections; AC 1-8 contract met exactly per implementation + tests.",
+  "surprises_or_findings": "(1) Existing legacy test file at __tests__/lib/coherence-escalation.test.ts uses a snap() helper that does NOT include currentStage. To preserve existing tests without modification (AC 2), I made currentStage OPTIONAL on the EpicSnapshot interface. Path (a)'s idempotency key falls back to a synthetic 'needs-human' stage when currentStage is absent — keeps the key well-defined per ADR-009 even in the legacy snapshot shape. (2) Cross-rule dedup test initially used status=failure marker but marker-driven-routing's hasRoutingIntent check requires next_agent set OR status=needs-decision. Switched to status=needs-decision so BOTH rules fire — this is the intended cross-rule scenario for AC 5 verification. (3) Bootstrap's lone lint warning at line 598 (require('fs') style import in hs5 fallback code) is pre-existing on main; verified by the warning being in untouched code. (4) The legacy rule's idempotency key was 'coherence-escalation::<epicId>' (no stage); the new key adds stage. This is technically a key-shape change for path (a) — legacy reconciler-action-taken events on the OLD key will not match the new key. In production, this means a single one-time dispatch may fire for any epic that had a path-(a) dispatch on the old key BEFORE wlsr.7 lands; subsequent dispatches use the new keyed shape. Considered acceptable: idempotency horizon is 1 hour; the behaviour change is observed at most once per epic at the deployment boundary; coherence is idempotent at the agent level (re-dispatching coherence on the same epic is benign — it reads the journal and either dispatches the same action again or escalates). (5) Per-AC checkpoint table NOT written this build (Wave 2 builder for this rule operates on a self-contained scope; mid-build crash recovery would not lose substantial work).",
+  "recommendation_for_next": "Wave 2 dependencies satisfied for wlsr.14/15/16/9 (Phase B cutover beads + retroactive rollout). Dispatch reviewer Stage 4 (per-bead) for this bead — scope is 3 modified/new files, ~270 net lines. Suggested reviewer focus: (a) Rule-name prefix in idempotency keys (coherence-escalation::<epicId>::<stage>) is the load-bearing collision-prevention element; verify the keys never accidentally match marker-driven-routing's keys in any path. (b) Path (a)/(b) mutual exclusion per epic per tick (path a wins via continue); confirm no scenario produces double-dispatch within a single tick from the same rule. (c) currentStage fallback to 'needs-human' on path (a) when snapshot.currentStage is absent — verify legacy snapshots from reconciler-bootstrap.ts before wlsr.7's currentStage wiring would still produce well-defined idempotency keys (the fallback is the load-bearing safety net for the manifest correction). (d) Production wiring in reconciler-bootstrap.ts: path (b) is now wired via dynamic import of marker-reader (matching the marker-driven-routing pattern); verify no circular-import risk. (e) Anomaly-class differentiation: path (a) preserves 'review-needs-human' for back-compat; path (b) uses 'marker-routing-coherence'. Verify no downstream consumer (dashboard CTA, journal) breaks on the new value.",
+  "next_agent": "reviewer",
+  "whats_open": [
+    "FOLLOW-ON: marker-driven-routing rule (xfc) and coherence-escalation rule (this bead) both interpret coherence-routing markers; in the same tick, both will dispatch. The architecture-level question 'should we add cross-rule dedup so only one rule dispatches per tick' is OUT OF SCOPE for wlsr.7 (architectural decision, not implementation correction). Acceptable today because the operator chose 'rely on existing dedup + downstream agent-launcher protections' per ADR (cited in module-level docblock § Cross-rule dedup). If empirical observation shows duplicate coherence dispatches are wasteful, file a follow-on bead in wlsr or sy3d.",
+    "FOLLOW-ON: legacy idempotency-key shape change (added ::stage suffix) may produce a one-time dispatch at deployment for epics with prior-shape reconciler-action-taken events; documented in 'Surprises' (4). If this proves disruptive in production, add a one-tick warm-up filter in wlsr.9's retroactive-rollout step."
+  ],
+  "ac_items_NOT_verified": "None — all 8 AC items verified per implementation + tests. Each AC item has at least one named test in __tests__/lib/reconciler-rules/coherence-escalation.test.ts.",
+  "dispatch_context": {
+    "bead_id": "factory-core-wlsr.7",
+    "epic_id": "factory-core-wlsr",
+    "wave": 2,
+    "files_modified_in_repo": [
+      "src/lib/reconciler-rules/coherence-escalation.ts",
+      "src/lib/reconciler-bootstrap.ts",
+      "__tests__/lib/reconciler-rules/coherence-escalation.test.ts",
+      ".beads/markers/factory-core-wlsr.7.json"
+    ],
+    "test_results": {
+      "new_tests_pass": 18,
+      "regression_tests_pass": 5,
+      "full_suite_pass": 2097,
+      "full_suite_skipped": 1,
+      "typecheck_errors_introduced": 0,
+      "lint_errors_introduced": 0
+    }
+  }
+}
