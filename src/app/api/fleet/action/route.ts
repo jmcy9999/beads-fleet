@@ -481,9 +481,21 @@ async function checkPreconditionsOrRefuse(params: {
   action: PipelineAction;
   waveNumber?: number;
 }): Promise<NextResponse | null> {
+  // Cross-repo epic resolution: beads_web-* lives in beads_web's bd repo, not factory-core.
+  // Without this, readBeadStatus runs `bd show beads_web-ehp --repo=<factory-core>` and
+  // returns null → BD_READ_FAILED fail-closed refuses every legitimate dispatch.
+  // Fall back to fleetCorePath only when findRepoForIssue can't resolve.
+  let repoPath = params.fleetCorePath;
+  try {
+    const homeRepo = await findRepoForIssue(params.epicId);
+    if (homeRepo) repoPath = homeRepo;
+  } catch {
+    // Fall through to fleetCorePath default; downstream readBeadStatus will fail-closed
+    // if the resolved path is wrong, which is the correct ADR-002 posture.
+  }
   const ctx = await buildDispatchContext({
     epicId: params.epicId,
-    repoPath: params.fleetCorePath,
+    repoPath,
     action: params.action,
     waveNumber: params.waveNumber,
   });
