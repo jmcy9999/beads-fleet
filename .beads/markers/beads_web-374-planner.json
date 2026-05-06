@@ -1,0 +1,64 @@
+{
+  "version": "1",
+  "epic_id": "beads_web-374",
+  "status": "success",
+  "stage": "planner",
+  "started_at": "2026-05-06T00:00:00Z",
+  "exited_at": "2026-05-06T00:00:00Z",
+  "next_agent": "test-spec",
+  "what_was_done": [
+    {
+      "action": "Read architect document at docs/research/marker-aware-ctas-in-fleetcard-bead-card-architecture.md (591 lines, 7 ADRs).",
+      "result": "Architecture inputs absorbed: layer mapping, data model, component diagram, file structure plan, ADRs ADR-001 through ADR-007.",
+      "evidence": "/Users/janemckay/dev/fleet/factory-core/docs/research/marker-aware-ctas-in-fleetcard-bead-card-architecture.md"
+    },
+    {
+      "action": "Verified bead description (de-facto functional spec per architect § Status) at bd show beads_web-374.",
+      "result": "Six AC items confirmed; 5 precedence branches enumerated; cross-references to beads_web-5nv / a6o / 85f / 07p captured; operator note 2026-05-06 about niii.6 sequencing recorded.",
+      "evidence": "bd show beads_web-374 NOTES section dated 2026-05-06"
+    },
+    {
+      "action": "Verified existing exports in beads_web: interpretMarkerForRouting (marker-routing.ts:104), getActionForAgent (agent-action-map.ts:31), readMarker (marker-reader.ts:83), MarkerData (marker-reader.ts:32), getAllRepoPaths (repo-config.ts:138), FleetStage (fleet-utils.ts:8), EpicStateSnapshot (marker-routing.ts:63).",
+      "result": "All architecture-referenced modules exist and export the expected symbols. No prerequisite scaffolding beads needed.",
+      "evidence": "grep results for export symbols across the four lib files"
+    },
+    {
+      "action": "Verified Step 7 dispatcher consumer semantics. start-wave (agent-launcher.ts groupBeadsByFileConflict L1370-1419 + listOpenWaveBeads L1437+) is dep-naive — parallelises by Files-manifest disjointness via union-find, ignores bd deps within a wave.",
+      "result": "Plan must produce strict topological waves; no intra-wave deps. Wave assignments built via Kahn's algorithm match this constraint.",
+      "evidence": "beads_web/src/lib/agent-launcher.ts:1370-1530"
+    },
+    {
+      "action": "Created 5 beads (374.1 through 374.5) in beads_web with epic:beads_web-374 + wave:N labels and parent links.",
+      "result": "Wave 1 = .1, .2, .3 (3 parallel, disjoint Files manifests). Wave 2 = .4 (deps on .1, .2). Wave 3 = .5 (deps on .3, .4). Total estimated effort 330 min serialised, ~3.5-4 hr with Wave 1 parallelism.",
+      "evidence": "bd show beads_web-374.1 through 374.5 — all show LABELS: epic:beads_web-374, wave:N + PARENT line"
+    },
+    {
+      "action": "Wired bd dependencies: 374.1 + 374.2 block 374.4; 374.3 + 374.4 block 374.5.",
+      "result": "Cross-wave deps only. Intra-wave deps = none. Matches dep-naive dispatcher contract.",
+      "evidence": "bd dep ... --blocks output for 4 dep edges"
+    },
+    {
+      "action": "Wrote 5 build prompts at beads_web/.beads/prompts/beads_web-374.{1..5}.md following the 8-section structure (OUTCOME / SCOPE / FILES / AC / CONTEXT / RISK FLAGS / MARKER / COMMIT). Each prompt is bead-specific, grounds risk flags in prior occurrences (beads_web-8wh Edge Runtime trap; o4lx Risk 5 cross-repo cache; regression #7 Type Confusion on Enum Branching).",
+      "result": "Build prompts mean each builder agent receives bead-specific context — architectural intent + risk flags reach the agent verbatim, bypassing the auto-generated prompt.",
+      "evidence": "ls beads_web/.beads/prompts/beads_web-374.{1..5}.md"
+    },
+    {
+      "action": "Wrote plan summary at fleet-core/.beads/plans/beads_web-374.md per Step 8 schema (Overview, UX walkthrough as state-based personas, Wave Summary with dispatcher-verdict column, Bead Summary table, Parallelism summary per wave, Architecture Decisions reference to ADRs, Security and Analytics, Scope Notes including operator preference on niii.6).",
+      "result": "Plan file is the single source of truth for the build plan; downstream agents (test-spec, reviewer, builder, QA) can read it for orientation.",
+      "evidence": "fleet-core/.beads/plans/beads_web-374.md"
+    }
+  ],
+  "what_was_tested": "Self-verify per Step 11 ran: every bead has Files: section with bullets; all paths repo-relative (no leading ./, no ~/, no absolute); no bead exceeds 10 files (max is 4 in 374.5); intra-wave file-conflict sweep clean (Wave 1 three beads have disjoint Files manifests; Waves 2 and 3 are single-bead waves); every bead carries epic:beads_web-374 + wave:N labels + parent link to beads_web-374; bd dep tree confirms cross-wave-only deps. Bead-target-usability check: beads_web has Next.js + React 19 + TypeScript + vitest + TanStack Query — all targets usable. Anchor-Decision compliance check: ADR-001 (REUSE interpretMarkerForRouting) explicitly named in 374.3 AC; Edge Runtime constraint (beads_web-8wh) explicitly named in 374.2 and 374.5 AC; marker-protocol.md § 1 filename convention explicitly named in 374.1 AC. Step 7 dispatch-consumer verification recorded in Wave Summary.",
+  "deviations_from_ac": "None from the architect's recommendation regarding the 5-bead decomposition (374.1 through 374.5 match the architect's hand-off). One adjustment: the architect placed 374.3 in Wave 2 'for cohesion'. Per Kahn's algorithm with no actual code dependencies between 374.1, 374.2, and 374.3 (Files manifests disjoint, no bd deps), 374.3 was promoted to Wave 1. This produces a 3-parallel Wave 1 instead of 2-parallel Wave 1 + 374.3-leading Wave 2; the dep-naive dispatcher will run them concurrently. Architect's recommendation note: 'sequenced for cohesion only — could move to Wave 1' explicitly authorised this. Estimated effort reduces from 4-6 hr to ~3.5-4 hr operator-clock.",
+  "recommendation_for_next": "Dispatch the test-spec agent against this plan. Test scenarios should cover all 5 precedence branches per AC #6 of bead description, the a6o-defence scenario per AC #5, and the QA-round-marker-on-QA-stage exception in 374.4's stale filter. After test-spec completes, the planner-stage marker is consumed by the build dispatcher; Wave 1 (374.1 + 374.2 + 374.3) launches in parallel.",
+  "surprises_or_findings": [
+    "Architecture document was thorough and self-consistent — no design ambiguities surfaced during decomposition. Architect handed off a clean 5-bead recommendation that needed only one minor wave-assignment adjustment.",
+    "Operator note in bead description (2026-05-06) about niii.6 coordination was explicit enough to settle without further surfacing: niii.6 sequences AFTER 374.5, NOT folded in. Documented in plan summary § Scope Notes."
+  ],
+  "whats_open": [
+    "FOLLOW-ON: niii.6 (Close Epic button) — sequence after 374.5 lands so it can reuse useEpicMarker + the marker-aware-CTA framework. niii.6's planner decides absorb-or-standalone post-374.",
+    "FOLLOW-ON: beads_web-5nv (P3, populate pipeline-routes CTAs) — coordinate with 374.5 at PR-time to avoid FleetCard.tsx merge conflicts. 374.5 is the only 374-bead that touches FleetCard.tsx.",
+    "FOLLOW-ON: beads_web-85f (P2, reconciler stale-marker re-dispatch) — when 85f lands, the stale-marker filter shape in 374.4 may need a one-place edit to mirror 85f's filter. Currently both implement 'skip markers from stages older than current'; if 85f changes shape (e.g., 'skip markers older than N seconds'), 374.4 follows.",
+    "FOLLOW-ON: per-bead marker reads for non-epic beads — out of scope per ADR-006. A future bead can extend useEpicMarker + MarkerAwareCtaBlock pattern to per-bead markers on the bead-detail page."
+  ]
+}
