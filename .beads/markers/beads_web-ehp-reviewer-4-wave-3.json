@@ -1,0 +1,75 @@
+{
+  "version": "1",
+  "epic_id": "beads_web-ehp",
+  "status": "success",
+  "stage": "reviewer",
+  "started_at": "2026-05-06T23:50:00Z",
+  "exited_at": "2026-05-06T23:55:00Z",
+  "what_was_done": [
+    {
+      "action": "Stage 4 Code Review on Wave 3 of beads_web-ehp (two beads: ehp.4 marker-driven-routing precondition gate + ehp.13 dispatch-preconditions library extension)",
+      "result": "Verdict: PASS. Zero bugs filed. Five observations recorded for operator awareness. Load-bearing 372-bead-defer protection verified end-to-end.",
+      "evidence": ".beads/reviews/beads_web-ehp-wave-3-round-1.md (committed alongside this marker). Per-bead commits: 6bda934 (ehp.4) and a82ef19 (ehp.13). Both beads carry wave:3 label (improvement over Wave 1/2)."
+    },
+    {
+      "action": "LOAD-BEARING AC verification (BD_STATUS_DEFERRED catches 372-bead mass-defer)",
+      "result": "Verified at __tests__/lib/reconciler-rules/marker-driven-routing.precondition-integration.test.ts:167-236. Test (a) sets mockReadBeadStatus to status='deferred', (b) asserts ZERO fetch calls (line 219), (c) asserts refusal event with refusalCode='BD_STATUS_DEFERRED' + ruleName='marker-driven-routing' + failedCheck='bd-status-not-deferred' + reason containing 'deferred' (lines 228-235). Protection intact.",
+      "evidence": "__tests__/lib/reconciler-rules/marker-driven-routing.precondition-integration.test.ts; src/lib/reconciler-rules/marker-driven-routing.ts lines 376-422 (gate) + 442-477 (412 branch)"
+    },
+    {
+      "action": "412-branch ordering check (ehp.4)",
+      "result": "Verified that the 412 branch returns BEFORE the existing `if (!res.ok) throw` path. Lines 458-477 (412 case returns at 474) followed by lines 479-484 (throw on other non-2xx). Non-412 HTTP errors retain throw semantics — no regression.",
+      "evidence": "src/lib/reconciler-rules/marker-driven-routing.ts:458-484"
+    },
+    {
+      "action": "evaluatePreconditions table-preference check (ehp.13)",
+      "result": "Verified EXTENDED_PRECONDITION_TABLE preferred over Wave-2 minimal PRECONDITION_TABLE via nullish coalescing at line ~1185. Unknown actions hit warn+pass branch (preserves ehp.3 fail-OPEN policy for unregistered actions; EXEMPT_ACTIONS correctly land here).",
+      "evidence": "src/lib/dispatch-preconditions.ts:~1185"
+    },
+    {
+      "action": "buildDispatchContext total-function check (ehp.13)",
+      "result": "Verified all reader paths return safe defaults on failure: readPlanFileMeta has try/catch returning {exists:false, mtimeMs:null}; safeListOpenWaveBeads catches z9h.9 throws and returns []; event-log read for stageEnteredAt has try/catch returning null. No unhandled rejection paths. Function is total.",
+      "evidence": "src/lib/dispatch-preconditions.ts:1024-1124 (buildDispatchContext) + 1132-1192 (readPlanFileMeta + safeListOpenWaveBeads)"
+    },
+    {
+      "action": "Files-outside-manifest scope evaluation (per surfacing-protocol § 2.3 failure mode 3)",
+      "result": "ehp.13 modified __tests__/lib/reconciler-rules/marker-driven-routing.test.ts (4-line plan-file fixture, outside Files manifest). Disposition: ACCEPT. Verified the 4-line change is mock-only test fixture alignment with no behaviour change. The original test's intent (belt-and-suspenders: dispatch fires despite agent:running label) is preserved. Builder marker explicitly surfaced this as deviations_from_ac (2) with substantive reasoning. Operator-driven close implicitly accepted. Logged in review file as Observation 4 with future-friction guidance for similar Wave-3-style additive extensions.",
+      "evidence": "Review file Observation 4; ehp.13 builder marker deviations_from_ac (2)"
+    },
+    {
+      "action": "Test suite verification",
+      "result": "112 unit tests in dispatch-preconditions.test.ts: PASS. 21 integration tests in dispatch-preconditions.integration.test.ts: PASS. 4 integration tests in marker-driven-routing.precondition-integration.test.ts: PASS. Full beads_web suite per builder markers: 110 suites / 2310 tests / 2309 passed / 1 skipped / 0 failed.",
+      "evidence": "Builder markers + targeted re-run during review"
+    }
+  ],
+  "what_was_tested": "Reviewer's rubric: (a) standing-order compliance per agent-discipline.md sections 1, 2, 4, 7 + internal/development.md + internal/guardrails.md; (b) layer compliance (Domain types only, Application logic, Infrastructure adapters via composition); (c) regression patterns #1, #2, #3, #4, #7, #13 — all PASS or N/A; (d) anchor decision compliance for ADRs 001-006 — all PASS; (e) test pyramid posture (112 unit / 25 integration / 0 E2E — healthy); (f) load-bearing AC verification end-to-end against the deferred-bead scenario; (g) 412-branch ordering with throw-path preservation; (h) buildDispatchContext total-function semantics; (i) files-outside-manifest scope check per surfacing-protocol § 2.3 failure mode 3.",
+  "deviations_from_ac": "None for the reviewer. Five Observations recorded against the reviewed code (not against the review): (1) dual-table coexistence between PRECONDITION_TABLE and EXTENDED_PRECONDITION_TABLE — future-safety LOW; (2) safeListOpenWaveBeads masks bd-read failures as NO_WAVE_BEADS — diagnostic LOW; (3) two stale comments referencing 'pipeline-label-set' — TRIVIAL; (4) ehp.13 cross-bead test fixture (4 lines outside Files manifest) — SCOPE NOTE accepted; (5) ROUTE_REFUSED_412 outside the 15-code RefusalCode union — TRIVIAL.",
+  "surprises_or_findings": "1. Both Wave 3 beads carry the wave:3 bd label — the planner-stage label-convention gap noted in Wave-1/Wave-2 reviews is now resolved for this wave. No surfacing-protocol scope discrepancy this round.\n\n2. The duplicate bead beads_web-abc (closed with reason 'Re-creating with --parent to get ehp.13 prefix') is a planner-side housekeeping artefact with no commits or labels relevant to scope. Not a duplicate-work concern.\n\n3. The known FOLLOW-ON in ehp.4 (refusals consume the reconciler-action-taken idempotency bucket because reconciler.ts:381 appends unconditionally; ADR-006 calls for a separate bucket keyed (epicId, ruleName, refusalCode, 15-min)) is documented in 3 places: ehp.4 marker, rule's inline comment, and ARCHITECTURE.md entry. Tracked as a separate reconciler-core bead — not blocking on Wave 3.\n\n4. ehp.13's discovery that 'pipeline-label-set' (architect-spec) does not exist in the codebase but 'stage-dispatched' does, and the empirical-grep verification before bake-in, is exactly the discipline internal/guardrails.md guardrail #3 demands. Honoured.\n\n5. NO_WAVE_BEADS vs ALL_WAVE_BEADS_CLOSED disambiguation cannot be resolved from openWaveBeadIds alone — both predicates fire on the same condition. ehp.13 documents this v1 limitation honestly inline + tests accept either code per ehp.12 risk flag #3. Future bead can add closedWaveBeadIds + a second bd reader for proper disambiguation.",
+  "whats_open": [
+    "FOLLOW-ON (Observation 1): Add JSDoc deprecation banner on PRECONDITION_TABLE export pointing readers at EXTENDED_PRECONDITION_TABLE + evaluatePreconditions. 5-min cleanup; could fold into ehp.11 (route.ts wrap) or a Wave-4 hardening bead.",
+    "FOLLOW-ON (Observation 2): Either add a dedicated WAVE_BEAD_READ_FAILED refusal code OR extend safeListOpenWaveBeads's warn-line + PRECOND_WAVE_BEADS_EXIST JSDoc to flag that the refusal code may represent infrastructure failure. Comment-only option is the cheaper fix.",
+    "FOLLOW-ON (Observation 3): Stale-comment cleanup — two locations referencing 'pipeline-label-set' (DispatchContext.stageEnteredAt JSDoc + buildDispatchContext block-comment). Search-and-replace fix.",
+    "FOLLOW-ON (Observation 5): Optionally extend REFUSAL_CODES to include synthetic ROUTE_REFUSED_412 + ROUTE_REFUSED_OTHER for event-log producer/consumer lockstep.",
+    "FOLLOW-ON (from ehp.4 marker, propagated): refusal-bucket idempotency in reconciler.ts (separate reconciler-core bead).",
+    "FOLLOW-ON (from ehp.13 marker, propagated): tmux-session state reader for AGENT_RUNNING_NO_SESSION; closedWaveBeadIds disambiguation; standing-orders / architect memo update for stage-dispatched event-type name.",
+    "BLOCKER: NONE. Wave 4 (ehp.5–.11) is unblocked."
+  ],
+  "recommendation_for_next": "Wave 4 dispatch — ehp.5 through ehp.11 are now unblocked with the FULL precondition library landed. The ehp.13 builder marker's per-bead handoff guidance (most coverage-sensitive integrations: ehp.6 wave-bead-mismatch, ehp.5 stuck-in-stage, ehp.11 route.ts wrap) remains valid. The five Observations in this review are non-blocking; operator may convert any to bug beads vs absorb into Wave 4 follow-on work. The load-bearing 372-bead-defer protection is operationally live as of commit 6bda934 (ehp.4); the protection is verified end-to-end and the rule-side gate stops the dispatch + records the refusal event correctly.",
+  "next_agent": "operator",
+  "verdict": "PASS",
+  "open_bugs": 0,
+  "dispatch_context": {
+    "wave": 3,
+    "round": 1,
+    "beads_reviewed": ["beads_web-ehp.4", "beads_web-ehp.13"],
+    "beads_with_wave_label": ["beads_web-ehp.4", "beads_web-ehp.13"],
+    "tests_passed": 137,
+    "full_suite_passed": 2309,
+    "full_suite_skipped": 1,
+    "full_suite_failed": 0,
+    "bugs_filed": 0,
+    "observations_recorded": 5,
+    "load_bearing_ac_verified": true,
+    "files_outside_manifest_disposition": "ACCEPT (4-line mock fixture; mock-only, no behaviour change, builder-surfaced, operator-accepted)"
+  }
+}
