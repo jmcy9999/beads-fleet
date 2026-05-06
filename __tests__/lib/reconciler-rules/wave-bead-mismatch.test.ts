@@ -305,6 +305,72 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
   });
 
   // -------------------------------------------------------------------------
+  // factory-core-wlsr.21: recentEvents ordering is newest-first
+  //
+  // ADR-015 § 3 + wlsr.14/15 markers contract: "cap 10, newest-first".
+  // Sibling rules (stuck-in-stage.ts, missed-wave-review-dispatch.ts) sort
+  // newest-first by explicit timestamp. This rule was previously returning
+  // append (oldest-first) order; wlsr.21 aligned the convention.
+  // -------------------------------------------------------------------------
+
+  test("wlsr.21: recentEvents in escalation context is newest-first (matches sibling rules' convention)", async () => {
+    const repo = await makeRepo();
+    // Seed three events at different timestamps; appendEvent stamps them
+    // in monotonically-increasing order, so events.jsonl natural order is
+    // oldest-first. The rule must invert that for recentEvents.
+    await appendEvent(repo, {
+      type: "agent-exited",
+      epicId: "factory-core-wlsr21",
+      stage: "qa",
+      payload: { exitCode: 0, marker: "first" },
+    });
+    await appendEvent(repo, {
+      type: "stage-dispatched",
+      epicId: "factory-core-wlsr21",
+      stage: "builder",
+      correlationId: "tmux-builder-1",
+      payload: { toAction: "run-builder-agent", marker: "second" },
+    });
+    await appendEvent(repo, {
+      type: "agent-exited",
+      epicId: "factory-core-wlsr21",
+      stage: "builder",
+      payload: { exitCode: 0, marker: "third" },
+    });
+
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(
+      buildWaveBeadMismatchRule({
+        readEpicSnapshot: async () =>
+          snap({ currentStage: "qa", lowestOpenWave: 2 }),
+      }),
+    );
+    await rec.tick();
+
+    expect(fetchCalls).toHaveLength(1);
+    const body = fetchCalls[0].body as {
+      escalationContext: {
+        recentEvents: Array<{
+          timestamp: string;
+          payload?: { marker?: string };
+        }>;
+      };
+    };
+    const recent = body.escalationContext.recentEvents;
+    expect(recent.length).toBe(3);
+    // Newest-first: marker="third" must be at index 0, "first" at index 2.
+    expect(recent[0].payload?.marker).toBe("third");
+    expect(recent[1].payload?.marker).toBe("second");
+    expect(recent[2].payload?.marker).toBe("first");
+    // Timestamps strictly non-increasing.
+    for (let i = 0; i < recent.length - 1; i++) {
+      expect(Date.parse(recent[i].timestamp)).toBeGreaterThanOrEqual(
+        Date.parse(recent[i + 1].timestamp),
+      );
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // AC 5d — act() does NOT call fetch with previous hardcoded action,
   //         AND does NOT mutate pipeline labels
   // -------------------------------------------------------------------------

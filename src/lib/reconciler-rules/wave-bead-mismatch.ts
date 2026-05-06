@@ -91,8 +91,17 @@ export interface WaveBeadMismatchRuleOptions {
 }
 
 /**
- * Filter recent events for the given epic and cap at N.
+ * Filter recent events for the given epic and cap at N, newest-first.
  * Used to source `EscalationContext.recentEvents`.
+ *
+ * factory-core-wlsr.21: Aligned with the sibling Wave 3 rules
+ * (`stuck-in-stage.ts:recentEpicEvents` and
+ * `missed-wave-review-dispatch.ts:recentEpicEvents`) which both sort
+ * newest-first by explicit timestamp. ADR-015 § 3 default is "last N
+ * events from events.jsonl scoped to epic" and the wlsr.14/15 markers
+ * call out "cap 10, newest-first" as the contract; the coherence
+ * agent's heuristic depends on `recentEvents[0]` being the most recent
+ * action.
  */
 function recentEventsForEpic(
   events: PipelineEvent[],
@@ -100,8 +109,8 @@ function recentEventsForEpic(
   cap = 10,
 ): EventSummary[] {
   const filtered = events.filter((e) => e.epicId === epicId);
-  // Newest-last in append order. Take last N (most recent).
-  return filtered.slice(Math.max(0, filtered.length - cap));
+  filtered.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  return filtered.slice(0, cap);
 }
 
 /**
