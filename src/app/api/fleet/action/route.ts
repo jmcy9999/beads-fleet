@@ -1597,11 +1597,28 @@ export async function POST(request: NextRequest) {
         // stuckStage + attemptCount + recentActions). When present,
         // serialise into the prompt so the agent doesn't need to
         // re-derive it from bd queries + event log.
+        //
+        // wlsr.20: also forward escalationContext — the ADR-015 § 3 field
+        // sent by Phase B reconciler rules (stuck-in-stage,
+        // missed-wave-review-dispatch, wave-bead-mismatch). Both fields
+        // are serialised into the prompt independently; coherence.md
+        // documents both shapes.
         const coherenceContext = (body as Record<string, unknown>)
           ?.coherenceContext;
-        const contextBlock = coherenceContext
-          ? `\n- coherenceContext: ${JSON.stringify(coherenceContext)}`
-          : "";
+        const escalationContext = (body as Record<string, unknown>)
+          ?.escalationContext;
+        const contextParts: string[] = [];
+        if (coherenceContext) {
+          contextParts.push(
+            `\n- coherenceContext: ${JSON.stringify(coherenceContext)}`,
+          );
+        }
+        if (escalationContext) {
+          contextParts.push(
+            `\n- escalationContext: ${JSON.stringify(escalationContext)}`,
+          );
+        }
+        const contextBlock = contextParts.join("");
 
         const cohPrompt = `You are the Coherence agent. Diagnose why epic ${epicId} is in an incoherent state and dispatch ONE action from your finite vocabulary.\n\nContext:\n- epicId: ${epicId}\n- epicTitle: ${epicTitle}\n- anomalyClass: ${anomalyClass}\n- currentLabels: ${JSON.stringify(actualLabels)}\n- shipType: ${shipType}\n- fleetCorePath: ${fleetCorePath}${contextBlock}\n\nFollow .claude/agents/coherence.md exactly. Append the required [COHERENCE] / [ACTION] / [REASONING] note to the epic before dispatching. Exit immediately after dispatch.`;
 
