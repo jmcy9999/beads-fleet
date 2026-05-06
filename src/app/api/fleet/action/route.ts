@@ -484,14 +484,27 @@ async function checkPreconditionsOrRefuse(params: {
   // Cross-repo epic resolution: beads_web-* lives in beads_web's bd repo, not factory-core.
   // Without this, readBeadStatus runs `bd show beads_web-ehp --repo=<factory-core>` and
   // returns null → BD_READ_FAILED fail-closed refuses every legitimate dispatch.
-  // Fall back to fleetCorePath only when findRepoForIssue can't resolve.
+  //
+  // Fast-path by ID prefix for known repos (factory-core, beads_web) to avoid the cost
+  // of findRepoForIssue's parallel probe over every registered repo (which can stall if
+  // any repo has a slow/stuck bd state — empirically observed 2026-05-06: 60s timeouts).
+  // For unknown prefixes, fall back to findRepoForIssue with a 5s ceiling.
   let repoPath = params.fleetCorePath;
-  try {
-    const homeRepo = await findRepoForIssue(params.epicId);
-    if (homeRepo) repoPath = homeRepo;
-  } catch {
-    // Fall through to fleetCorePath default; downstream readBeadStatus will fail-closed
-    // if the resolved path is wrong, which is the correct ADR-002 posture.
+  if (params.epicId.startsWith("factory-core-")) {
+    // factory-core epics live in fleet-core path — already correct.
+  } else if (params.epicId.startsWith("beads_web-")) {
+    repoPath = "/Users/janemckay/dev/claude_projects/beads_web";
+  } else {
+    try {
+      const homeRepo = await Promise.race([
+        findRepoForIssue(params.epicId),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+      ]);
+      if (homeRepo) repoPath = homeRepo;
+    } catch {
+      // Fall through to fleetCorePath default; downstream readBeadStatus will fail-closed
+      // if the resolved path is wrong, which is the correct ADR-002 posture.
+    }
   }
   const ctx = await buildDispatchContext({
     epicId: params.epicId,
