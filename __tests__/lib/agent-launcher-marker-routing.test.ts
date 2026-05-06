@@ -86,6 +86,58 @@ jest.mock("@/lib/pipeline-labels", () => ({
   getEpicLabels: jest.fn(async () => []),
 }));
 
+// beads_web-ehp.10: bead-status-reader is consumed by buildDispatchContext.
+// Default to an open bead so existing tests (kvn / 3yqr.4 regressions) keep
+// passing through the new precondition gate. Per-test overrides exercise
+// refusal paths.
+import type { BeadSnapshot } from "@/lib/bead-status-reader";
+
+let mockReadBeadStatusResult: BeadSnapshot | null = {
+  id: "default",
+  status: "open",
+  labels: [],
+  type: "task",
+  pipelineStage: null,
+  currentQaRound: null,
+  currentWave: null,
+  hasAgentRunning: false,
+  hasReviewNeedsHuman: false,
+};
+
+jest.mock("@/lib/bead-status-reader", () => {
+  const actual = jest.requireActual("@/lib/bead-status-reader");
+  return {
+    ...actual,
+    readBeadStatus: jest.fn(async () => mockReadBeadStatusResult),
+  };
+});
+
+// beads_web-ehp.10: capture refusal events without real filesystem writes.
+type AppendedEvent = {
+  repoPath: string;
+  type: string;
+  epicId: string;
+  stage?: string;
+  payload?: Record<string, unknown>;
+};
+let appendedEvents: AppendedEvent[] = [];
+
+jest.mock("@/lib/event-log", () => {
+  const actual = jest.requireActual("@/lib/event-log");
+  return {
+    ...actual,
+    appendEvent: jest.fn(async (repoPath: string, event: AppendedEvent) => {
+      appendedEvents.push({
+        repoPath,
+        type: event.type,
+        epicId: event.epicId,
+        stage: event.stage,
+        payload: event.payload,
+      });
+    }),
+  };
+});
+
 // beads_web-aiq mocks (required by QA handler dynamic imports).
 jest.mock("@/lib/smoke-test-freshness", () => ({
   checkSmokeTestFreshness: jest.fn(async () => ({ ok: true })),
@@ -140,15 +192,33 @@ type FetchCall = { url: string; body: Record<string, unknown> };
 let fetchCalls: FetchCall[] = [];
 let fetchResponseOk = true;
 let fetchResponseStatus = 200;
+// beads_web-ehp.10: allow the 412 defense-in-depth test to seed a body the
+// inline branch can read via res.text().
+let fetchResponseBody = "";
 
 beforeEach(() => {
   fetchCalls = [];
   fetchResponseOk = true;
   fetchResponseStatus = 200;
+  fetchResponseBody = "";
+  appendedEvents = [];
   execCalls = [];
   execBehaviour = () => ({ stdout: "" });
   mockReadMarkerResult = null;
   mockRoutingDecision = { override: false, reason: "default mock" };
+  // beads_web-ehp.10: reset bead-status-reader to "open" default so existing
+  // tests don't trip the new precondition gate.
+  mockReadBeadStatusResult = {
+    id: "default",
+    status: "open",
+    labels: [],
+    type: "task",
+    pipelineStage: null,
+    currentQaRound: null,
+    currentWave: null,
+    hasAgentRunning: false,
+    hasReviewNeedsHuman: false,
+  };
   __lockManagerResetForTests();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).fetch = jest.fn(async (url: string, init?: RequestInit) => {
@@ -160,6 +230,7 @@ beforeEach(() => {
     return {
       ok: fetchResponseOk,
       status: fetchResponseStatus,
+      text: async () => fetchResponseBody,
     } as Response;
   });
 });
@@ -438,5 +509,181 @@ describe("dispatchChainAction — marker-driven routing (beads_web-kvn)", () => 
     expect(fetchCalls[0].body.waveNumber).toBe(1);
 
     expect(handled).toBe(true);
+  });
+
+  // ==========================================================================
+  // beads_web-ehp.10 — dispatch-precondition gate at the inline override branch
+  // ==========================================================================
+  // The third dispatch site (after route.ts and the marker-driven-routing
+  // reconciler rule) MUST refuse when preconditions fail; otherwise we have a
+  // phantom-dispatch surface invisible to the other test layers. Coverage
+  // mirrors beads_web-ehp.4: refusal (BD_STATUS_DEFERRED) + happy path + 412.
+  // --------------------------------------------------------------------------
+
+  // ehp.10 AC #1: BD_STATUS_DEFERRED refusal — bead is deferred, no fetch
+  // fires, refusal event recorded, function returns false.
+  test("ehp.10: bd status=deferred refuses with BD_STATUS_DEFERRED — no fetch, refusal event recorded, returns false", async () => {
+    const epicId = "factory-core-deferred";
+    wireEpic(epicId, "ship-type:internal, pipeline:plan-review");
+
+    mockReadMarkerResult = {
+      version: "1",
+      epic_id: epicId,
+      status: "needs-decision",
+      stage: "planner",
+      started_at: "2026-05-06T10:00:00Z",
+      exited_at: "2026-05-06T10:30:00Z",
+      next_agent: "architect",
+    };
+
+    mockRoutingDecision = {
+      override: true,
+      nextAgent: "architect",
+      reason: "explicit next_agent field",
+    };
+
+    // Bead is deferred — Class A.5 BD_STATUS_DEFERRED predicate fires.
+    mockReadBeadStatusResult = {
+      id: epicId,
+      status: "deferred",
+      labels: [],
+      type: "task",
+      pipelineStage: null,
+      currentQaRound: null,
+      currentWave: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    };
+
+    const session = makeSession(epicId, "plan-review");
+    const handled = await handleChainAction(session, 0);
+
+    // No fetch fired — precondition gate refused.
+    expect(fetchCalls).toHaveLength(0);
+
+    // Refusal event was emitted with the canonical refusal payload.
+    const refusals = appendedEvents.filter(
+      (e) => e.type === "reconciler-action-refused",
+    );
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0].epicId).toBe(epicId);
+    expect(refusals[0].stage).toBe("plan-review");
+    const payload = refusals[0].payload as Record<string, unknown>;
+    expect(payload.ruleName).toBe("dispatchChainAction:inline-marker-routing");
+    expect(payload.action).toBe("run-architect");
+    expect(payload.refusalCode).toBe("BD_STATUS_DEFERRED");
+    expect(payload.failedCheck).toBe("bd-status-not-deferred");
+    expect(typeof payload.reason).toBe("string");
+
+    // Existing fall-through semantics preserved: override branch returns
+    // false when the dispatch did NOT fire.
+    expect(handled).toBe(false);
+  });
+
+  // ehp.10 AC #2: happy path — open bead + benign marker → fetch fires
+  // unchanged, no refusal event, function returns true.
+  test("ehp.10: happy path — open bead + benign marker → fetch fires unchanged, no refusal event, returns true", async () => {
+    const epicId = "factory-core-happy-ehp10";
+    wireEpic(epicId, "ship-type:internal, pipeline:plan-review");
+
+    mockReadMarkerResult = {
+      version: "1",
+      epic_id: epicId,
+      status: "needs-decision",
+      stage: "planner",
+      started_at: "2026-05-06T10:00:00Z",
+      exited_at: "2026-05-06T10:30:00Z",
+      next_agent: "architect",
+    };
+
+    mockRoutingDecision = {
+      override: true,
+      nextAgent: "architect",
+      reason: "explicit next_agent field",
+    };
+
+    // Default open bead — preconditions pass.
+    // (mockReadBeadStatusResult reset to open-default in beforeEach.)
+
+    const session = makeSession(epicId, "plan-review");
+    const handled = await handleChainAction(session, 0);
+
+    // Fetch fired with the same payload as kvn's existing happy-path test.
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].body.action).toBe("run-architect");
+    expect(fetchCalls[0].body.epicId).toBe(epicId);
+
+    // No refusal event for the happy path.
+    const refusals = appendedEvents.filter(
+      (e) => e.type === "reconciler-action-refused",
+    );
+    expect(refusals).toHaveLength(0);
+
+    expect(handled).toBe(true);
+  });
+
+  // ehp.10 AC #3: route returns 412 → log + refusal event with
+  // ROUTE_REFUSED_412 + return false WITHOUT throwing (Seam 5 defense-in-
+  // depth, distinguished from genuine HTTP failure).
+  test("ehp.10: route returns HTTP 412 → refusal event with ROUTE_REFUSED_412, returns false, no throw", async () => {
+    const epicId = "factory-core-412-ehp10";
+    wireEpic(epicId, "ship-type:internal, pipeline:plan-review");
+
+    mockReadMarkerResult = {
+      version: "1",
+      epic_id: epicId,
+      status: "needs-decision",
+      stage: "planner",
+      started_at: "2026-05-06T10:00:00Z",
+      exited_at: "2026-05-06T10:30:00Z",
+      next_agent: "architect",
+    };
+
+    mockRoutingDecision = {
+      override: true,
+      nextAgent: "architect",
+      reason: "explicit next_agent field",
+    };
+
+    // Inline-side preconditions pass (open bead). Route is the gate that
+    // refuses with 412 — defense-in-depth catch.
+    fetchResponseOk = false;
+    fetchResponseStatus = 412;
+    fetchResponseBody = JSON.stringify({
+      error: "precondition_failed",
+      refusalCode: "BD_STATUS_DEFERRED",
+      reason: "Bead became deferred between inline check and route check",
+    });
+
+    const session = makeSession(epicId, "plan-review");
+
+    // Must NOT throw.
+    let handled: boolean | undefined;
+    await expect(
+      (async () => {
+        handled = await handleChainAction(session, 0);
+      })(),
+    ).resolves.toBeUndefined();
+
+    // Fetch DID fire (the route is the gate that refused).
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].body.action).toBe("run-architect");
+
+    // Refusal event recorded with the route-side discriminator.
+    const refusals = appendedEvents.filter(
+      (e) => e.type === "reconciler-action-refused",
+    );
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0].epicId).toBe(epicId);
+    expect(refusals[0].stage).toBe("plan-review");
+    const payload = refusals[0].payload as Record<string, unknown>;
+    expect(payload.ruleName).toBe("dispatchChainAction:inline-marker-routing");
+    expect(payload.action).toBe("run-architect");
+    expect(payload.refusalCode).toBe("ROUTE_REFUSED_412");
+    expect(payload.failedCheck).toBe("route-side-precondition");
+    expect(typeof payload.reason).toBe("string");
+
+    // Existing fall-through semantics preserved on refusal.
+    expect(handled).toBe(false);
   });
 });

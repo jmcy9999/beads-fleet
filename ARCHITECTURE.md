@@ -475,7 +475,7 @@ Filter engine. `FilterCriteria` supports: statuses, priorities, types, owner, la
 Reads `.beads/token-usage.jsonl`. Provides raw records and per-issue aggregated summaries (tokens, cost, sessions, duration, turns).
 
 ### `src/lib/agent-launcher.ts`
-Spawns Claude Code CLI as a detached background subprocess. Manages one active session at a time. Exports: `launchAgent(options)`, `getAgentStatus()`, `stopAgent()`. Types: `AgentSession`, `LaunchOptions`, `AgentStatus`.
+Spawns Claude Code CLI as a detached background subprocess. Manages one active session at a time. Exports: `launchAgent(options)`, `getAgentStatus()`, `stopAgent()`. Types: `AgentSession`, `LaunchOptions`, `AgentStatus`. The internal `dispatchChainAction` function is the third dispatch site (alongside `route.ts` and the `marker-driven-routing` reconciler rule); its inline marker-routing override branch is precondition-gated by `buildDispatchContext` + `evaluatePreconditions` (beads_web-ehp.10), with refusals emitting `reconciler-action-refused` events tagged `ruleName: "dispatchChainAction:inline-marker-routing"` and HTTP 412 from the route triggering the same defense-in-depth refusal path (`refusalCode: "ROUTE_REFUSED_412"`). On refusal the function returns `false`, preserving existing fall-through semantics.
 
 ### `src/lib/cache.ts`
 Simple TTL cache (10-second default). Used by bv-client to avoid redundant subprocess calls.

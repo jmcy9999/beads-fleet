@@ -32,6 +32,11 @@ import { FLEET_CORE_PATH } from "./repo-path-resolver";
 import { readMarker } from "./marker-reader";
 import { interpretMarkerForRouting } from "./marker-routing";
 import { getActionForAgent } from "./agent-action-map";
+import {
+  buildDispatchContext,
+  evaluatePreconditions,
+} from "./dispatch-preconditions";
+import { appendEvent, RECONCILER_ACTION_REFUSED } from "./event-log";
 import type { ShipType, FleetStage } from "./pipeline-router";
 
 const execAsync = promisify(exec);
@@ -2051,6 +2056,48 @@ async function dispatchChainAction(
             reason: routingDecision.reason,
           }));
 
+          // -----------------------------------------------------------------
+          // beads_web-ehp.10: dispatch-precondition gate (Wave 3 integration).
+          //
+          // Architecture § Component Boundaries Contract 3: precondition check
+          // runs BEFORE the inline-branch fetch to /api/fleet/action. Mirrors
+          // beads_web-ehp.4's reconciler-rule integration — same library, same
+          // refusal semantics, different dispatch site. This is the THIRD
+          // dispatch site (after route.ts and marker-driven-routing reconciler
+          // rule); leaving it ungated re-opens a phantom-dispatch surface
+          // invisible to route.ts and reconciler-rules tests.
+          //
+          // On refusal: structured warn-log tagged `dispatch_refused_inline` +
+          // a `reconciler-action-refused` event (Wave-1 variant) + return
+          // false WITHOUT firing fetch. Preserves existing fall-through
+          // semantics (override branch returns false when dispatch did NOT
+          // fire).
+          // -----------------------------------------------------------------
+          const precondCtx = await buildDispatchContext({
+            epicId: session.epicId,
+            repoPath: session.repoPath,
+            action: actionName,
+          });
+          const precondResult = evaluatePreconditions(precondCtx);
+          if (!precondResult.ok) {
+            console.warn(
+              `[marker-routing] dispatch_refused_inline: epicId=${session.epicId} action=${actionName} refusalCode=${precondResult.refusalCode} failedCheck=${precondResult.failedCheck} reason="${precondResult.reason}"`,
+            );
+            await appendEvent(session.repoPath, {
+              type: RECONCILER_ACTION_REFUSED,
+              epicId: session.epicId,
+              stage,
+              payload: {
+                ruleName: "dispatchChainAction:inline-marker-routing",
+                action: actionName,
+                refusalCode: precondResult.refusalCode,
+                failedCheck: precondResult.failedCheck,
+                reason: precondResult.reason,
+              },
+            });
+            return false;
+          }
+
           // Dispatch the next agent via /api/fleet/action.
           try {
             const res = await fetch(getDefaultActionUrl(), {
@@ -2063,6 +2110,38 @@ async function dispatchChainAction(
                 currentLabels: session.epicLabels,
               }),
             });
+
+            // -----------------------------------------------------------------
+            // beads_web-ehp.10: route-side precondition refusal (HTTP 412).
+            //
+            // Architecture § Seam 5 (defense-in-depth): both the inline branch
+            // AND the action route validate preconditions. If the route refuses
+            // with 412 (route-side check caught state the inline check missed —
+            // race window, marker mutated mid-flight, etc.), we must distinguish
+            // that from a genuine HTTP failure. 412 is a refusal: log a
+            // structured warn-line tagged `dispatch_refused_inline_at_route`,
+            // emit a `reconciler-action-refused` event with ROUTE_REFUSED_412,
+            // and return false WITHOUT throwing.
+            // -----------------------------------------------------------------
+            if (res.status === 412) {
+              const text = await res.text().catch(() => "<unreadable>");
+              console.warn(
+                `[marker-routing] dispatch_refused_inline_at_route: epicId=${session.epicId} action=${actionName} httpStatus=412 body="${text}"`,
+              );
+              await appendEvent(session.repoPath, {
+                type: RECONCILER_ACTION_REFUSED,
+                epicId: session.epicId,
+                stage,
+                payload: {
+                  ruleName: "dispatchChainAction:inline-marker-routing",
+                  action: actionName,
+                  refusalCode: "ROUTE_REFUSED_412",
+                  failedCheck: "route-side-precondition",
+                  reason: text,
+                },
+              });
+              return false;
+            }
 
             if (!res.ok) {
               console.error(
