@@ -24,7 +24,18 @@ const AGENT_TO_ACTION: Record<AgentType, string> = {
   polish: "send-for-polish",
   "test-spec": "run-test-spec",
   "product-manager": "run-pm",
-  operator: "send-for-review", // best-effort: flag for human review
+  // Per ADR-003 (factory-core-wlsr.3) the operator → "send-for-review"
+  // mapping is retained but its invocation is gated UPSTREAM by
+  // interpretMarkerForRouting's Precedence 1.5 stage-aware rewrite. After
+  // wlsr.3 lands, this mapping fires ONLY when the upstream caller is
+  // stage="coherence" (i.e. coherence's legitimate escalation per
+  // operator-set principle P1). Loop-agent markers with next_agent=operator
+  // are rewritten to coherence before reaching this map; only coherence's
+  // own escalation marker preserves operator routing through to
+  // send-for-review. Do NOT remove or rename without coordinating with
+  // the routing layer; the contract is enforced upstream where the
+  // decision is made, not here.
+  operator: "send-for-review",
   coherence: "run-coherence-agent",
 };
 
