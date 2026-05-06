@@ -45,8 +45,21 @@ import {
   type EventSummary,
 } from "../coherence-journal";
 import { getDefaultActionUrl } from "../orchestrator-url";
+import {
+  buildDispatchContext,
+  evaluatePreconditions,
+  PRECOND_WAVE_BEADS_EXIST,
+} from "../dispatch-preconditions";
+import { appendEvent, RECONCILER_ACTION_REFUSED } from "../event-log";
 
 export const WAVE_BEAD_MISMATCH_RULE_NAME = "wave-bead-mismatch";
+
+/**
+ * The action this rule dispatches. Pinned as a constant so the precondition
+ * gate, the actual fetch body, and any logging always agree on the same
+ * action string (mirrors marker-driven-routing's pattern).
+ */
+const DISPATCH_ACTION = "run-coherence-agent";
 
 /**
  * Pipeline stages that should NEVER coexist with open wave beads.
@@ -88,6 +101,13 @@ export interface WaveBeadMismatchRuleOptions {
    * treats as 'skip' — can't make a safe decision).
    */
   readEpicSnapshot: (epicId: string) => Promise<EpicSnapshot | null>;
+  /**
+   * beads_web-ehp.6: bd repo path for the precondition gate. Used by
+   * `buildDispatchContext` (reads bead status, marker, epic labels, open
+   * wave beads) and by `appendEvent` when emitting refusal events. Mirrors
+   * the repoPath option on `marker-driven-routing.ts` (ehp.4 wiring).
+   */
+  repoPath: string;
 }
 
 /**
@@ -236,6 +256,88 @@ export function buildWaveBeadMismatchRule(
         `[wave-bead-mismatch] escalating to coherence for ${match.epicId}: pipeline=${ctx.wrongStage} but wave:${ctx.waveNumber} open. anomalyType=${escalationContext.anomalyType}.`,
       );
 
+      // -----------------------------------------------------------------
+      // beads_web-ehp.6: dispatch-precondition gate.
+      //
+      // Architecture § Seam 5 (defense-in-depth): the gate runs BEFORE the
+      // action-route fetch. CRITICAL — per the ehp.6 risk flag, it MUST
+      // also run BEFORE any label-rollback / state mutation; this rule
+      // currently performs no rule-side mutation (post-wlsr.16 cutover
+      // commented the rollback out — see FALLBACK block at the end of the
+      // file), so the gate just precedes the fetch. The placement is
+      // load-bearing: if the rollback is ever uncommented, the gate must
+      // STILL be the first side-effect-bearing step in act() to prevent the
+      // niii phantom-wave-4 redispatch loop (28+ marker churn).
+      //
+      // Wave-bead specificity: this rule's anomaly is, by definition, a
+      // wave-bead state inconsistency. The general PRECONDITION_TABLE for
+      // `run-coherence-agent` does NOT include `wave-beads-exist` (other
+      // coherence escalations target non-wave anomalies — stuck-in-stage,
+      // QA loops, etc.). So the gate runs the universal predicate set via
+      // `evaluatePreconditions` AND additionally invokes
+      // `PRECOND_WAVE_BEADS_EXIST.evaluate` directly for the wave-bead
+      // check. The latter is the predicate that produces the NO_WAVE_BEADS
+      // refusal that closes the niii phantom-wave-4 loop.
+      //
+      // On refusal: structured warn-log + `reconciler-action-refused`
+      // event + early return (NO label mutation, NO dispatch).
+      // -----------------------------------------------------------------
+      const precondCtx = await buildDispatchContext({
+        epicId: match.epicId,
+        repoPath: opts.repoPath,
+        action: DISPATCH_ACTION,
+        waveNumber: ctx.waveNumber,
+      });
+
+      // Wave-bead-specific predicate (NO_WAVE_BEADS) — fires when no open
+      // wave-N beads exist for the wave the rule wants coherence to
+      // reconcile. Run FIRST because it's the load-bearing predicate for
+      // this rule's specific anomaly: the niii phantom-wave-4 case
+      // (epic at wave:4 but no wave:4 open beads) MUST refuse here so
+      // the redispatch loop stops without further escalation.
+      const waveBeadsResult = PRECOND_WAVE_BEADS_EXIST.evaluate(precondCtx);
+      if (!waveBeadsResult.ok) {
+        console.warn(
+          `[wave-bead-mismatch] reconciler_dispatch_refused: rule=${WAVE_BEAD_MISMATCH_RULE_NAME} epicId=${match.epicId} action=${DISPATCH_ACTION} refusalCode=${waveBeadsResult.refusalCode} failedCheck=${waveBeadsResult.failedCheck} reason="${waveBeadsResult.reason}"`,
+        );
+        await appendEvent(opts.repoPath, {
+          type: RECONCILER_ACTION_REFUSED,
+          epicId: match.epicId,
+          stage: ctx.wrongStage,
+          payload: {
+            ruleName: WAVE_BEAD_MISMATCH_RULE_NAME,
+            action: DISPATCH_ACTION,
+            refusalCode: waveBeadsResult.refusalCode,
+            failedCheck: waveBeadsResult.failedCheck,
+            reason: waveBeadsResult.reason,
+          },
+        });
+        return;
+      }
+
+      // Universal + per-action predicates registered against
+      // `run-coherence-agent` in EXTENDED_PRECONDITION_TABLE (BD_STATUS_*,
+      // OPERATOR_DECISION_PENDING, REVIEW_NEEDS_HUMAN, etc.).
+      const precondResult = evaluatePreconditions(precondCtx);
+      if (!precondResult.ok) {
+        console.warn(
+          `[wave-bead-mismatch] reconciler_dispatch_refused: rule=${WAVE_BEAD_MISMATCH_RULE_NAME} epicId=${match.epicId} action=${DISPATCH_ACTION} refusalCode=${precondResult.refusalCode} failedCheck=${precondResult.failedCheck} reason="${precondResult.reason}"`,
+        );
+        await appendEvent(opts.repoPath, {
+          type: RECONCILER_ACTION_REFUSED,
+          epicId: match.epicId,
+          stage: ctx.wrongStage,
+          payload: {
+            ruleName: WAVE_BEAD_MISMATCH_RULE_NAME,
+            action: DISPATCH_ACTION,
+            refusalCode: precondResult.refusalCode,
+            failedCheck: precondResult.failedCheck,
+            reason: precondResult.reason,
+          },
+        });
+        return;
+      }
+
       // zsjv hotfix 2026-04-21: fetch timeout (15s — preserved from prior
       // dispatch path).
       const controller = new AbortController();
@@ -250,7 +352,7 @@ export function buildWaveBeadMismatchRule(
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: "run-coherence-agent",
+            action: DISPATCH_ACTION,
             epicId: match.epicId,
             epicTitle: snap.title,
             currentLabels: snap.labels,
@@ -261,6 +363,37 @@ export function buildWaveBeadMismatchRule(
         });
       } finally {
         clearTimeout(timeoutHandle);
+      }
+
+      // -----------------------------------------------------------------
+      // beads_web-ehp.6: route-side precondition refusal (HTTP 412).
+      //
+      // Architecture § Seam 5 defense-in-depth: the route may catch fresh
+      // state the rule's own check missed (race window between rule check
+      // and route dispatch). Treat 412 as a refusal — log + emit refusal
+      // event + return WITHOUT throwing. Throwing would propagate to the
+      // reconciler tick handler and count as an act() failure (wrong
+      // semantics for a refusal). Mirror of marker-driven-routing's 412
+      // handling (ehp.4).
+      // -----------------------------------------------------------------
+      if (res.status === 412) {
+        const text = await res.text().catch(() => "<unreadable>");
+        console.warn(
+          `[wave-bead-mismatch] reconciler_dispatch_refused_at_route: rule=${WAVE_BEAD_MISMATCH_RULE_NAME} epicId=${match.epicId} action=${DISPATCH_ACTION} httpStatus=412 body="${text}"`,
+        );
+        await appendEvent(opts.repoPath, {
+          type: RECONCILER_ACTION_REFUSED,
+          epicId: match.epicId,
+          stage: ctx.wrongStage,
+          payload: {
+            ruleName: WAVE_BEAD_MISMATCH_RULE_NAME,
+            action: DISPATCH_ACTION,
+            refusalCode: "ROUTE_REFUSED_412",
+            failedCheck: "route-side-precondition",
+            reason: text,
+          },
+        });
+        return;
       }
 
       if (!res.ok) {

@@ -43,6 +43,65 @@ import { promises as fs } from "fs";
 import * as os from "os";
 import * as path from "path";
 
+// beads_web-ehp.6: wave-bead-mismatch's act() now wraps the dispatch fetch
+// with a dispatch-precondition gate. The gate calls readBeadStatus /
+// readMarker / getEpicLabels via buildDispatchContext AND
+// PRECOND_WAVE_BEADS_EXIST.evaluate() (which reads openWaveBeadIds populated
+// by listOpenWaveBeads). Mock these at the import boundary so legacy tests
+// (which don't stand up a real bd repo) bypass the precondition layer
+// cleanly: open bead, no marker, no labels, and a non-empty openWaveBeadIds
+// stub means every universal predicate AND the wave-beads predicate pass,
+// preserving pre-ehp.6 happy-path expectations.
+jest.mock("@/lib/bead-status-reader", () => {
+  const actual = jest.requireActual("@/lib/bead-status-reader");
+  return {
+    ...actual,
+    readBeadStatus: jest.fn().mockImplementation(async (id: string) => ({
+      id,
+      status: "open",
+      labels: [],
+      type: "task",
+      pipelineStage: null,
+      currentQaRound: null,
+      currentWave: null,
+      hasAgentRunning: false,
+      hasReviewNeedsHuman: false,
+    })),
+  };
+});
+jest.mock("@/lib/marker-reader", () => {
+  const actual = jest.requireActual("@/lib/marker-reader");
+  return {
+    ...actual,
+    readMarker: jest.fn().mockResolvedValue(null),
+  };
+});
+// pipeline-labels: getEpicLabels is the precondition reader; addLabelsToEpic /
+// removeLabelsFromEpic are the defensive "must NOT be called" mocks (per
+// wlsr.16 cutover — the act() must not mutate labels). All three live in the
+// pipeline-labels module so a single jest.mock covers both concerns.
+const mockAddLabels = jest.fn();
+const mockRemoveLabels = jest.fn();
+jest.mock("@/lib/pipeline-labels", () => ({
+  addLabelsToEpic: (...args: unknown[]) => mockAddLabels(...args),
+  removeLabelsFromEpic: (...args: unknown[]) => mockRemoveLabels(...args),
+  getEpicLabels: jest.fn().mockResolvedValue([]),
+}));
+// listOpenWaveBeads is read by buildDispatchContext to populate
+// openWaveBeadIds (the input to PRECOND_WAVE_BEADS_EXIST). Default to a
+// non-empty array so the wave-beads predicate passes for happy-path tests.
+// The new integration test (wave-bead-mismatch.precondition-integration.test.ts)
+// overrides this mock per-scenario to drive NO_WAVE_BEADS refusals.
+jest.mock("@/lib/agent-launcher", () => {
+  const actual = jest.requireActual("@/lib/agent-launcher");
+  return {
+    ...actual,
+    listOpenWaveBeads: jest.fn().mockResolvedValue([
+      { id: "stub-wave-bead-1", title: "stub", files: [] },
+    ]),
+  };
+});
+
 import { Reconciler } from "@/lib/reconciler";
 import { appendEvent } from "@/lib/event-log";
 import {
@@ -50,15 +109,6 @@ import {
   WAVE_BEAD_MISMATCH_RULE_NAME,
   type EpicSnapshot,
 } from "@/lib/reconciler-rules/wave-bead-mismatch";
-
-// Defensive mock — these MUST NOT be invoked by the cutover act(). The
-// mock fails the test if either call lands.
-const mockAddLabels = jest.fn();
-const mockRemoveLabels = jest.fn();
-jest.mock("@/lib/pipeline-labels", () => ({
-  addLabelsToEpic: (...args: unknown[]) => mockAddLabels(...args),
-  removeLabelsFromEpic: (...args: unknown[]) => mockRemoveLabels(...args),
-}));
 
 async function makeRepo(): Promise<string> {
   return await fs.mkdtemp(path.join(os.tmpdir(), "wlsr16-test-"));
@@ -124,6 +174,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: "qa", lowestOpenWave: 2 }),
       }),
@@ -152,6 +204,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
       const rec = new Reconciler({ repoPath: repo });
       rec.registerRule(
         buildWaveBeadMismatchRule({
+          // beads_web-ehp.6: repoPath required for the precondition gate.
+          repoPath: repo,
           readEpicSnapshot: async () =>
             snap({ currentStage: stage, lowestOpenWave: 3 }),
         }),
@@ -175,6 +229,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
       const rec = new Reconciler({ repoPath: repo });
       rec.registerRule(
         buildWaveBeadMismatchRule({
+          // beads_web-ehp.6: repoPath required for the precondition gate.
+          repoPath: repo,
           readEpicSnapshot: async () =>
             snap({ currentStage: stage, lowestOpenWave: 2 }),
         }),
@@ -191,6 +247,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({
             currentStage: "qa",
@@ -209,6 +267,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: "qa", hasWaves: false }),
       }),
@@ -223,6 +283,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({
             currentStage: "qa",
@@ -240,6 +302,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () => null,
       }),
     );
@@ -265,6 +329,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: "qa", lowestOpenWave: 2 }),
       }),
@@ -341,6 +407,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: "qa", lowestOpenWave: 2 }),
       }),
@@ -381,6 +449,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: "qa", lowestOpenWave: 2 }),
       }),
@@ -404,6 +474,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: "qa", lowestOpenWave: 2 }),
       }),
@@ -424,6 +496,10 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
 
   test("AC 5e: idempotencyKey has shape `wave-bead-mismatch::<epicId>::<stage>` (anomalyType implicit in rule-name prefix; no longer scoped by wave number)", async () => {
     const rule = buildWaveBeadMismatchRule({
+      // beads_web-ehp.6: repoPath required by the type contract; this test
+      // exercises matches() only (no act()), so the value is unused at
+      // runtime — a sentinel string is sufficient.
+      repoPath: "/tmp/wave-bead-mismatch-matches-only",
       readEpicSnapshot: async () =>
         snap({ currentStage: "qa", lowestOpenWave: 2 }),
     });
@@ -456,6 +532,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: "qa", lowestOpenWave: 2 }),
       }),
@@ -472,6 +550,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: stage, lowestOpenWave: 2 }),
       }),
@@ -504,6 +584,8 @@ describe("wave-bead-mismatch rule — Phase B cutover (factory-core-wlsr.16)", (
     const rec = new Reconciler({ repoPath: repo });
     rec.registerRule(
       buildWaveBeadMismatchRule({
+        // beads_web-ehp.6: repoPath required for the precondition gate.
+        repoPath: repo,
         readEpicSnapshot: async () =>
           snap({ currentStage: "qa", lowestOpenWave: 2 }),
       }),
