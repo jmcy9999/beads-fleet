@@ -60,9 +60,19 @@ jest.mock("@/lib/pipeline-labels", () => ({
 // listOpenWaveBeads feeds DispatchContext.openWaveBeadIds; the wave-beads
 // predicates fire when this returns []. Per-scenario overrides drive the
 // NO_WAVE_BEADS / ALL_WAVE_BEADS_CLOSED refusals vs happy-path branch.
+//
+// listAllStatusWaveBeads (beads_web-m2c) feeds
+// DispatchContext.anyStatusWaveBeadIds; the new
+// PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST predicate fires when this returns
+// [] (the phantom-wave case). Mocked here so the integration test can drive
+// the dual-signal model without standing up a real bd repo with closed beads.
 jest.mock("@/lib/agent-launcher", () => {
   const actual = jest.requireActual("@/lib/agent-launcher");
-  return { ...actual, listOpenWaveBeads: jest.fn() };
+  return {
+    ...actual,
+    listOpenWaveBeads: jest.fn(),
+    listAllStatusWaveBeads: jest.fn(),
+  };
 });
 
 import { appendEvent, readEvents } from "@/lib/event-log";
@@ -76,7 +86,7 @@ import type { BeadSnapshot } from "@/lib/bead-status-reader";
 import { readBeadStatus } from "@/lib/bead-status-reader";
 import { readMarker } from "@/lib/marker-reader";
 import { getEpicLabels } from "@/lib/pipeline-labels";
-import { listOpenWaveBeads } from "@/lib/agent-launcher";
+import { listOpenWaveBeads, listAllStatusWaveBeads } from "@/lib/agent-launcher";
 
 const mockReadBeadStatus = readBeadStatus as jest.MockedFunction<
   typeof readBeadStatus
@@ -87,6 +97,9 @@ const mockGetEpicLabels = getEpicLabels as jest.MockedFunction<
 >;
 const mockListOpenWaveBeads = listOpenWaveBeads as jest.MockedFunction<
   typeof listOpenWaveBeads
+>;
+const mockListAllStatusWaveBeads = listAllStatusWaveBeads as jest.MockedFunction<
+  typeof listAllStatusWaveBeads
 >;
 
 // ---- Helpers --------------------------------------------------------------
@@ -190,10 +203,16 @@ describe("missed-wave-review-dispatch × dispatch-preconditions integration (bea
     mockReadMarker.mockReset();
     mockGetEpicLabels.mockReset();
     mockListOpenWaveBeads.mockReset();
+    mockListAllStatusWaveBeads.mockReset();
 
     // Sane defaults — explicit per-test overrides supersede.
     mockReadMarker.mockResolvedValue(null);
     mockGetEpicLabels.mockResolvedValue([]);
+    // beads_web-m2c default: assume wave-N beads exist (any-status reader
+    // returns at least the open ones). Per-test overrides set this to []
+    // for the phantom-wave scenario or to closed-bead lists for the
+    // 1cb58a5 success-case regression test.
+    mockListAllStatusWaveBeads.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -224,6 +243,11 @@ describe("missed-wave-review-dispatch × dispatch-preconditions integration (bea
     // Open wave beads exist (so wave-beads predicate passes); only the
     // plan-file predicate should fire.
     mockListOpenWaveBeads.mockResolvedValue([
+      { id: `${epicId}.5`, title: "wave-4 bead a", files: [] },
+    ]);
+    // beads_web-m2c: wave-4 beads exist in any status (so phantom-wave
+    // predicate passes); only the plan-file predicate should fire.
+    mockListAllStatusWaveBeads.mockResolvedValue([
       { id: `${epicId}.5`, title: "wave-4 bead a", files: [] },
     ]);
     mockReadBeadStatus.mockResolvedValue(
@@ -297,15 +321,21 @@ describe("missed-wave-review-dispatch × dispatch-preconditions integration (bea
   // We mirror that here so the test is robust to future predicate-ordering
   // refinements (per beads_web-ehp.12 risk flag #3).
   // --------------------------------------------------------------------------
-  test("AC #2 — niii reviewer-4-wave-4-redundant: all wave:4 beads closed → refusal with NO_WAVE_BEADS or ALL_WAVE_BEADS_CLOSED, no fetch fires, refusal event recorded", async () => {
+  test("AC #2 — niii reviewer-4-wave-4-redundant: phantom wave (no wave:4 beads exist) → refusal with NO_WAVE_BEADS, no fetch fires, refusal event recorded", async () => {
     const repo = await makeRepo();
     const epicId = "factory-core-niii-reviewer-4-wave-4";
     const now = new Date("2026-04-21T10:00:00.000Z");
     const exitAt = new Date(now.getTime() - 65_000).toISOString();
 
-    // The phantom-wave-4 condition: openWaveBeadIds is empty for wave 4.
-    // (v1 cannot disambiguate "no beads" from "all closed".)
+    // beads_web-m2c (post-1cb58a5): the phantom-wave-4 condition is now
+    // signalled via the NEW any-status reader returning [] (no wave-4
+    // beads of ANY status exist). The OLD `openWaveBeadIds=[]` signal
+    // alone no longer refuses review-wave (1cb58a5 fix unblocked the
+    // legitimate post-close case where all wave beads close successfully).
+    // The new dual-signal model: openWaveBeadIds=[] alone = success;
+    // anyStatusWaveBeadIds=[] = phantom = refuse.
     mockListOpenWaveBeads.mockResolvedValue([]);
+    mockListAllStatusWaveBeads.mockResolvedValue([]);
     mockReadBeadStatus.mockResolvedValue(
       makeBead({ id: epicId, status: "open", currentWave: 4 }),
     );
@@ -374,6 +404,13 @@ describe("missed-wave-review-dispatch × dispatch-preconditions integration (bea
 
     // Open wave beads exist — the wave-beads predicate passes.
     mockListOpenWaveBeads.mockResolvedValue([
+      { id: `${epicId}.5`, title: "wave-2 bead a", files: [] },
+      { id: `${epicId}.6`, title: "wave-2 bead b", files: [] },
+    ]);
+    // beads_web-m2c: any-status reader returns the open beads (and would
+    // also include any closed siblings in a real bd state). Non-empty
+    // means the new phantom-wave predicate passes.
+    mockListAllStatusWaveBeads.mockResolvedValue([
       { id: `${epicId}.5`, title: "wave-2 bead a", files: [] },
       { id: `${epicId}.6`, title: "wave-2 bead b", files: [] },
     ]);
@@ -448,6 +485,13 @@ describe("missed-wave-review-dispatch × dispatch-preconditions integration (bea
     mockListOpenWaveBeads.mockResolvedValue([
       { id: `${epicId}.5`, title: "wave-2 bead", files: [] },
     ]);
+    // beads_web-m2c: any-status reader returns at least the open beads so
+    // the new phantom-wave predicate passes. The route-side 412 simulates
+    // a different refusal (BD_STATUS_DEFERRED) detected between the rule
+    // check and the route check (Seam 5 race).
+    mockListAllStatusWaveBeads.mockResolvedValue([
+      { id: `${epicId}.5`, title: "wave-2 bead", files: [] },
+    ]);
     mockReadBeadStatus.mockResolvedValue(
       makeBead({ id: epicId, status: "open", currentWave: 2 }),
     );
@@ -515,5 +559,88 @@ describe("missed-wave-review-dispatch × dispatch-preconditions integration (bea
     expect(payload.refusalCode).toBe("ROUTE_REFUSED_412");
     expect(payload.failedCheck).toBe("route-side-precondition");
     expect(typeof payload.reason).toBe("string");
+  });
+
+  // ==========================================================================
+  // beads_web-m2c REGRESSION GUARD — review-wave success case (1cb58a5 fix)
+  // ==========================================================================
+  // Positive regression test: verifies that review-wave dispatch FIRES (not
+  // refuses) when all wave-N beads are closed but at least one wave-N bead
+  // exists. This is the LEGITIMATE post-close trigger that 1cb58a5 unblocked.
+  // If a future edit re-couples review-wave to ACTIONS_REQUIRING_WAVE_BEADS
+  // (or otherwise re-checks `openWaveBeadIds=[]` for review-wave), this test
+  // fails — preventing the original 1cb58a5 bug from re-surfacing.
+  //
+  // Difference from AC #2 (the niii redundant case): here `anyStatusWaveBeadIds`
+  // is NON-empty (closed beads exist). The new
+  // PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST predicate distinguishes "phantom
+  // wave (no beads at all)" from "all closed (legitimate review trigger)".
+  // --------------------------------------------------------------------------
+  test("beads_web-m2c regression guard — review-wave with all wave-N beads closed (1cb58a5 success case): dispatch fires, no refusal", async () => {
+    const repo = await makeRepo();
+    const epicId = "factory-core-m2c-regression-guard";
+    const now = new Date("2026-04-21T10:00:00.000Z");
+    const exitAt = new Date(now.getTime() - 65_000).toISOString();
+
+    // openWaveBeadIds=[] (every wave-2 bead closed) — the SUCCESS state for
+    // review-wave per 1cb58a5.
+    mockListOpenWaveBeads.mockResolvedValue([]);
+    // anyStatusWaveBeadIds NON-empty (the closed beads exist) — the new m2c
+    // predicate passes because the wave is not phantom.
+    mockListAllStatusWaveBeads.mockResolvedValue([
+      { id: `${epicId}.5`, title: "wave-2 bead a (closed)", files: [] },
+      { id: `${epicId}.6`, title: "wave-2 bead b (closed)", files: [] },
+    ]);
+    mockReadBeadStatus.mockResolvedValue(
+      makeBead({ id: epicId, status: "open", currentWave: 2 }),
+    );
+    mockGetEpicLabels.mockResolvedValue([
+      "pipeline:build-review",
+      "ship-type:ios-app",
+      "wave:2",
+    ]);
+    await writePlanFile(repo, epicId);
+
+    await seedMissedExit(repo, epicId, exitAt);
+
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule(
+      buildMissedWaveReviewDispatchRule({
+        repoPath: repo,
+        readEpicSnapshot: async () =>
+          makeSnapshot({
+            waveStatus: {
+              hasWaves: true,
+              currentWave: 2,
+              allWavesComplete: false,
+            },
+            labels: ["pipeline:build-review", "wave:2", "ship-type:ios-app"],
+            title: "m2c regression guard: 1cb58a5 success case",
+          }),
+        actionUrl: "http://localhost:3000/api/fleet/action",
+      }),
+    );
+    await rec.tick(now);
+
+    // ==== Load-bearing assertion 1 — Dispatch DID fire ====================
+    // 1cb58a5 success case: review-wave fires when all wave beads are closed
+    // (because that's exactly when the review is appropriate). If the new
+    // predicate were over-eager and refused on `openWaveBeadIds=[]`, this
+    // assertion would fail and the 1cb58a5 regression would have re-surfaced.
+    expect(fetchCalls).toHaveLength(1);
+    const body = fetchCalls[0].body as {
+      action: string;
+      epicId: string;
+      anomalyClass: string;
+    };
+    expect(body.action).toBe("run-coherence-agent");
+    expect(body.epicId).toBe(epicId);
+    expect(body.anomalyClass).toBe("missed-wave-review-dispatch");
+
+    // ==== Load-bearing assertion 2 — NO refusal event recorded ============
+    const refusals = await readEvents(repo, {
+      type: "reconciler-action-refused",
+    });
+    expect(refusals).toHaveLength(0);
   });
 });

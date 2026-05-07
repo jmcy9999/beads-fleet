@@ -99,6 +99,7 @@ function ctx(overrides: Partial<DispatchContext> = {}): DispatchContext {
     epicLabels: [],
     planFileExists: false,
     openWaveBeadIds: [],
+    anyStatusWaveBeadIds: [],
     stageEnteredAt: null,
     ...overrides,
   };
@@ -601,6 +602,7 @@ describe("buildDispatchContext (AC: composition over published reader interfaces
     });
     expect(ctx.planFileExists).toBe(false);
     expect(ctx.openWaveBeadIds).toEqual([]);
+    expect(ctx.anyStatusWaveBeadIds).toEqual([]);
     expect(ctx.stageEnteredAt).toBeNull();
   });
 
@@ -762,6 +764,7 @@ import {
   PRECOND_PLAN_NOT_PENDING,
   PRECOND_WAVE_BEADS_EXIST,
   PRECOND_WAVE_BEADS_NOT_ALL_CLOSED,
+  PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST,
   PRECOND_ARCHITECT_MARKER_NOT_SUCCESS,
   PRECOND_PIPELINE_LABEL_SINGLETON,
   PRECOND_AGENT_RUNNING_HAS_SESSION,
@@ -880,9 +883,14 @@ describe("PRECOND_WAVE_BEADS_EXIST (Class A — NO_WAVE_BEADS)", () => {
     }
   });
 
-  test("appliesTo — start-wave / review-wave / resume-build only", () => {
+  test("appliesTo — start-wave / resume-build only (NOT review-wave per 1cb58a5/m2c fix)", () => {
     expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("start-wave")).toBe(true);
-    expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("review-wave")).toBe(true);
+    // beads_web-m2c: review-wave was removed from ACTIONS_REQUIRING_WAVE_BEADS
+    // by 1cb58a5 (the predicate's "openWaveBeadIds=[] means refuse" semantic
+    // is INVERTED for review-wave, which legitimately runs AFTER all wave
+    // beads close). The phantom-wave protection moved to the new
+    // PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST predicate.
+    expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("review-wave")).toBe(false);
     expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("resume-build")).toBe(true);
     expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("run-architect")).toBe(false);
     expect(PRECOND_WAVE_BEADS_EXIST.appliesTo("send-for-qa")).toBe(false);
@@ -911,6 +919,71 @@ describe("PRECOND_WAVE_BEADS_NOT_ALL_CLOSED (Class A — ALL_WAVE_BEADS_CLOSED)"
       expect(result.refusalCode).toBe("ALL_WAVE_BEADS_CLOSED");
       expect(result.failedCheck).toBe("wave-beads-not-all-closed");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class A — PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST (beads_web-m2c phantom-wave)
+// ---------------------------------------------------------------------------
+
+describe("PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST (Class A — beads_web-m2c phantom-wave protection)", () => {
+  test("happy path — anyStatusWaveBeadIds non-empty (open beads) → ok=true", () => {
+    expect(
+      PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST.evaluate(
+        ctx({
+          action: "review-wave",
+          anyStatusWaveBeadIds: ["bead-1", "bead-2"],
+          openWaveBeadIds: ["bead-1", "bead-2"],
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("happy path — all wave beads closed (1cb58a5 success case): openWaveBeadIds=[] but anyStatusWaveBeadIds non-empty → ok=true", () => {
+    // POSITIVE REGRESSION GUARD: protects the success state the 1cb58a5 fix
+    // enabled. If a future edit inadvertently re-couples review-wave to
+    // openWaveBeadIds, this test fails — preventing the original bug from
+    // re-surfacing.
+    expect(
+      PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST.evaluate(
+        ctx({
+          action: "review-wave",
+          anyStatusWaveBeadIds: ["closed-bead-1", "closed-bead-2"],
+          openWaveBeadIds: [],
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("refusal — anyStatusWaveBeadIds empty + review-wave (phantom wave) → NO_WAVE_BEADS", () => {
+    // The niii reviewer-4-wave-4-redundant scenario: epic carries `wave:4`
+    // and `pipeline:build-review` labels but no wave-4 children exist at
+    // all. Pre-1cb58a5 the protection lived in PRECOND_WAVE_BEADS_EXIST;
+    // m2c restores it via this new predicate.
+    const result = PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST.evaluate(
+      ctx({ action: "review-wave", anyStatusWaveBeadIds: [] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusalCode).toBe("NO_WAVE_BEADS");
+      expect(result.failedCheck).toBe("wave-beads-of-any-status-exist");
+      expect(result.reason).toMatch(/phantom/i);
+    }
+  });
+
+  test("appliesTo — review-wave only (NOT start-wave / resume-build)", () => {
+    expect(
+      PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST.appliesTo("review-wave"),
+    ).toBe(true);
+    expect(
+      PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST.appliesTo("start-wave"),
+    ).toBe(false);
+    expect(
+      PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST.appliesTo("resume-build"),
+    ).toBe(false);
+    expect(
+      PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST.appliesTo("run-architect"),
+    ).toBe(false);
   });
 });
 
@@ -1307,11 +1380,27 @@ describe("EXTENDED_PRECONDITION_TABLE coverage (ehp.13 — full 34 dispatching a
     }
   });
 
-  test("review-wave registers BOTH NO_WAVE_BEADS and ALL_WAVE_BEADS_CLOSED predicates (per ehp.7)", () => {
+  test("review-wave registers PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST (NO_WAVE_BEADS) — phantom-wave protection per beads_web-m2c", () => {
+    // beads_web-m2c (post-1cb58a5): the OLD PRECOND_WAVE_BEADS_EXIST and
+    // PRECOND_WAVE_BEADS_NOT_ALL_CLOSED predicates are NO LONGER registered
+    // for review-wave (they fire on `openWaveBeadIds=[]` which is the
+    // legitimate post-close success state for review-wave). The replacement
+    // protection — PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST — fires only when
+    // NO wave-N beads exist in any status (the niii reviewer-4-wave-4-
+    // redundant phantom-wave case), preserving the protection that ehp.7
+    // delivered without re-introducing 1cb58a5's regression.
     const preconditions = EXTENDED_PRECONDITION_TABLE.get("review-wave") ?? [];
-    const codes = preconditions.map((p) => p.refusalCode);
-    expect(codes).toContain("NO_WAVE_BEADS");
-    expect(codes).toContain("ALL_WAVE_BEADS_CLOSED");
+    const checkNames = preconditions.map((p) => p.name);
+    expect(checkNames).toContain("wave-beads-of-any-status-exist");
+    // The new predicate emits NO_WAVE_BEADS as its refusal code.
+    const newPredicate = preconditions.find(
+      (p) => p.name === "wave-beads-of-any-status-exist",
+    );
+    expect(newPredicate?.refusalCode).toBe("NO_WAVE_BEADS");
+    // The dropped predicates MUST NOT appear for review-wave (the 1cb58a5
+    // regression-guard half of the dual-predicate model).
+    expect(checkNames).not.toContain("wave-beads-exist");
+    expect(checkNames).not.toContain("wave-beads-not-all-closed");
   });
 
   test("start-wave includes plan-file-exists + wave-beads-exist predicates", () => {
@@ -1340,14 +1429,18 @@ describe("EXTENDED_PRECONDITION_TABLE coverage (ehp.13 — full 34 dispatching a
     expect(codes).toContain("PLAN_INSTABILITY");
   });
 
-  test("PER_ACTION_PRECONDITIONS exposes all 10 ehp.13 predicates", () => {
-    expect(PER_ACTION_PRECONDITIONS).toHaveLength(10);
+  test("PER_ACTION_PRECONDITIONS exposes 11 predicates (10 ehp.13 + 1 m2c phantom-wave)", () => {
+    // beads_web-m2c added PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST. It shares
+    // the NO_WAVE_BEADS refusal code with PRECOND_WAVE_BEADS_EXIST so the
+    // sorted refusal-code list contains NO_WAVE_BEADS twice.
+    expect(PER_ACTION_PRECONDITIONS).toHaveLength(11);
     const codes = PER_ACTION_PRECONDITIONS.map((p) => p.refusalCode).sort();
     expect(codes).toEqual(
       [
         "PLAN_FILE_MISSING",
         "PLAN_PENDING",
         "NO_WAVE_BEADS",
+        "NO_WAVE_BEADS", // beads_web-m2c phantom-wave predicate
         "ALL_WAVE_BEADS_CLOSED",
         "ARCHITECT_MARKER_SUCCESS",
         "PIPELINE_LABEL_CONFLICT",
@@ -1501,23 +1594,43 @@ describe("buildPreconditionRefusalResponse (ehp.13 — HTTP 412 body helper)", (
 // ---------------------------------------------------------------------------
 
 describe("evaluatePreconditions (ehp.13 — extended table refusal scenarios)", () => {
-  test("review-wave with no wave beads → NO_WAVE_BEADS or ALL_WAVE_BEADS_CLOSED", () => {
+  test("review-wave with phantom wave (no wave-N beads of ANY status) → NO_WAVE_BEADS via beads_web-m2c predicate", () => {
+    // beads_web-m2c: post-1cb58a5 + this fix, review-wave's wave-beads
+    // refusal triggers on the NEW signal `anyStatusWaveBeadIds=[]` (no
+    // wave-N beads exist at all — the phantom-wave case). The OLD signal
+    // `openWaveBeadIds=[]` no longer refuses review-wave (it represents the
+    // legitimate post-close success state).
     const result = evaluatePreconditions(
       ctx({
         action: "review-wave",
         bead: snapshot({ currentWave: 2 }),
         openWaveBeadIds: [],
+        anyStatusWaveBeadIds: [],
         planFileExists: true,
       }),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      // Per ehp.7 + ehp.12 risk flag: assert refusal code is in canonical
-      // enum, not a specific code (predicate ordering may evolve).
-      expect(["NO_WAVE_BEADS", "ALL_WAVE_BEADS_CLOSED"]).toContain(
-        result.refusalCode,
-      );
+      expect(result.refusalCode).toBe("NO_WAVE_BEADS");
+      expect(result.failedCheck).toBe("wave-beads-of-any-status-exist");
     }
+  });
+
+  test("review-wave with all wave beads closed (1cb58a5 success case) → dispatch passes (regression guard for beads_web-m2c)", () => {
+    // beads_web-m2c POSITIVE REGRESSION GUARD: if an editor re-introduces
+    // review-wave into ACTIONS_REQUIRING_WAVE_BEADS, this test fails because
+    // openWaveBeadIds=[] would re-trigger the dropped predicates. The fix
+    // 1cb58a5 enabled this success path; m2c protects it.
+    const result = evaluatePreconditions(
+      ctx({
+        action: "review-wave",
+        bead: snapshot({ currentWave: 2 }),
+        openWaveBeadIds: [], // every wave-2 bead is closed (success state)
+        anyStatusWaveBeadIds: ["closed-bead-1", "closed-bead-2"], // wave-2 beads exist
+        planFileExists: true,
+      }),
+    );
+    expect(result).toEqual({ ok: true });
   });
 
   test("approve-plan with plan:pending label → PLAN_PENDING", () => {

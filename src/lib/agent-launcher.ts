@@ -1538,6 +1538,83 @@ export async function listOpenWaveBeads(
 }
 
 // ---------------------------------------------------------------------------
+// beads_web-m2c: ANY-status wave bead enumeration (phantom-wave detection)
+// ---------------------------------------------------------------------------
+//
+// Sibling of `listOpenWaveBeads` that returns wave-N beads of ANY status
+// (open, in_progress, AND closed). Used by `dispatch-preconditions`'s
+// PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST predicate to distinguish the
+// "phantom wave" case (no wave-N beads exist for this epic at all) from
+// the "all wave-N beads closed" case (wave is complete; review-wave should
+// fire). The 1cb58a5 fix removed `review-wave` from
+// ACTIONS_REQUIRING_WAVE_BEADS to unblock the legitimate post-close case;
+// this reader powers the replacement protection that still refuses
+// phantom-wave dispatches without re-introducing the original bug.
+//
+// Same error contract as `listOpenWaveBeads`: throws on bd failures (per
+// factory-core-z9h.9). The dispatch-preconditions wrapper
+// `safeListAllStatusWaveBeads` catches and degrades to [] for fail-closed
+// refusal semantics.
+//
+// Implementation note: identical traversal to `listOpenWaveBeads` minus the
+// `if (child.isClosed) continue;` filter. Per-child `bd show` is still
+// required to read the `wave:N` label (the parent-list filter does not
+// scope to a specific wave).
+/**
+ * Enumerate ALL wave-N beads (any status) for an epic. Returns one
+ * `WaveBead` per matching bead regardless of open/in_progress/closed status.
+ *
+ * Used by the dispatch-preconditions library's
+ * PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST predicate (beads_web-m2c) to
+ * detect phantom-wave dispatches (wave:N labelled epics with no wave:N
+ * children at all).
+ *
+ * Throws on bd failures — see `listOpenWaveBeads` for the same contract.
+ */
+export async function listAllStatusWaveBeads(
+  epicId: string,
+  wave: number,
+  repoPath: string,
+): Promise<WaveBead[]> {
+  if (!Number.isFinite(wave) || wave < 1) return [];
+
+  const epicResult = execBdSync(["show", epicId], repoPath, 10000);
+  const isInternal = epicResult.success && epicResult.stdout.includes("ship-type:internal");
+  const filterArgs = isInternal
+    ? ["list", "--status=all", `--parent=${epicId}`]
+    : ["list", "--status=all", "--label", `epic:${epicId}`];
+  const listResult = execBdSync(filterArgs, repoPath, 10000);
+  if (!listResult.success) {
+    throw new Error(
+      `listAllStatusWaveBeads: bd list failed for epic ${epicId} (filter=${filterArgs.slice(1).join(" ")}) — cannot enumerate wave beads`,
+    );
+  }
+
+  const children = parseChildrenFromTree(listResult.stdout, epicId);
+  const all: WaveBead[] = [];
+  for (const child of children) {
+    // NOTE: Unlike listOpenWaveBeads, we do NOT skip closed beads here —
+    // the predicate using this reader needs the union of open + closed.
+    const showResult = execBdSync(["show", child.id], repoPath, 5000);
+    if (!showResult.success) {
+      throw new Error(
+        `listAllStatusWaveBeads: bd show failed for child ${child.id} of epic ${epicId} — cannot determine bead's wave state`,
+      );
+    }
+    const waveMatch = showResult.stdout.match(/wave:(\d+)/);
+    if (!waveMatch) continue;
+    if (parseInt(waveMatch[1], 10) !== wave) continue;
+    const titleMatch = showResult.stdout.match(
+      new RegExp(`${child.id.replace(/\./g, "\\.")}\\s*·\\s*([^\\n\\[]+?)\\s*\\[`),
+    );
+    const title = titleMatch ? titleMatch[1].trim() : child.id;
+    const files = parseFilesManifest(showResult.stdout);
+    all.push({ id: child.id, title, files });
+  }
+  return all;
+}
+
+// ---------------------------------------------------------------------------
 // beads_web-9vv: Cross-repo bead enumeration
 // ---------------------------------------------------------------------------
 //

@@ -63,7 +63,12 @@ import { getEpicLabels } from "./pipeline-labels";
 // ehp.13: Class D + E predicates and full buildDispatchContext.
 // listOpenWaveBeads is the published wave-bead reader (agent-launcher.ts ~1437)
 // that ehp.3's "do not duplicate readers" risk flag explicitly cites.
-import { listOpenWaveBeads } from "./agent-launcher";
+// listAllStatusWaveBeads (beads_web-m2c) is the sibling reader returning
+// wave-N beads of ANY status — drives the new
+// PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST predicate that distinguishes the
+// phantom-wave case from the legitimate post-close review case (the
+// 1cb58a5 regression fix).
+import { listOpenWaveBeads, listAllStatusWaveBeads } from "./agent-launcher";
 // ehp.13 Class E: reuse marker-routing's interpretMarkerForRouting + agent-
 // action-map's getActionForAgent rather than re-deriving the routing logic.
 // Both are existing pure functions; predicate composes them at evaluation time.
@@ -196,6 +201,22 @@ export interface DispatchContext {
    * predicate references this field.
    */
   readonly openWaveBeadIds: readonly string[];
+  /**
+   * beads_web-m2c ADDITIVE — wave-N beads of ANY status (open + in_progress
+   * + closed) for the current epic+wave. Populated by `buildDispatchContext`
+   * via `listAllStatusWaveBeads`; defaults to [] when waveNumber is absent
+   * or the read fails.
+   *
+   * Used by PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST to distinguish the
+   * "phantom wave" case (no wave-N beads exist for this epic at all → refuse
+   * review-wave) from the "all wave-N beads closed" case (review-wave's
+   * legitimate post-close trigger → allow). The 1cb58a5 fix removed
+   * `review-wave` from ACTIONS_REQUIRING_WAVE_BEADS to unblock the
+   * legitimate post-close case; this field powers the replacement
+   * protection that catches the niii reviewer-4-wave-4-redundant phantom
+   * dispatch without re-introducing the original bug.
+   */
+  readonly anyStatusWaveBeadIds: readonly string[];
   /**
    * Wave-2 SCAFFOLDED — defaults to null. ehp.13 fills via an event-log
    * read for the most-recent `pipeline-label-set` event. No Wave-2
@@ -523,6 +544,26 @@ const ACTIONS_REQUIRING_WAVE_BEADS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Actions that require AT LEAST ONE wave-N bead to exist in ANY status
+ * (open, in_progress, OR closed) — i.e., the wave is not "phantom".
+ *
+ * Source: beads_web-m2c restoration of the niii reviewer-4-wave-4-redundant
+ * protection that 1cb58a5 inadvertently dropped. `review-wave` legitimately
+ * runs AFTER all wave-N beads close (so it cannot be in
+ * ACTIONS_REQUIRING_WAVE_BEADS — that gate refuses on
+ * `openWaveBeadIds.length === 0` which is exactly the success state for
+ * review-wave). But review-wave MUST refuse when no wave-N beads exist at
+ * all (the phantom-wave case where the epic carries `wave:N` and
+ * `pipeline:build-review` labels but no wave-N children were ever
+ * created — empirically observed in the niii incident). This set drives
+ * the new PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST predicate that fills
+ * that gap without re-introducing 1cb58a5's regression.
+ */
+const ACTIONS_REQUIRING_ANY_STATUS_WAVE_BEADS: ReadonlySet<string> = new Set([
+  "review-wave",
+]);
+
+/**
  * Actions that, if a prior architect marker reports status=success, MUST NOT
  * fire (re-architecting on top of a successful architecture is the
  * "premature re-dispatch" failure mode that Class A catches).
@@ -703,6 +744,50 @@ export const PRECOND_WAVE_BEADS_NOT_ALL_CLOSED: Precondition = {
         refusalCode: "ALL_WAVE_BEADS_CLOSED",
         failedCheck: "wave-beads-not-all-closed",
         reason: `no open wave beads for action=${ctx.action} — likely all wave beads are already closed (review/redispatch redundant)`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
+ * A — wave-beads-of-any-status-exist → NO_WAVE_BEADS  (beads_web-m2c)
+ *
+ * Restores the niii reviewer-4-wave-4-redundant protection that the 1cb58a5
+ * fix inadvertently dropped. Fires for `review-wave` ONLY when there are
+ * NO wave-N beads of ANY status (open, in_progress, OR closed) for the
+ * epic+wave — i.e., a "phantom wave" where the epic carries `wave:N` +
+ * `pipeline:build-review` labels but no wave-N children exist at all.
+ *
+ * Why a separate predicate (not just appliesTo on PRECOND_WAVE_BEADS_EXIST):
+ * The existing PRECOND_WAVE_BEADS_EXIST and PRECOND_WAVE_BEADS_NOT_ALL_CLOSED
+ * predicates fire on `openWaveBeadIds.length === 0`, which is the LEGITIMATE
+ * success state for `review-wave` (the review runs AFTER every wave-N bead
+ * closes). Including review-wave in `ACTIONS_REQUIRING_WAVE_BEADS` (the
+ * pre-1cb58a5 state) inverted the semantic and refused the legitimate
+ * post-close case — empirically reproduced 2026-05-07 00:17 BST. This
+ * predicate uses the DIFFERENT `anyStatusWaveBeadIds` signal so the two
+ * states are distinguishable: empty open + non-empty any-status = "all
+ * closed" (legitimate, allow); empty open + empty any-status = "phantom"
+ * (refuse).
+ *
+ * Refusal code is NO_WAVE_BEADS (matches the integration test's enum-subset
+ * assertion at missed-wave-review-dispatch.precondition-integration.test.ts
+ * line 358-360).
+ */
+export const PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST: Precondition = {
+  name: "wave-beads-of-any-status-exist",
+  refusalCode: "NO_WAVE_BEADS",
+  appliesTo(action) {
+    return ACTIONS_REQUIRING_ANY_STATUS_WAVE_BEADS.has(action);
+  },
+  evaluate(ctx) {
+    if (ctx.anyStatusWaveBeadIds.length === 0) {
+      return {
+        ok: false,
+        refusalCode: "NO_WAVE_BEADS",
+        failedCheck: "wave-beads-of-any-status-exist",
+        reason: `no wave beads of ANY status found for action=${ctx.action} — phantom wave (no wave-N beads exist for this epic at all; review/redispatch would target nothing)`,
       };
     }
     return { ok: true };
@@ -1006,6 +1091,7 @@ export const PER_ACTION_PRECONDITIONS: readonly Precondition[] = [
   PRECOND_PLAN_NOT_PENDING,
   PRECOND_WAVE_BEADS_EXIST,
   PRECOND_WAVE_BEADS_NOT_ALL_CLOSED,
+  PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST, // beads_web-m2c (review-wave only)
   PRECOND_ARCHITECT_MARKER_NOT_SUCCESS,
   // Class B
   PRECOND_PIPELINE_LABEL_SINGLETON,
@@ -1283,26 +1369,44 @@ export async function buildDispatchContext(
   // No internal mocks beyond the readers' own implementations. Each reader
   // tolerates failures internally (returns null / [] on error); we surface
   // those signals via the DispatchContext fields.
-  const [bead, marker, epicLabels, planFileMeta, openWaveBeadIds] =
-    await Promise.all([
-      readBeadStatus(input.epicId, input.repoPath),
-      readMarker(input.repoPath, input.epicId),
-      getEpicLabels(input.epicId, input.repoPath),
-      // ehp.13: plan-file existence + mtime (Class A PLAN_FILE_MISSING +
-      // Class D PLAN_INSTABILITY). Per architecture Seam 3, fail-closed:
-      // any fs error other than ENOENT is treated as exists=false.
-      readPlanFileMeta(input.repoPath, input.epicId),
-      // ehp.13: open wave beads (Class A NO_WAVE_BEADS / ALL_WAVE_BEADS_CLOSED).
-      // Reuses the existing `listOpenWaveBeads` reader — does NOT duplicate.
-      // When waveNumber is undefined, we skip the read (no wave context).
-      input.waveNumber !== undefined
-        ? safeListOpenWaveBeads(
-            input.epicId,
-            input.waveNumber,
-            input.repoPath,
-          )
-        : Promise.resolve<readonly string[]>([]),
-    ]);
+  const [
+    bead,
+    marker,
+    epicLabels,
+    planFileMeta,
+    openWaveBeadIds,
+    anyStatusWaveBeadIds,
+  ] = await Promise.all([
+    readBeadStatus(input.epicId, input.repoPath),
+    readMarker(input.repoPath, input.epicId),
+    getEpicLabels(input.epicId, input.repoPath),
+    // ehp.13: plan-file existence + mtime (Class A PLAN_FILE_MISSING +
+    // Class D PLAN_INSTABILITY). Per architecture Seam 3, fail-closed:
+    // any fs error other than ENOENT is treated as exists=false.
+    readPlanFileMeta(input.repoPath, input.epicId),
+    // ehp.13: open wave beads (Class A NO_WAVE_BEADS / ALL_WAVE_BEADS_CLOSED).
+    // Reuses the existing `listOpenWaveBeads` reader — does NOT duplicate.
+    // When waveNumber is undefined, we skip the read (no wave context).
+    input.waveNumber !== undefined
+      ? safeListOpenWaveBeads(
+          input.epicId,
+          input.waveNumber,
+          input.repoPath,
+        )
+      : Promise.resolve<readonly string[]>([]),
+    // beads_web-m2c: ALL-status wave beads (Class A NO_WAVE_BEADS via
+    // PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST — phantom-wave protection
+    // for review-wave). Reuses `listAllStatusWaveBeads` (the new
+    // sibling export of listOpenWaveBeads); when waveNumber is undefined
+    // we skip the read.
+    input.waveNumber !== undefined
+      ? safeListAllStatusWaveBeads(
+          input.epicId,
+          input.waveNumber,
+          input.repoPath,
+        )
+      : Promise.resolve<readonly string[]>([]),
+  ]);
 
   // ehp.13: Class D stageEnteredAt — read event-log for the most-recent
   // stage-dispatched event matching this epic+stage. Sequenced AFTER the
@@ -1342,6 +1446,7 @@ export async function buildDispatchContext(
     epicLabels,
     planFileExists: planFileMeta.exists,
     openWaveBeadIds,
+    anyStatusWaveBeadIds,
     stageEnteredAt,
     planFileMtime: planFileMeta.mtimeMs,
   };
@@ -1408,6 +1513,31 @@ async function safeListOpenWaveBeads(
   } catch (err) {
     console.warn(
       `[dispatch-preconditions] listOpenWaveBeads threw for epic=${epicId} wave=${wave} — treating as empty:`,
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
+}
+
+/**
+ * Sibling of `safeListOpenWaveBeads` for `listAllStatusWaveBeads` — returns
+ * wave-N beads of ANY status (open + in_progress + closed). Drives the
+ * PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST predicate (beads_web-m2c) so
+ * review-wave dispatches against phantom waves are refused without
+ * re-introducing the 1cb58a5 bug. Same fail-closed degradation as the
+ * sibling: bd errors → [] + warn → predicate fires NO_WAVE_BEADS.
+ */
+async function safeListAllStatusWaveBeads(
+  epicId: string,
+  wave: number,
+  repoPath: string,
+): Promise<readonly string[]> {
+  try {
+    const beads = await listAllStatusWaveBeads(epicId, wave, repoPath);
+    return beads.map((b) => b.id);
+  } catch (err) {
+    console.warn(
+      `[dispatch-preconditions] listAllStatusWaveBeads threw for epic=${epicId} wave=${wave} — treating as empty:`,
       err instanceof Error ? err.message : err,
     );
     return [];
