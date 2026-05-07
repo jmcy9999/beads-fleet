@@ -1426,9 +1426,14 @@ export async function POST(request: NextRequest) {
         const refusal = await checkPreconditionsOrRefuse({ epicId, fleetCorePath, action: "generate-plan", waveNumber: parsedWaveNumber });
         if (refusal) return refusal;
 
-        // Transition to plan-review from research-complete (ventures) or architecture (non-ventures)
-        // (factory-core-lxc.5: architecture is the new pre-plan stage for non-ventures)
-        await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "pipeline:architecture"], fleetCorePath);
+        // beads_web-poh.19: strip ALL pipeline:* labels before adding
+        // the new one. Pre-fix this handler only removed pipeline:research
+        // -complete + pipeline:architecture explicitly, so an epic that had
+        // drifted into a different pipeline:* state (e.g. coherence
+        // fast-forward from an earlier stage) would carry both the prior
+        // label and pipeline:plan-review after dispatch.
+        const generatePlanLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        await removeAllPipelineLabels(epicId as string, generatePlanLabelsNow, fleetCorePath);
         const generatePlanAddedLabels = ["pipeline:plan-review", "agent:running"];
         await addLabelsToEpic(epicId, generatePlanAddedLabels, fleetCorePath);
         invalidateCache({ type: "epic", epicId });

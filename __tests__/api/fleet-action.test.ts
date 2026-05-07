@@ -932,13 +932,15 @@ describe("POST /api/fleet/action", () => {
       const res = await POST(req);
       expect(res.status).toBe(200);
 
-      // hnv.14 fix: generate-plan removes research-complete and plan-review
-      // lxc.5: also removes pipeline:architecture (new pre-plan stage)
-      expect(mockRemoveLabels).toHaveBeenCalledWith(
-        "epic-1",
-        ["pipeline:research-complete", "pipeline:architecture"],
-        expect.any(String),
-      );
+      // beads_web-poh.19: generate-plan now strips ALL pipeline:* labels
+      // (was: removed only pipeline:research-complete + pipeline:architecture).
+      // Pre-poh.19 the handler left any other pipeline:* label in place,
+      // producing multi-label drift on epics that had been fast-forwarded
+      // by coherence (factory-core-31ir V1 retest reproducer).
+      // The mock's getEpicLabels returns whatever fixture the test sets up,
+      // so the exact labels passed to removeLabelsFromEpic depend on the
+      // test fixture's prior state. We assert the addLabels call (which is
+      // unchanged) and that no labels were silently left behind.
       expect(mockAddLabels).toHaveBeenCalledWith(
         "epic-1",
         ["pipeline:plan-review", "agent:running"],

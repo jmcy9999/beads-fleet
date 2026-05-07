@@ -3185,8 +3185,15 @@ async function handleAgentExit(
           const targetStage = nextStageForFallback(session.pipelineStage as FleetStage, stShip as ShipType);
 
           if (targetStage) {
-            const currentLabel = `pipeline:${session.pipelineStage}`;
-            await removeLabelsFromEpic(session.epicId, [currentLabel]);
+            // beads_web-poh.19: strip ALL pipeline:* labels before adding
+            // the new one. Removing only `pipeline:${session.pipelineStage}`
+            // preserves drift if the epic had accumulated multiple pipeline
+            // labels from earlier transitions (factory-core-31ir V1 retest:
+            // [pipeline:plan-review, pipeline:test-spec, plan:pending] —
+            // the second pipeline label arrived through this code path).
+            const { removeAllPipelineLabels } = await import("./pipeline-labels");
+            const currentLabels = session.epicLabels ?? [];
+            await removeAllPipelineLabels(session.epicId, currentLabels);
             await addLabelsToEpic(session.epicId, [`pipeline:${targetStage}`]);
           }
         }
