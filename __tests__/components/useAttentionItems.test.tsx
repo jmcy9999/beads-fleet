@@ -102,6 +102,37 @@ describe("useAttentionItems — single epic", () => {
     expect(result.current.countByEpic.get("epic-1")?.length).toBe(2);
   });
 
+  // factory-core-jcit.1: badge-count contribution for human-decision:required
+  it("badge count includes human-decision-required items (factory-core-jcit.1)", () => {
+    const baseline: PlanIssue[] = [
+      makePlanIssue({
+        id: "epic-1",
+        issue_type: "epic",
+        labels: ["pipeline:development"],
+      }),
+    ];
+    const withLabel: PlanIssue[] = [
+      makePlanIssue({
+        id: "epic-1",
+        issue_type: "epic",
+        labels: ["pipeline:development", "human-decision:required"],
+      }),
+    ];
+
+    const baseHook = renderHook(() => useAttentionItems(baseline));
+    expect(baseHook.result.current.totalCount).toBe(0);
+
+    const withHook = renderHook(() => useAttentionItems(withLabel));
+    expect(withHook.result.current.totalCount).toBe(1);
+    expect(withHook.result.current.allItems[0]).toMatchObject({
+      epicId: "epic-1",
+      type: "human-decision-required",
+      reason: "Human Decision Required",
+      targetLabel: "human-decision:required",
+    });
+    expect(withHook.result.current.countByEpic.get("epic-1")?.length).toBe(1);
+  });
+
   it("surfaces a human-flagged child bead alongside its parent epic", () => {
     const issues: PlanIssue[] = [
       makePlanIssue({ id: "epic-1", issue_type: "epic", labels: ["pipeline:development"] }),

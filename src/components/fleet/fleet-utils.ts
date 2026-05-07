@@ -632,15 +632,18 @@ export function appHasWave(app: FleetApp, wave: number): boolean {
 /**
  * Categories of attention an epic (or one of its children) can flag.
  *
- * - "verification-needed":    checkpoint:human-verify on the epic
- * - "decision-required":      checkpoint:decision on the epic
- * - "human-action":           checkpoint:human-action on the epic
- * - "qa-review":              qa:needs-review on the epic (QA reached max rounds)
- * - "coherence-escalation":   review:needs-human on the epic (factory-core-zsjv
- *                              — the coherence agent or a reconciler rule flagged
- *                              this epic for owner judgment after it couldn't
- *                              resolve the stuck state automatically)
- * - "human-flagged":          a child bead carries the "human" label (set by `bd human`)
+ * - "verification-needed":      checkpoint:human-verify on the epic
+ * - "decision-required":        checkpoint:decision on the epic
+ * - "human-action":             checkpoint:human-action on the epic
+ * - "qa-review":                qa:needs-review on the epic (QA reached max rounds)
+ * - "coherence-escalation":     review:needs-human on the epic (factory-core-zsjv
+ *                                — the coherence agent or a reconciler rule flagged
+ *                                this epic for owner judgment after it couldn't
+ *                                resolve the stuck state automatically)
+ * - "human-decision-required":  human-decision:required on the epic (factory-core-jcit
+ *                                — explicitly surfaces a generic operator decision
+ *                                gate; reuses the existing `human-dismiss` action)
+ * - "human-flagged":            a child bead carries the "human" label (set by `bd human`)
  */
 export type AttentionType =
   | "verification-needed"
@@ -648,6 +651,7 @@ export type AttentionType =
   | "human-action"
   | "qa-review"
   | "coherence-escalation"
+  | "human-decision-required"
   | "human-flagged";
 
 /** A response action available on an attention item (e.g. Approve / Dismiss). */
@@ -720,6 +724,11 @@ export const ATTENTION_CONFIG: Record<
       "Coherence agent flagged — automated recovery exhausted, needs your judgment",
     actions: [{ name: "human-dismiss", label: "Dismiss" }],
   },
+  "human-decision-required": {
+    sourceLabel: "human-decision:required",
+    reason: "Human Decision Required",
+    actions: [{ name: "human-dismiss", label: "Dismiss" }],
+  },
   "human-flagged": {
     reason: "Flagged for Human Decision",
     actions: [{ name: "human-dismiss", label: "Dismiss" }],
@@ -733,6 +742,7 @@ const EPIC_LABEL_ATTENTION_TYPES: AttentionType[] = [
   "human-action",
   "qa-review",
   "coherence-escalation",
+  "human-decision-required",
 ];
 
 /**

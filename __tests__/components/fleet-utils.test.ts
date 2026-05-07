@@ -783,6 +783,10 @@ describe("getAttentionItems", () => {
       expect(ATTENTION_CONFIG["decision-required"].sourceLabel).toBe("checkpoint:decision");
       expect(ATTENTION_CONFIG["human-action"].sourceLabel).toBe("checkpoint:human-action");
       expect(ATTENTION_CONFIG["qa-review"].sourceLabel).toBe("qa:needs-review");
+      // human-decision-required (factory-core-jcit.1) — operator-decision gate
+      expect(ATTENTION_CONFIG["human-decision-required"].sourceLabel).toBe(
+        "human-decision:required",
+      );
       // human-flagged has no source label — driven by child label
       expect(ATTENTION_CONFIG["human-flagged"].sourceLabel).toBeUndefined();
     });
@@ -793,8 +797,14 @@ describe("getAttentionItems", () => {
       ]);
     });
 
-    it("decision-required, human-action, qa-review, human-flagged offer Dismiss action", () => {
-      for (const t of ["decision-required", "human-action", "qa-review", "human-flagged"] as const) {
+    it("decision-required, human-action, qa-review, human-decision-required, human-flagged offer Dismiss action", () => {
+      for (const t of [
+        "decision-required",
+        "human-action",
+        "qa-review",
+        "human-decision-required",
+        "human-flagged",
+      ] as const) {
         expect(ATTENTION_CONFIG[t].actions).toEqual([
           { name: "human-dismiss", label: "Dismiss" },
         ]);
@@ -806,6 +816,9 @@ describe("getAttentionItems", () => {
       expect(ATTENTION_CONFIG["decision-required"].reason).toBe("Decision Required");
       expect(ATTENTION_CONFIG["human-action"].reason).toBe("Human Action Required");
       expect(ATTENTION_CONFIG["qa-review"].reason).toBe("QA Review Needed");
+      expect(ATTENTION_CONFIG["human-decision-required"].reason).toBe(
+        "Human Decision Required",
+      );
       expect(ATTENTION_CONFIG["human-flagged"].reason).toBe("Flagged for Human Decision");
     });
   });
@@ -868,6 +881,33 @@ describe("getAttentionItems", () => {
     expect(items[0].type).toBe("qa-review");
     expect(items[0].reason).toBe("QA Review Needed");
     expect(items[0].targetLabel).toBe("qa:needs-review");
+  });
+
+  it("detects human-decision:required as human-decision-required (factory-core-jcit.1)", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-HD",
+      issue_type: "epic",
+      labels: ["pipeline:development", "human-decision:required"],
+    });
+    const items = getAttentionItems(appOf(epic));
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      epicId: "EPIC-HD",
+      type: "human-decision-required",
+      reason: "Human Decision Required",
+      targetLabel: "human-decision:required",
+      actions: [{ name: "human-dismiss", label: "Dismiss" }],
+    });
+  });
+
+  it("does NOT emit a human-decision-required item when the label is absent (factory-core-jcit.1 negative case)", () => {
+    const epic = makePlanIssue({
+      id: "EPIC-HD-NEG",
+      issue_type: "epic",
+      labels: ["pipeline:development"],
+    });
+    const items = getAttentionItems(appOf(epic));
+    expect(items.find((i) => i.type === "human-decision-required")).toBeUndefined();
   });
 
   it("detects child bead with `human` label as human-flagged with bead context", () => {

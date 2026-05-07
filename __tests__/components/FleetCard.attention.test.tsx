@@ -101,6 +101,17 @@ function humanFlaggedItem(): AttentionItem {
   };
 }
 
+function humanDecisionRequiredItem(): AttentionItem {
+  return {
+    id: "factory-core-509:human-decision:required",
+    epicId: "factory-core-509",
+    type: "human-decision-required",
+    reason: "Human Decision Required",
+    targetLabel: "human-decision:required",
+    actions: [{ name: "human-dismiss", label: "Dismiss" }],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -181,6 +192,41 @@ describe("FleetCard — attention action dispatch", () => {
       action: "human-dismiss",
       targetLabel: undefined,
       targetBeadId: "factory-core-509.3",
+    });
+  });
+
+  // factory-core-jcit.1: human-decision:required label class
+  it("renders the banner with reason 'Human Decision Required' and a Dismiss button for human-decision-required items", () => {
+    render(
+      <FleetCard
+        app={makeApp()}
+        onPipelineAction={() => {}}
+        attentionItems={[humanDecisionRequiredItem()]}
+      />,
+    );
+    expect(screen.getByText("Human Decision Required")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Dismiss/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("dispatches human-dismiss with targetLabel='human-decision:required' for human-decision-required items (factory-core-jcit.1)", () => {
+    const spy = jest.fn();
+    render(
+      <FleetCard
+        app={makeApp()}
+        onPipelineAction={spy}
+        attentionItems={[humanDecisionRequiredItem()]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Dismiss/i }));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith({
+      epicId: "factory-core-509",
+      epicTitle: "Test Epic",
+      action: "human-dismiss",
+      targetLabel: "human-decision:required",
+      targetBeadId: undefined,
     });
   });
 });
