@@ -42,6 +42,7 @@ import {
 import { probeActiveDispatch } from "./reconciler-rules/active-dispatch-probe";
 import { buildLivenessCheckRule } from "./reconciler-rules/liveness-check";
 import { buildMarkerDrivenRoutingRule } from "./reconciler-rules/marker-driven-routing";
+import { buildAutoApproveInternalPlansRule } from "./reconciler-rules/auto-approve-internal-plans";
 import { readEpicState } from "./agent-launcher";
 import { removeLabelsFromEpic } from "./pipeline-labels";
 import { appendEvent, readEvents } from "./event-log";
@@ -382,6 +383,29 @@ export function ensureReconcilerRunning(): void {
           const { statMarkerMtimeSync } = require("./marker-dispatch-sentinel");
           return statMarkerMtimeSync(rp, markerId);
         },
+      }),
+    );
+
+    // beads_web-poh.13 Option A — auto-approve-internal-plans.
+    // Fires `approve-plan` for ship-type:internal epics that have just
+    // had test-spec exit successfully and are stalled at plan:pending.
+    // Registered AFTER marker-driven-routing so a marker carrying
+    // next_agent gets honoured first; this rule is the floor that
+    // unblocks the autonomous chain when no other rule fires. The
+    // bead's Option C (coherence as autonomous-mode plan-reviewer)
+    // layers on top as quality judgement when it ships as a follow-on.
+    rec.registerRule(
+      buildAutoApproveInternalPlansRule({
+        repoPath,
+        getEpicLabels: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          return snap.labels;
+        },
+        readMarker: async (rp: string, markerId: string) => {
+          const { readMarker } = await import("./marker-reader");
+          return readMarker(rp, markerId);
+        },
+        readEpicTitle: (epicId: string) => readEpicTitle(epicId, repoPath),
       }),
     );
 

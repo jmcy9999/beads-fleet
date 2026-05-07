@@ -485,7 +485,7 @@ describeIfEnabled("dispatch-preconditions integration (real bd + dolt)", () => {
   // Class A — PLAN_PENDING (real bd label fixture)
   // ---------------------------------------------------------------------------
 
-  test("ehp.13 Class A — PLAN_PENDING fires when 'plan:pending' label set on epic", async () => {
+  test("ehp.13 Class A — PLAN_PENDING fires when 'plan:pending' label set on a plan-CONSUMING action (poh.13: applies to start-wave, no longer to approve-plan)", async () => {
     const pendBeadId = bdRun(["q", "Bead with plan:pending label"]).trim();
     bdRun(["label", "add", pendBeadId, "plan:pending"]);
 
@@ -498,6 +498,32 @@ describeIfEnabled("dispatch-preconditions integration (real bd + dolt)", () => {
       "# Pending plan\n",
     );
 
+    // poh.13: switched from approve-plan (which IS the action that
+    // clears plan:pending) to start-wave (which CONSUMES the finalised
+    // plan and legitimately must wait for plan:approved).
+    const dctx = await buildDispatchContext({
+      epicId: pendBeadId,
+      repoPath,
+      action: "start-wave",
+    });
+    expect(dctx.epicLabels).toContain("plan:pending");
+
+    const result = evaluatePreconditions(dctx);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusalCode).toBe("PLAN_PENDING");
+  }, 30_000);
+
+  test("poh.13 — approve-plan with plan:pending label IS allowed (regression: pre-poh.13 returned PLAN_PENDING and made plan:pending undischargeable)", async () => {
+    const pendBeadId = bdRun(["q", "Bead awaiting approve-plan"]).trim();
+    bdRun(["label", "add", pendBeadId, "plan:pending"]);
+
+    const planDir = path.join(repoPath, ".beads", "plans");
+    await fs.mkdir(planDir, { recursive: true });
+    await fs.writeFile(
+      path.join(planDir, `${pendBeadId}.md`),
+      "# Plan body\n",
+    );
+
     const dctx = await buildDispatchContext({
       epicId: pendBeadId,
       repoPath,
@@ -506,8 +532,16 @@ describeIfEnabled("dispatch-preconditions integration (real bd + dolt)", () => {
     expect(dctx.epicLabels).toContain("plan:pending");
 
     const result = evaluatePreconditions(dctx);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.refusalCode).toBe("PLAN_PENDING");
+    // Pre-poh.13 this was ok=false / PLAN_PENDING. After the fix the
+    // predicate's appliesTo no longer matches approve-plan, so the
+    // overall result passes the gate and the route handler can run.
+    if (!result.ok) {
+      // Should NOT happen — approve-plan must NOT be refused on
+      // plan:pending. Other unrelated preconditions still apply
+      // (PLAN_FILE_MISSING, BD_STATUS_*, etc.) but plan:pending
+      // alone must not block.
+      expect(result.refusalCode).not.toBe("PLAN_PENDING");
+    }
   }, 30_000);
 
   // ---------------------------------------------------------------------------

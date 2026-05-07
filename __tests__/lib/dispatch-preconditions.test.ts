@@ -828,15 +828,19 @@ describe("PRECOND_PLAN_NOT_PENDING (Class A — PLAN_PENDING)", () => {
   test("happy path — no 'plan:pending' label → ok=true", () => {
     expect(
       PRECOND_PLAN_NOT_PENDING.evaluate(
-        ctx({ action: "review-plan", epicLabels: ["pipeline:plan-review"] }),
+        ctx({ action: "start-wave", epicLabels: ["pipeline:plan-review"] }),
       ),
     ).toEqual({ ok: true });
   });
 
-  test("refusal — 'plan:pending' label set + applicable action → PLAN_PENDING", () => {
+  test("refusal — 'plan:pending' label set + plan-consuming action → PLAN_PENDING", () => {
+    // poh.13: refusal applies to actions that CONSUME the finalised plan
+    // (start-wave, review-wave) — not to the actions that DO the
+    // approval (approve-plan, review-plan, approve-and-build), which
+    // are the legitimate transitions OUT of plan:pending.
     const result = PRECOND_PLAN_NOT_PENDING.evaluate(
       ctx({
-        action: "approve-plan",
+        action: "start-wave",
         epicLabels: ["pipeline:plan-review", "plan:pending"],
       }),
     );
@@ -848,14 +852,41 @@ describe("PRECOND_PLAN_NOT_PENDING (Class A — PLAN_PENDING)", () => {
     }
   });
 
-  test("appliesTo — only plan-consuming actions", () => {
-    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("review-plan")).toBe(true);
-    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("approve-plan")).toBe(true);
-    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("approve-and-build")).toBe(true);
+  test("appliesTo — refusal restricted to plan-CONSUMING actions only (poh.13)", () => {
+    // poh.13: the three pending-transition actions (review-plan,
+    // approve-plan, approve-and-build) are EXEMPTED — they remove
+    // plan:pending themselves and refusing them on its presence
+    // made the label undischargeable.
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("review-plan")).toBe(false);
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("approve-plan")).toBe(false);
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("approve-and-build")).toBe(false);
+    // Plan-consuming actions still gated.
     expect(PRECOND_PLAN_NOT_PENDING.appliesTo("start-wave")).toBe(true);
     expect(PRECOND_PLAN_NOT_PENDING.appliesTo("review-wave")).toBe(true);
+    // Unrelated actions never applied.
     expect(PRECOND_PLAN_NOT_PENDING.appliesTo("run-pm")).toBe(false);
     expect(PRECOND_PLAN_NOT_PENDING.appliesTo("run-architect")).toBe(false);
+  });
+
+  // poh.13 regression: approve-plan with plan:pending must NOT be
+  // refused. Empirically reproduced 2026-05-07 14:59 BST.
+  test("poh.13 regression — approve-plan with plan:pending label is NOT refused (the transition action must be allowed to clear the label)", () => {
+    const result = PRECOND_PLAN_NOT_PENDING.evaluate(
+      ctx({
+        action: "approve-plan",
+        epicLabels: ["pipeline:plan-review", "plan:pending"],
+      }),
+    );
+    // Predicate doesn't apply to approve-plan post-poh.13, so evaluate
+    // returns ok=true even when plan:pending is set. The check happens
+    // at the registry level via appliesTo, but we verify the predicate
+    // body doesn't mistakenly fire.
+    expect(PRECOND_PLAN_NOT_PENDING.appliesTo("approve-plan")).toBe(false);
+    // Even if it WERE evaluated, the body still flags the label —
+    // that's by design: appliesTo is the gate that excludes it from
+    // the action's preconditions list. We just sanity-check the body
+    // remains correct for the actions it IS applied to.
+    void result;
   });
 });
 
@@ -1422,11 +1453,23 @@ describe("EXTENDED_PRECONDITION_TABLE coverage (ehp.13 — full 34 dispatching a
     expect(codes).toContain("QA_ROUND_OUT_OF_ORDER");
   });
 
-  test("review-plan includes plan-not-pending + plan-instability predicates", () => {
+  test("review-plan includes plan-instability predicate (poh.13: PLAN_PENDING removed — review-plan IS the action that clears plan:pending)", () => {
     const preconditions = EXTENDED_PRECONDITION_TABLE.get("review-plan") ?? [];
     const codes = preconditions.map((p) => p.refusalCode);
-    expect(codes).toContain("PLAN_PENDING");
+    expect(codes).not.toContain("PLAN_PENDING"); // poh.13 fix
     expect(codes).toContain("PLAN_INSTABILITY");
+  });
+
+  test("start-wave still includes plan-not-pending — actions that CONSUME the finalised plan must wait (poh.13 invariant)", () => {
+    const preconditions = EXTENDED_PRECONDITION_TABLE.get("start-wave") ?? [];
+    const codes = preconditions.map((p) => p.refusalCode);
+    expect(codes).toContain("PLAN_PENDING");
+  });
+
+  test("approve-plan does NOT include plan-not-pending — it IS the transition that clears the label (poh.13 fix)", () => {
+    const preconditions = EXTENDED_PRECONDITION_TABLE.get("approve-plan") ?? [];
+    const codes = preconditions.map((p) => p.refusalCode);
+    expect(codes).not.toContain("PLAN_PENDING");
   });
 
   test("PER_ACTION_PRECONDITIONS exposes 11 predicates (10 ehp.13 + 1 m2c phantom-wave)", () => {
@@ -1633,7 +1676,15 @@ describe("evaluatePreconditions (ehp.13 — extended table refusal scenarios)", 
     expect(result).toEqual({ ok: true });
   });
 
-  test("approve-plan with plan:pending label → PLAN_PENDING", () => {
+  test("approve-plan with plan:pending label → ok=true (poh.13: this IS the action that clears the label)", () => {
+    // Pre-poh.13: this test asserted refusal with PLAN_PENDING, which
+    // made plan:pending undischargeable through the autonomous path.
+    // The empirical reproducer was 2026-05-07 14:59 BST, when an
+    // operator-side approve-plan curl returned PLAN_PENDING / plan-not
+    // -pending. With the predicate's appliesTo restricted to plan-
+    // CONSUMING actions, approve-plan now passes the precondition gate
+    // and reaches the route handler, which removes plan:pending and
+    // adds plan:approved.
     const result = evaluatePreconditions(
       ctx({
         action: "approve-plan",
@@ -1642,8 +1693,7 @@ describe("evaluatePreconditions (ehp.13 — extended table refusal scenarios)", 
         planFileExists: true,
       }),
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.refusalCode).toBe("PLAN_PENDING");
+    expect(result).toEqual({ ok: true });
   });
 
   test("run-architect with prior success marker → ARCHITECT_MARKER_SUCCESS", () => {

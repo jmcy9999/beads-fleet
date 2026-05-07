@@ -532,11 +532,22 @@ const ACTIONS_REQUIRING_PLAN_FILE: ReadonlySet<string> = new Set([
 /**
  * Actions for which `plan:pending` is a refusal: the plan is not yet
  * finalised so any action that consumes the finalised plan must wait.
+ *
+ * beads_web-poh.13 (2026-05-07): removed `review-plan`, `approve-plan`,
+ * and `approve-and-build`. Those three are the TRANSITIONS that consume
+ * `plan:pending` — they remove the label themselves (route.ts approve-plan
+ * handler @ line 1390, review-plan @ line 3050, approve-and-build @ line
+ * 1432). Refusing them on the basis of `plan:pending` being present made
+ * the label undischargeable: the only actions that can clear it were
+ * forbidden from running while it was set. Empirically reproduced
+ * 2026-05-07 14:59 BST during a manual approve-plan attempt — the action
+ * returned PLAN_PENDING / plan-not-pending and the operator had to clear
+ * `plan:pending` by hand before it could fire. With the fix, those actions
+ * proceed and clear the label themselves; the refusal remains correctly
+ * applied to actions that consume the FINALISED plan (start-wave,
+ * review-wave) which legitimately must wait until plan:pending → plan:approved.
  */
 const ACTIONS_REFUSED_BY_PLAN_PENDING: ReadonlySet<string> = new Set([
-  "review-plan",
-  "approve-plan",
-  "approve-and-build",
   "start-wave",
   "review-wave",
 ]);

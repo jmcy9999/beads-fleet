@@ -271,11 +271,16 @@ describe("stuck-in-stage × dispatch-preconditions integration (beads_web-ehp.5)
   });
 
   // ==========================================================================
-  // AC #2 — PLAN_PENDING refusal
-  //   plan-review stage stalled but `plan:pending` label still set on the
-  //   epic → PLAN_PENDING refusal, no auto-progression.
+  // AC #2 — plan-review recovery FIRES (poh.13 fix)
+  //   Pre-poh.13: plan-review stage stalled with `plan:pending` label set
+  //   was REFUSED with PLAN_PENDING — review-plan was incorrectly listed in
+  //   ACTIONS_REFUSED_BY_PLAN_PENDING even though review-plan IS the
+  //   transition that consumes plan:pending. With the predicate's appliesTo
+  //   restricted to plan-CONSUMING actions only (start-wave, review-wave),
+  //   stuck-in-stage's review-plan dispatch now fires cleanly and the
+  //   reviewer gets to advance the epic.
   // ==========================================================================
-  test("plan-review stalled with `plan:pending` label set → PLAN_PENDING refusal, no dispatch", async () => {
+  test("plan-review stalled with `plan:pending` label set → review-plan dispatch FIRES (poh.13)", async () => {
     const repo = await makeRepo();
     const epicId = "factory-core-plan-pending";
     const stage = "plan-review";
@@ -288,9 +293,6 @@ describe("stuck-in-stage × dispatch-preconditions integration (beads_web-ehp.5)
       makeBead({ id: epicId, status: "open" }),
     );
     mockReadMarker.mockResolvedValue(null);
-    // The plan:pending label is still set — Class A PLAN_PENDING fires
-    // (resumeAction for plan-review is review-plan, which has the
-    // plan-not-pending precondition registered).
     mockGetEpicLabels.mockResolvedValue([
       "pipeline:plan-review",
       "plan:pending",
@@ -316,17 +318,24 @@ describe("stuck-in-stage × dispatch-preconditions integration (beads_web-ehp.5)
 
     await driveStaleStage({ repo, epicId, stage, rule });
 
-    expect(fetchCalls).toHaveLength(0);
+    // Stuck-in-stage post-wlsr.14 dispatches run-coherence-agent (the
+    // resumeAction "review-plan" is only used as a precondition probe,
+    // not the actual dispatch). Pre-poh.13 the precondition probe
+    // against `review-plan + plan:pending` returned PLAN_PENDING and
+    // the escalation was refused — the entire plan-review stage had
+    // no autonomous recovery path. Post-poh.13 the probe passes and
+    // the escalation reaches coherence, which decides what to do
+    // (per Option C of poh.13, coherence is the right home for that
+    // decision).
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].body.action).toBe("run-coherence-agent");
+    expect(fetchCalls[0].body.epicId).toBe(epicId);
 
+    // No refusal event — the precondition probe passes (the bug fix).
     const refusals = await readEvents(repo, {
       type: "reconciler-action-refused",
     });
-    expect(refusals).toHaveLength(1);
-    const payload = refusals[0].payload as Record<string, unknown>;
-    expect(payload.ruleName).toBe(STUCK_IN_STAGE_RULE_NAME);
-    expect(payload.action).toBe("review-plan");
-    expect(payload.refusalCode).toBe("PLAN_PENDING");
-    expect(payload.failedCheck).toBe("plan-not-pending");
+    expect(refusals).toHaveLength(0);
   });
 
   // ==========================================================================
