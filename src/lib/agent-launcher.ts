@@ -1111,7 +1111,10 @@ export async function getWaveStatus(epicId: string, repoPath: string): Promise<W
       };
     }
 
-    const waveMatch = showResult.stdout.match(/wave:(\d+)/);
+    // q9c: match LABELS line only (description text contained false positives).
+    const labelLineMatch = showResult.stdout.match(/^LABELS:\s*([^\n]+)/m);
+    const labelLine = labelLineMatch ? labelLineMatch[1] : "";
+    const waveMatch = labelLine.match(/wave:(\d+)/);
     if (!waveMatch) {
       // Closed beads without wave labels are pre-existing work (e.g. research
       // beads created before the planner ran). They don't need wave assignments
@@ -1608,7 +1611,13 @@ export async function listAllStatusWaveBeads(
         `listAllStatusWaveBeads: bd show failed for child ${child.id} of epic ${epicId} — cannot determine bead's wave state`,
       );
     }
-    const waveMatch = showResult.stdout.match(/wave:(\d+)/);
+    // q9c (2026-05-07 fix): match LABELS line only, not full bd show stdout —
+    // ehp.12's description references wave:3/wave:4 (niii reproduction targets)
+    // and the unanchored regex picked up description text before the actual
+    // label, dropping legitimate wave-N beads from the result.
+    const labelLineMatch = showResult.stdout.match(/^LABELS:\s*([^\n]+)/m);
+    const labelLine = labelLineMatch ? labelLineMatch[1] : "";
+    const waveMatch = labelLine.match(/wave:(\d+)/);
     if (!waveMatch) continue;
     if (parseInt(waveMatch[1], 10) !== wave) continue;
     const titleMatch = showResult.stdout.match(
