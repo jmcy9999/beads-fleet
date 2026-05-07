@@ -313,6 +313,115 @@ describe("Scenario 1 — Two-epic-same-repo (Feature 3)", () => {
     });
   });
 
+  // -----------------------------------------------------------------
+  // beads_web-poh.16: coherence-vs-pipeline-agent slot discrimination.
+  // Coherence is the meta-layer judgment agent. It runs alongside the
+  // pipeline-stage agent on the same epic and routinely dispatches the
+  // next pipeline agent itself before exiting. It must own a distinct
+  // `activeAgents` slot so its outbound dispatch does not collide with
+  // its own session and get refused by the launcher's "Agent already
+  // running" guard.
+  // -----------------------------------------------------------------
+
+  describe("beads_web-poh.16: coherence keying", () => {
+    const EPIC = "factory-core-1vud";
+
+    it("coherence and a non-coherence agent on the same epic key into DIFFERENT slots", () => {
+      const cohKey = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "coherence");
+      const archKey = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "architect");
+      const builderKey = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "builder");
+
+      // Coherence carves out its own suffix.
+      expect(cohKey).toBe(`${fleetCoreReal}::${EPIC}::coherence`);
+      // Every other agent type keeps the legacy bare-scope key — that is
+      // what allows coherence to dispatch them without self-collision.
+      expect(archKey).toBe(`${fleetCoreReal}::${EPIC}`);
+      expect(builderKey).toBe(`${fleetCoreReal}::${EPIC}`);
+
+      expect(cohKey).not.toBe(archKey);
+      expect(cohKey).not.toBe(builderKey);
+    });
+
+    it("two coherences on the same epic STILL collide on the same key (defends idempotency)", () => {
+      const a = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "coherence");
+      const b = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "coherence");
+      expect(a).toBe(b);
+    });
+
+    it("two non-coherence agents on the same epic STILL collide (preserves z9h.3 invariant)", () => {
+      const a = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "architect");
+      const b = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "builder");
+      // Both compute the bare `<real>::<epic>` key — only one pipeline
+      // agent per epic at a time, exactly as before poh.16.
+      expect(a).toBe(b);
+      expect(a).toBe(`${fleetCoreReal}::${EPIC}`);
+    });
+
+    it("omitting agentName preserves legacy behaviour (no `::coherence` suffix)", () => {
+      // Existing callers that don't pass agentName must compute the
+      // historical key shape — otherwise pre-poh.16 callers would silently
+      // change keying.
+      const legacy = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC);
+      expect(legacy).toBe(`${fleetCoreReal}::${EPIC}`);
+    });
+
+    it("a non-'coherence' agentName value does NOT trigger the suffix", () => {
+      // Only the literal string "coherence" carves out the new slot.
+      // Any other agentName falls through to the bare key, so a future
+      // typo or fuzzed input cannot accidentally fork the keyspace.
+      const fakeStage = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "Coherence"); // capital-C
+      const empty = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "");
+      expect(fakeStage).toBe(`${fleetCoreReal}::${EPIC}`);
+      expect(empty).toBe(`${fleetCoreReal}::${EPIC}`);
+    });
+
+    it("beadId still wins over epicId in the suffix (z9h.3 still holds for coherence too)", () => {
+      // If a future code path scopes coherence to a specific bead (it
+      // doesn't today, but the signature allows it), the bead-id based
+      // scope is still chosen over the epic-id — and the `::coherence`
+      // marker still lands at the end.
+      const key = activeAgentKey(FLEET_CORE_PATH, "factory-core-bead-9", EPIC, "coherence");
+      expect(key).toBe(`${fleetCoreReal}::factory-core-bead-9::coherence`);
+    });
+
+    it("isAgentActive returns true when ONLY coherence is tracked for the epic", async () => {
+      // Inject a fake coherence session under its `::coherence`-suffixed
+      // key. `isAgentActive(repo, undefined, epic)` is called WITHOUT
+      // agentName, so it computes the bare key first (miss) — the second
+      // probe must also check the coherence-suffixed key and hit it.
+      const { _testOnlySetActiveAgent } = await import("@/lib/agent-launcher");
+      const cohKey = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "coherence");
+      const cleanup = _testOnlySetActiveAgent(cohKey, {
+        repoPath: FLEET_CORE_PATH,
+        epicId: EPIC,
+        agentName: "coherence",
+      });
+      try {
+        // Before poh.16, isAgentActive's bare-key probe missed coherence
+        // entirely and returned false here — masking the live coherence
+        // session from any caller asking "is anything running for E?".
+        expect(isAgentActive(FLEET_CORE_PATH, undefined, EPIC)).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("isAgentActive bare-key hit short-circuits before the coherence probe (no behaviour change for pipeline agents)", async () => {
+      const { _testOnlySetActiveAgent } = await import("@/lib/agent-launcher");
+      const archKey = activeAgentKey(FLEET_CORE_PATH, undefined, EPIC, "architect");
+      const cleanup = _testOnlySetActiveAgent(archKey, {
+        repoPath: FLEET_CORE_PATH,
+        epicId: EPIC,
+        agentName: "architect",
+      });
+      try {
+        expect(isAgentActive(FLEET_CORE_PATH, undefined, EPIC)).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
   describe("no-lock baseline — naive single-key collision (pre-z9h.3 behaviour)", () => {
     // The Feature 3 lock-equivalent for multi-agent same-repo is the
     // composite key format `${realpath}::${beadId}`. Without the bead

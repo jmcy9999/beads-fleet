@@ -78,6 +78,14 @@ export interface AgentSession {
   launcherScript?: string;
   tmuxSessionName?: string; // Actual tmux session name for lifecycle management
   transcriptFile?: string; // Path to the agent's JSONL transcript file
+  /**
+   * Persisted from LaunchOptions.agentName so the session's slot in
+   * `activeAgents` is reconstructed correctly after hot-reload recovery
+   * (beads_web-poh.16). Only consulted by activeAgentKey for the
+   * coherence-vs-pipeline-agent discriminator; other agent types still
+   * key off `<realpath>::<scope>` exactly as before.
+   */
+  agentName?: string;
 }
 
 export interface LaunchOptions {
@@ -311,8 +319,14 @@ export function isAgentActive(
   }
 
   // Default mode: key-based lookup (preserves existing behaviour).
+  // beads_web-poh.16: coherence runs under a distinct key suffix
+  // (`::coherence`); probe both slots so callers asking "is anything
+  // active for this scope?" still get the right answer when only the
+  // meta-layer coherence agent is tracked.
   const key = activeAgentKey(repoPath, beadId, epicId);
-  return activeAgents.has(key);
+  if (activeAgents.has(key)) return true;
+  const cohKey = activeAgentKey(repoPath, beadId, epicId, "coherence");
+  return activeAgents.has(cohKey);
 }
 
 /**
@@ -836,7 +850,16 @@ async function attemptRecovery(): Promise<void> {
       // factory-core-z9h.3: recover composite key so per-bead parallel
       // builders (same repo, different beadId) don't collapse into one
       // tracked slot.
-      key = activeAgentKey(session.repoPath, session.beadId, session.epicId);
+      // beads_web-poh.16: include agentName so coherence is recovered
+      // back into its own `::coherence` slot — recovering it under the
+      // bare key would resurrect the self-collision bug after a Node
+      // restart.
+      key = activeAgentKey(
+        session.repoPath,
+        session.beadId,
+        session.epicId,
+        session.agentName,
+      );
     } catch {
       continue; // Path doesn't exist
     }
@@ -3201,20 +3224,51 @@ async function ensureLogDir(): Promise<void> {
  * supplied we suffix with `::<beadId>`; otherwise we fall back to the legacy
  * single-agent-per-repo key so pre-z9h callers behave exactly as before.
  *
+ * beads_web-poh.16: coherence is the meta-layer judgment agent. It runs
+ * alongside pipeline-stage agents on the same epic and routinely dispatches
+ * the next pipeline agent itself before exiting. Without a distinct slot,
+ * coherence's launchAgent registration collides with the architect (or any
+ * other downstream agent) it's about to dispatch — the launcher's own
+ * collision check refuses the dispatch with "Agent already running in
+ * tmux window <epic>-unknown". The fix gives coherence its own key
+ * (`<real>::<scope>::coherence`) so a non-coherence dispatch for the same
+ * epic computes a different key and proceeds. Two coherences on one epic
+ * still collide (both compute the suffixed key); two architects still
+ * collide (both compute the bare key); the only relaxed case is
+ * coherence-and-non-coherence on the same epic — exactly the autonomous
+ * fail-forward case the bead targets.
+ *
  * Exported for factory-core-ppx.10 regression coverage — the key format is
  * the invariant that guarantees two concurrent epics on the same repo can
  * coexist under distinct keys. Exporting a pure function for test access
  * follows the z9h.12 `sessionFileFor` precedent (same motivation: prevent
  * future regression of the composite-key invariant).
  */
-export function activeAgentKey(repoPath: string, beadId?: string, epicId?: string): string {
+export function activeAgentKey(
+  repoPath: string,
+  beadId?: string,
+  epicId?: string,
+  agentName?: string,
+): string {
   const real = realpathSync(repoPath);
   const scope = beadId ?? epicId;
-  return scope ? `${real}::${scope}` : real;
+  if (!scope) return real;
+  if (agentName === "coherence") return `${real}::${scope}::coherence`;
+  return `${real}::${scope}`;
 }
 
 export async function launchAgent(options: LaunchOptions): Promise<AgentSession> {
-  const repoKey = activeAgentKey(options.repoPath, options.beadId, options.epicId);
+  // beads_web-poh.16: include agentName in the key so coherence's slot
+  // (`<real>::<scope>::coherence`) is distinct from the pipeline-stage
+  // agent slot (`<real>::<scope>`). Coherence dispatching architect for
+  // the same epic now hits an empty bare-key slot and proceeds, instead
+  // of being refused with "Agent already running in tmux window …".
+  const repoKey = activeAgentKey(
+    options.repoPath,
+    options.beadId,
+    options.epicId,
+    options.agentName,
+  );
   const existing = activeAgents.get(repoKey);
   if (existing) {
     const stillRunning = existing.session.tmuxSessionName
@@ -3313,6 +3367,9 @@ export async function launchAgent(options: LaunchOptions): Promise<AgentSession>
     tmuxWindow,
     statusFile,
     launcherScript,
+    // beads_web-poh.16: persist for recovery — activeAgentKey uses this
+    // to keep coherence in its `::coherence` slot across hot-reloads.
+    agentName: options.agentName,
   };
 
   // Build the tmux session name — one session per agent.
