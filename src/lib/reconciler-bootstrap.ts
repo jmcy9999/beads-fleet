@@ -708,6 +708,19 @@ export function ensureReconcilerRunning(): void {
             return null; // bd failure — tolerate, skip marker
           }
         },
+        // --- poh.17 persistent dispatch sentinels ---
+        readDispatchSentinel: (rp: string, key: string) => {
+          const { readDispatchSentinelSync } = require("./marker-dispatch-sentinel");
+          return readDispatchSentinelSync(rp, key);
+        },
+        writeDispatchSentinel: async (rp: string, key: string, sentinel) => {
+          const { writeDispatchSentinel } = await import("./marker-dispatch-sentinel");
+          await writeDispatchSentinel(rp, key, sentinel);
+        },
+        statMarkerMtime: (rp: string, markerId: string) => {
+          const { statMarkerMtimeSync } = require("./marker-dispatch-sentinel");
+          return statMarkerMtimeSync(rp, markerId);
+        },
       }), 300_000), // beads_web-hs5: 5-min throttle per ADR-hs5 Q3
     );
 

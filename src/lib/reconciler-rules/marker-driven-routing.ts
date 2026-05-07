@@ -59,6 +59,7 @@ import {
   appendEvent,
   RECONCILER_ACTION_REFUSED,
 } from "../event-log";
+import type { DispatchSentinel } from "../marker-dispatch-sentinel";
 
 export const MARKER_DRIVEN_ROUTING_RULE_NAME = "marker-driven-routing";
 
@@ -111,6 +112,41 @@ export interface MarkerDrivenRoutingRuleOptions {
    * Returns null on bd failure (tolerant — skip marker on null).
    */
   readBeadStatus?: (beadId: string, repoPath: string) => string | null;
+
+  // --- Persistent dispatch sentinels (beads_web-poh.17) ---
+
+  /**
+   * Read the persistent sentinel recorded after a prior successful
+   * dispatch for this idempotency key. Returns null when no sentinel
+   * exists (genuine first dispatch) or the file is unparseable
+   * (treat as no record, fail-open). Optional — if absent, the rule
+   * falls back to the reconciler's event-log dedupe alone.
+   */
+  readDispatchSentinel?: (
+    repoPath: string,
+    idempotencyKey: string,
+  ) => DispatchSentinel | null;
+
+  /**
+   * Persist a sentinel after a successful dispatch. Best-effort: write
+   * failures must not break the dispatch. Optional — if absent, no
+   * sentinel is written and the rule operates as before.
+   */
+  writeDispatchSentinel?: (
+    repoPath: string,
+    idempotencyKey: string,
+    sentinel: DispatchSentinel,
+  ) => Promise<void>;
+
+  /**
+   * Synchronous stat for a marker file's mtime in ms. Used in the
+   * filesystem-walk path to compare marker freshness against the
+   * sentinel. Returns 0 when the file is missing — the comparison
+   * `markerMtimeMs <= sentinel.markerMtimeMs` then trivially holds, so
+   * the rule treats it as "already dispatched, skip" (correct: the
+   * marker is gone, nothing to dispatch).
+   */
+  statMarkerMtime?: (repoPath: string, markerId: string) => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +323,52 @@ export function buildMarkerDrivenRoutingRule(
             // path. Reconciler core handles idempotency via reconciler-action-
             // taken events (reconciler.ts lines 308-323).
             const idempotencyKey = `${MARKER_DRIVEN_ROUTING_RULE_NAME}::${epicId}::${stage}`;
+
+            // -----------------------------------------------------------
+            // beads_web-poh.17: persistent dispatch-sentinel dedupe.
+            //
+            // The reconciler's event-log dedupe expires after 60 minutes
+            // and depends on `events.jsonl` being intact. When the bucket
+            // rotates or the log is lost, the filesystem-walk path keeps
+            // re-discovering the same stale marker on every tick and the
+            // rule re-fires the same dispatch (factory-core-1vud V1
+            // retest: PM dispatched 4×). The sentinel is the persistent
+            // counterpart written next to the marker so a re-discovery
+            // can short-circuit if the marker is still the one we already
+            // dispatched.
+            //
+            // Skip when: a sentinel exists AND the marker has not been
+            // rewritten since dispatch. A genuine retry (agent rewrites
+            // its own marker with a new next_agent) bumps the mtime past
+            // sentinel.markerMtimeMs and the match is pushed again.
+            // -----------------------------------------------------------
+            const markerMtimeMs = opts.statMarkerMtime
+              ? opts.statMarkerMtime(repo.path, markerId)
+              : 0;
+            if (opts.readDispatchSentinel) {
+              try {
+                const sentinel = opts.readDispatchSentinel(
+                  repo.path,
+                  idempotencyKey,
+                );
+                if (
+                  sentinel &&
+                  markerMtimeMs > 0 &&
+                  markerMtimeMs <= sentinel.markerMtimeMs
+                ) {
+                  console.log(
+                    `[xfc] poh.17 sentinel-skip: ${idempotencyKey} already dispatched at ${sentinel.dispatchedAt} (markerMtime=${markerMtimeMs}, sentinel.markerMtimeMs=${sentinel.markerMtimeMs})`,
+                  );
+                  continue; // already dispatched, marker unchanged
+                }
+              } catch (err) {
+                console.warn(
+                  `[xfc] readDispatchSentinel failed for ${idempotencyKey} — fail-open and push match`,
+                  err instanceof Error ? err.message : err,
+                );
+              }
+            }
+
             eventMatchedKeys.add(dedupeKey); // prevent duplicates within walk
 
             matches.push({
@@ -300,6 +382,15 @@ export function buildMarkerDrivenRoutingRule(
                 // need the marker's repo path (may differ from opts.repoPath).
                 discoveredVia: "filesystem-walk" as const,
                 markerRepoPath: repo.path,
+                // beads_web-poh.17: capture the mtime observed at match
+                // time so act() can record the same value into the
+                // sentinel on success. Using the match-time mtime (not a
+                // re-stat in act()) keeps "marker rewritten between
+                // matches() and act()" detectable on the NEXT tick: if
+                // the marker is rewritten in that window, the next
+                // matches() will see mtime > sentinel.markerMtimeMs
+                // because we recorded the older value here.
+                markerMtimeMs,
               },
             });
           }
@@ -316,6 +407,7 @@ export function buildMarkerDrivenRoutingRule(
         marker: MarkerData;
         discoveredVia?: "filesystem-walk";
         markerRepoPath?: string;
+        markerMtimeMs?: number;
       };
 
       const discoveryMethod = context.discoveredVia ?? "event-based";
@@ -484,6 +576,35 @@ export function buildMarkerDrivenRoutingRule(
         console.log(
           `[xfc] ${match.epicId}: dispatched ${nextAgent} successfully`,
         );
+
+        // -----------------------------------------------------------
+        // beads_web-poh.17: persist the dispatch sentinel so a future
+        // filesystem-walk tick can recognise this marker as already
+        // routed and short-circuit. Best-effort — sentinel-write
+        // failures are logged inside writeDispatchSentinel and never
+        // propagate. Only fires after a SUCCESSFUL dispatch (we are
+        // past the 412/!ok branches above), and only when the rule
+        // is configured with sentinel callbacks.
+        // -----------------------------------------------------------
+        if (opts.writeDispatchSentinel) {
+          try {
+            await opts.writeDispatchSentinel(markerRepoPath, match.idempotencyKey, {
+              idempotencyKey: match.idempotencyKey,
+              dispatchedAt: new Date().toISOString(),
+              // Use the mtime captured at matches() time. If the marker
+              // was rewritten between matches() and act() the next
+              // tick's stat will see mtime > sentinel.markerMtimeMs and
+              // re-dispatch (correct: a rewrite is a new routing intent).
+              markerMtimeMs: context.markerMtimeMs ?? 0,
+              markerId: context.markerId,
+              nextAgent,
+            });
+          } catch (err) {
+            console.warn(
+              `[xfc] writeDispatchSentinel failed for ${match.idempotencyKey}: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        }
       } finally {
         clearTimeout(timeoutHandle);
       }

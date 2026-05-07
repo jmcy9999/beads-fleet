@@ -475,3 +475,303 @@ describe("marker-driven-routing orphan recovery (beads_web-hs5)", () => {
     reconciler.stop();
   });
 });
+
+// =============================================================================
+// beads_web-poh.17 — persistent dispatch-sentinel dedupe.
+//
+// The reconciler's event-log dedupe expires after 60 minutes and depends
+// on events.jsonl being intact. A stale marker (still on disk, untouched)
+// re-fires when the bucket rotates or the log is lost — empirically this
+// re-dispatched the product-manager agent 4× on factory-core-1vud (V1
+// retest, 2026-05-07).
+//
+// The sentinel is a small JSON file written next to each marker after a
+// successful dispatch. matches() consults it before pushing a re-dispatch
+// from the filesystem-walk fallback. Genuine retries (agent rewrites the
+// marker with a new next_agent) are still allowed because the marker's
+// new mtime is > sentinel.markerMtimeMs.
+// =============================================================================
+
+describe("marker-driven-routing dispatch sentinels (beads_web-poh.17)", () => {
+  let fetchMock: jest.SpyInstance;
+  let fetchCalls: Array<{ url: string; body: unknown }>;
+  let fetchStatus = 200;
+
+  beforeEach(() => {
+    fetchCalls = [];
+    fetchStatus = 200;
+    fetchMock = jest
+      .spyOn(global, "fetch")
+      .mockImplementation(
+        async (url: RequestInfo | URL, init?: RequestInit) => {
+          const body =
+            init?.body && typeof init.body === "string"
+              ? JSON.parse(init.body)
+              : undefined;
+          fetchCalls.push({ url: String(url), body });
+          return new Response(JSON.stringify({ ok: fetchStatus < 400 }), {
+            status: fetchStatus,
+            headers: { "Content-Type": "application/json" },
+          });
+        },
+      );
+  });
+
+  afterEach(() => {
+    fetchMock.mockRestore();
+  });
+
+  test("matches() SKIPS a marker whose sentinel says it was already dispatched and the marker is unchanged", async () => {
+    // factory-core-1vud V1 retest reproducer: research's marker was
+    // dispatched once, the 60-min idempotency horizon rotated, and the
+    // filesystem-walk re-discovered the SAME marker on the next tick.
+    // With the sentinel: same marker mtime as recorded → skip.
+    const marker = makeEpicMarker({
+      epic_id: "factory-core-1vud",
+      stage: "research",
+      next_agent: "product-manager",
+    });
+    const idempotencyKey =
+      "marker-driven-routing::factory-core-1vud::research";
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => marker,
+      readEpicSnapshot: async () => makeSnapshot(),
+      repoPath: "/tmp/poh17-skip",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      listRegisteredRepos: () => [
+        { name: "factory-core", path: "/tmp/poh17-skip" },
+      ],
+      listMarkerFiles: () => ["factory-core-1vud-research.json"],
+      readBeadStatus: () => "open",
+      readDispatchSentinel: () => ({
+        idempotencyKey,
+        dispatchedAt: "2026-05-07T13:54:00Z",
+        // Sentinel says marker was at mtime=1000 when dispatched.
+        markerMtimeMs: 1000,
+      }),
+      writeDispatchSentinel: async () => {},
+      // Marker hasn't been rewritten — same mtime as the sentinel.
+      statMarkerMtime: () => 1000,
+    });
+
+    const matches = await rule.matches([], new Date());
+    expect(matches).toHaveLength(0); // sentinel-skip — no re-dispatch
+  });
+
+  test("matches() PUSHES a marker whose sentinel exists BUT the marker was rewritten (mtime newer)", async () => {
+    // Genuine retry: the agent re-ran and wrote a NEW marker with a
+    // different next_agent. mtime > sentinel.markerMtimeMs → the
+    // routing intent is fresh, dispatch must fire.
+    const marker = makeEpicMarker({
+      epic_id: "factory-core-1vud",
+      stage: "research",
+      next_agent: "product-manager",
+    });
+    const idempotencyKey =
+      "marker-driven-routing::factory-core-1vud::research";
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => marker,
+      readEpicSnapshot: async () => makeSnapshot(),
+      repoPath: "/tmp/poh17-retry",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      listRegisteredRepos: () => [
+        { name: "factory-core", path: "/tmp/poh17-retry" },
+      ],
+      listMarkerFiles: () => ["factory-core-1vud-research.json"],
+      readBeadStatus: () => "open",
+      readDispatchSentinel: () => ({
+        idempotencyKey,
+        dispatchedAt: "2026-05-07T13:54:00Z",
+        markerMtimeMs: 1000, // when dispatched
+      }),
+      writeDispatchSentinel: async () => {},
+      // Marker has been rewritten — mtime is now newer.
+      statMarkerMtime: () => 2000,
+    });
+
+    const matches = await rule.matches([], new Date());
+    expect(matches).toHaveLength(1);
+    expect(matches[0].idempotencyKey).toBe(idempotencyKey);
+  });
+
+  test("matches() PUSHES a marker when no sentinel exists (genuine first dispatch)", async () => {
+    const marker = makeEpicMarker({
+      epic_id: "factory-core-fresh",
+      stage: "planner",
+      next_agent: "test-spec",
+    });
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => marker,
+      readEpicSnapshot: async () => makeSnapshot(),
+      repoPath: "/tmp/poh17-fresh",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      listRegisteredRepos: () => [
+        { name: "factory-core", path: "/tmp/poh17-fresh" },
+      ],
+      listMarkerFiles: () => ["factory-core-fresh-planner.json"],
+      readBeadStatus: () => "open",
+      readDispatchSentinel: () => null, // no sentinel
+      writeDispatchSentinel: async () => {},
+      statMarkerMtime: () => 5000,
+    });
+
+    const matches = await rule.matches([], new Date());
+    expect(matches).toHaveLength(1);
+  });
+
+  test("act() WRITES the sentinel with marker mtime after a successful dispatch", async () => {
+    const marker = makeEpicMarker({
+      epic_id: "factory-core-write",
+      stage: "planner",
+      next_agent: "test-spec",
+    });
+    const writes: Array<{
+      repoPath: string;
+      key: string;
+      sentinel: { markerMtimeMs: number; nextAgent?: string };
+    }> = [];
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => marker,
+      readEpicSnapshot: async () =>
+        makeSnapshot({
+          currentStage: "plan-review",
+          labels: ["pipeline:plan-review", "ship-type:internal"],
+        }),
+      repoPath: "/tmp/poh17-write",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      listRegisteredRepos: () => [
+        { name: "factory-core", path: "/tmp/poh17-write" },
+      ],
+      listMarkerFiles: () => ["factory-core-write-planner.json"],
+      readBeadStatus: () => "open",
+      readDispatchSentinel: () => null,
+      writeDispatchSentinel: async (rp, key, s) => {
+        writes.push({ repoPath: rp, key, sentinel: s });
+      },
+      statMarkerMtime: () => 8000,
+    });
+
+    const matches = await rule.matches([], new Date());
+    expect(matches).toHaveLength(1);
+    await rule.act(matches[0]);
+
+    expect(fetchCalls).toHaveLength(1); // dispatch went out
+    expect(writes).toHaveLength(1);
+    expect(writes[0].repoPath).toBe("/tmp/poh17-write");
+    expect(writes[0].key).toBe(
+      "marker-driven-routing::factory-core-write::planner",
+    );
+    // Sentinel records the marker's mtime captured at matches() time.
+    expect(writes[0].sentinel.markerMtimeMs).toBe(8000);
+    expect(writes[0].sentinel.nextAgent).toBe("test-spec");
+  });
+
+  test("act() does NOT write the sentinel when the action route refuses with HTTP 412", async () => {
+    // 412 = precondition refusal. The dispatch did NOT happen, so we
+    // must not pin the marker as dispatched — otherwise a real later
+    // tick (when preconditions clear) would be sentinel-blocked.
+    fetchStatus = 412;
+
+    const marker = makeEpicMarker({
+      epic_id: "factory-core-refused",
+      stage: "planner",
+      next_agent: "test-spec",
+    });
+    const writes: Array<unknown> = [];
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => marker,
+      readEpicSnapshot: async () =>
+        makeSnapshot({
+          currentStage: "plan-review",
+          labels: ["pipeline:plan-review", "ship-type:internal"],
+        }),
+      repoPath: "/tmp/poh17-refused",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      listRegisteredRepos: () => [
+        { name: "factory-core", path: "/tmp/poh17-refused" },
+      ],
+      listMarkerFiles: () => ["factory-core-refused-planner.json"],
+      readBeadStatus: () => "open",
+      readDispatchSentinel: () => null,
+      writeDispatchSentinel: async (rp, key, s) => {
+        writes.push({ rp, key, s });
+      },
+      statMarkerMtime: () => 9000,
+    });
+
+    const matches = await rule.matches([], new Date());
+    await rule.act(matches[0]);
+
+    // Dispatch attempted (412), but no sentinel written.
+    expect(fetchCalls).toHaveLength(1);
+    expect(writes).toHaveLength(0);
+  });
+
+  test("rule remains backward-compatible when sentinel callbacks are NOT supplied", async () => {
+    // Pre-poh.17 wiring (bootstrap callers that haven't been updated)
+    // must continue to work. Sentinel logic is purely additive.
+    const marker = makeEpicMarker({
+      epic_id: "factory-core-legacy",
+      stage: "planner",
+      next_agent: "test-spec",
+    });
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => marker,
+      readEpicSnapshot: async () => makeSnapshot(),
+      repoPath: "/tmp/poh17-legacy",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      listRegisteredRepos: () => [
+        { name: "factory-core", path: "/tmp/poh17-legacy" },
+      ],
+      listMarkerFiles: () => ["factory-core-legacy-planner.json"],
+      readBeadStatus: () => "open",
+      // NO readDispatchSentinel / writeDispatchSentinel / statMarkerMtime.
+    });
+
+    const matches = await rule.matches([], new Date());
+    expect(matches).toHaveLength(1); // legacy behaviour preserved
+    await rule.act(matches[0]);
+    expect(fetchCalls).toHaveLength(1); // dispatch fires
+  });
+
+  test("matches() ignores the sentinel when statMarkerMtime is unavailable (fail-safe)", async () => {
+    // Defensive case: if statMarkerMtime is not configured, we cannot
+    // compare the marker's freshness to the sentinel — fail open and
+    // push the match. The reconciler's event-log dedupe still catches
+    // the duplicate within the 60-minute horizon.
+    const marker = makeEpicMarker({
+      epic_id: "factory-core-no-stat",
+      stage: "planner",
+      next_agent: "test-spec",
+    });
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => marker,
+      readEpicSnapshot: async () => makeSnapshot(),
+      repoPath: "/tmp/poh17-no-stat",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      listRegisteredRepos: () => [
+        { name: "factory-core", path: "/tmp/poh17-no-stat" },
+      ],
+      listMarkerFiles: () => ["factory-core-no-stat-planner.json"],
+      readBeadStatus: () => "open",
+      readDispatchSentinel: () => ({
+        idempotencyKey:
+          "marker-driven-routing::factory-core-no-stat::planner",
+        dispatchedAt: "2026-05-07T13:54:00Z",
+        markerMtimeMs: 1000,
+      }),
+      writeDispatchSentinel: async () => {},
+      // statMarkerMtime: undefined  ← deliberately omitted
+    });
+
+    const matches = await rule.matches([], new Date());
+    expect(matches).toHaveLength(1);
+  });
+});
