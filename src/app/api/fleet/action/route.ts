@@ -29,6 +29,7 @@ import {
 } from "@/lib/bead-prompt";
 import { getRepos, findRepoForIssue } from "@/lib/repo-config";
 import { invalidateCache } from "@/lib/bv-client";
+import { getDefaultActionUrl } from "@/lib/orchestrator-url";
 import { extractAppName } from "@/lib/extract-app-name";
 import { FLEET_CORE_PATH, resolveRepoPath } from "@/lib/repo-path-resolver";
 // beads_web-ehp.11: dispatch-preconditions gate — every DISPATCHING action
@@ -1829,12 +1830,61 @@ export async function POST(request: NextRequest) {
           : null;
 
         if (!smokeAgentName) {
-          // No smoke-test for this ship type — immediately advance labels
-          // back so the caller's auto-chain can dispatch build-review.
+          // beads_web-poh.15: pre-fix this branch set pipeline:build-review
+          // and returned, expecting "the caller's auto-chain" to dispatch
+          // send-for-review. No such auto-chain existed — handleChainAction
+          // only fires on agent EXIT, and no agent was launched here. Every
+          // internal-ship-type epic (and any non-iOS ship type) silently
+          // stalled at pipeline:build-review (factory-core-jcit reproducer).
+          //
+          // Fix: clear the smoke-test labels and fire send-for-review
+          // inline. send-for-review's own handler sets
+          // pipeline:build-review + agent:running and launches the
+          // reviewer — same shape as the iOS smoke-test exit chain when
+          // the smoke-test agent actually runs and exits.
           await removeLabelsFromEpic(epicId, ["pipeline:smoke-test", "agent:running"], fleetCorePath);
-          await addLabelsToEpic(epicId, ["pipeline:build-review"], fleetCorePath);
           invalidateCache({ type: "epic", epicId });
-          return NextResponse.json({ success: true, action, epicId, dispatched: "skipped-no-smoke-agent", shipType });
+
+          let sendReviewStatus: number | null = null;
+          let sendReviewError: string | null = null;
+          try {
+            const sendReviewRes = await fetch(getDefaultActionUrl(), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "send-for-review",
+                epicId,
+                epicTitle,
+                // send-for-review reads labels live; pass current ones for
+                // event-log payloads but the route does its own getEpicLabels.
+                currentLabels: await getEpicLabels(epicId as string, fleetCorePath),
+              }),
+            });
+            sendReviewStatus = sendReviewRes.status;
+            if (!sendReviewRes.ok) {
+              sendReviewError = await sendReviewRes
+                .text()
+                .catch(() => "<unreadable>");
+              console.warn(
+                `[poh.15] passthrough send-for-review dispatch returned HTTP ${sendReviewRes.status} for ${epicId}: ${sendReviewError}`,
+              );
+            }
+          } catch (err) {
+            sendReviewError = err instanceof Error ? err.message : String(err);
+            console.warn(
+              `[poh.15] passthrough send-for-review fetch threw for ${epicId}: ${sendReviewError}`,
+            );
+          }
+
+          return NextResponse.json({
+            success: true,
+            action,
+            epicId,
+            dispatched: "passthrough-to-send-for-review",
+            shipType,
+            sendReviewStatus,
+            ...(sendReviewError && { sendReviewError }),
+          });
         }
 
         const stPrompt = `Run the iOS smoke test for epic ${epicId} (${epicTitle}). Product repo: ${repoPath}. Scheme: ${smokeAppName}. Build plan: ${planPath}. Invoke tools/platforms/ios/smoke-test.sh. On FAIL file a bug under the epic; on PASS exit cleanly.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, smokeAgentName)}`;
