@@ -180,7 +180,14 @@ export class Reconciler {
     maxConcurrentDispatches?: number;
   }) {
     this.repoPath = options.repoPath;
-    this.tickIntervalMs = options.tickIntervalMs ?? 10_000;
+    // 2026-05-07 emergency throttle: reconciler tick contention (40 repos × 5+ rules ×
+    // bd subprocess per rule, every 10s) was saturating the event loop and starving
+    // /api/fleet/action + /api/issues responses (60-90s+). Tracked under beads_web-poh.4.
+    // RECONCILER_TICK_MS env var allows operator override; default bumped 10s → 60s.
+    const envTick = parseInt(process.env.RECONCILER_TICK_MS ?? "", 10);
+    this.tickIntervalMs =
+      options.tickIntervalMs ??
+      (Number.isFinite(envTick) && envTick > 0 ? envTick : 60_000);
     this.lookbackMs = options.lookbackMs ?? DEFAULT_LOOKBACK_MS;
     this.idempotencyHorizonMs =
       options.idempotencyHorizonMs ?? DEFAULT_IDEMPOTENCY_HORIZON_MS;
