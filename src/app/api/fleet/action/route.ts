@@ -365,9 +365,10 @@ async function launchPmAgent(params: {
 
   // PM always runs in fleet-core — specs and research live there, the
   // product repo may not exist yet.
+  // beads_web-y9u: apply standing-orders directive (Phase 2 Item 4 scope completion).
   const pmPrompt = descriptionOverride
-    ? `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. No research report — the epic description is provided inline below as your input context (skip:research bypass). Epic description:\n\n${descriptionOverride}\n\nFleet-core: ${fleetCorePath}.`
-    : `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${pmResearchPath}. Fleet-core: ${fleetCorePath}.`;
+    ? `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. No research report — the epic description is provided inline below as your input context (skip:research bypass). Epic description:\n\n${descriptionOverride}\n\nFleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "product-manager")}`
+    : `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${pmResearchPath}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "product-manager")}`;
 
   const pmSession = await launchAgent({
     repoPath: fleetCorePath,
@@ -693,7 +694,8 @@ export async function POST(request: NextRequest) {
         await updateEpicStatus(epicId, "in_progress", fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
-        const researchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}.`;
+        // beads_web-y9u: apply standing-orders directive.
+        const researchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "research")}`;
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -902,7 +904,8 @@ export async function POST(request: NextRequest) {
         });
 
         const { researchPath: prevResearchPath } = resolveRepoPath(shipType, epicTitle as string, appName, epicId as string, fleetCorePath);
-        const moreResearchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}. Previous research at ${prevResearchPath}.${feedbackStr}${feedbackBeadStr}`;
+        // beads_web-y9u: apply standing-orders directive.
+        const moreResearchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}. Previous research at ${prevResearchPath}.${feedbackStr}${feedbackBeadStr}\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "research")}`;
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -967,7 +970,8 @@ export async function POST(request: NextRequest) {
         );
 
         // Architect always runs in fleet-core — specs and research live there, product repo doesn't exist yet
-        const archPrompt = `Design architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${archSpecPath}. Research report: ${archResearchPath}. Fleet-core: ${fleetCorePath}.`;
+        // beads_web-y9u: apply standing-orders directive.
+        const archPrompt = `Design architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${archSpecPath}. Research report: ${archResearchPath}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "architect")}`;
 
         const archSession = await launchAgent({
           repoPath: fleetCorePath,
@@ -1015,7 +1019,8 @@ export async function POST(request: NextRequest) {
             fleetCorePath,
           });
 
-        const rsPrompt = `Revise functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${rsResearchPath}. Fleet-core: ${fleetCorePath}.${rsFeedbackStr}${rsFeedbackBeadStr}`;
+        // beads_web-y9u: apply standing-orders directive.
+        const rsPrompt = `Revise functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${rsResearchPath}. Fleet-core: ${fleetCorePath}.${rsFeedbackStr}${rsFeedbackBeadStr}\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "product-manager")}`;
 
         const rsSession = await launchAgent({
           repoPath: rsRepoPath,
@@ -1063,7 +1068,8 @@ export async function POST(request: NextRequest) {
             fleetCorePath,
           });
 
-        const raPrompt = `Revise architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${raSpecPath}. Research report: ${raResearchPath}. Fleet-core: ${fleetCorePath}.${raFeedbackStr}${raFeedbackBeadStr}`;
+        // beads_web-y9u: apply standing-orders directive.
+        const raPrompt = `Revise architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${raSpecPath}. Research report: ${raResearchPath}. Fleet-core: ${fleetCorePath}.${raFeedbackStr}${raFeedbackBeadStr}\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "architect")}`;
 
         const raSession = await launchAgent({
           repoPath: raRepoPath,
@@ -1104,7 +1110,8 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const tsPrompt = `Write test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${tsSpecPath}. Architecture: ${tsArchPath}. Research: ${tsResearchPath}. Product repo: ${tsRepoPath}. Fleet-core: ${fleetCorePath}.`;
+        // beads_web-y9u: apply standing-orders directive.
+        const tsPrompt = `Write test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${tsSpecPath}. Architecture: ${tsArchPath}. Research: ${tsResearchPath}. Product repo: ${tsRepoPath}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "test-spec")}`;
 
         const tsSession = await launchAgent({
           repoPath: fleetCorePath,
@@ -1152,7 +1159,8 @@ export async function POST(request: NextRequest) {
             fleetCorePath,
           });
 
-        const rtsPrompt = `Revise test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${rtsSpecPath}. Architecture: ${rtsArchPath}. Research: ${rtsResearchPath}. Product repo: ${rtsRepoPath}. Fleet-core: ${fleetCorePath}.${rtsFeedbackStr}${rtsFeedbackBeadStr}`;
+        // beads_web-y9u: apply standing-orders directive.
+        const rtsPrompt = `Revise test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${rtsSpecPath}. Architecture: ${rtsArchPath}. Research: ${rtsResearchPath}. Product repo: ${rtsRepoPath}. Fleet-core: ${fleetCorePath}.${rtsFeedbackStr}${rtsFeedbackBeadStr}\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "test-spec")}`;
 
         const rtsSession = await launchAgent({
           repoPath: fleetCorePath,
@@ -1350,7 +1358,8 @@ export async function POST(request: NextRequest) {
         const specInfo = specPath ? ` Functional spec: ${specPath}.` : "";
         const archInfo = architecturePath ? ` Architecture: ${architecturePath}.` : "";
         // Planner runs in fleet-core (where specs/research live) but creates beads in the product repo
-        const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${repoPath}. Research report: ${researchPath}.${specInfo}${archInfo} Fleet-core: ${fleetCorePath}.`;
+        // beads_web-y9u: apply standing-orders directive.
+        const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${repoPath}. Research report: ${researchPath}.${specInfo}${archInfo} Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "planner")}`;
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -1439,7 +1448,8 @@ export async function POST(request: NextRequest) {
 
         const aabSpecInfo = aabSpecPath ? ` Functional spec: ${aabSpecPath}.` : "";
         const aabArchInfo = aabArchPath ? ` Architecture: ${aabArchPath}.` : "";
-        const aabPrompt = `Write test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}.${aabSpecInfo}${aabArchInfo} Research report: ${aabResearchPath}. Product repo: ${aabRepoPath}. Fleet-core: ${fleetCorePath}.`;
+        // beads_web-y9u: apply standing-orders directive (approve-and-build dispatches test-spec).
+        const aabPrompt = `Write test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}.${aabSpecInfo}${aabArchInfo} Research report: ${aabResearchPath}. Product repo: ${aabRepoPath}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "test-spec")}`;
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -1487,7 +1497,8 @@ export async function POST(request: NextRequest) {
             fleetCorePath,
           });
 
-        const revisePlanPrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr3}${feedbackBeadStr3}`;
+        // beads_web-y9u: apply standing-orders directive.
+        const revisePlanPrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr3}${feedbackBeadStr3}\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "planner")}`;
 
         const session = await launchAgent({
           repoPath: fleetCorePath,
@@ -1528,7 +1539,8 @@ export async function POST(request: NextRequest) {
           fleetCorePath
         );
 
-        const skipPlanPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-candidates. Product repo: ${repoPath}. No recon brief.`;
+        // beads_web-y9u: apply standing-orders directive.
+        const skipPlanPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-candidates. Product repo: ${repoPath}. No recon brief.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "planner")}`;
 
         const session = await launchAgent({
           repoPath: repoPath,
@@ -1581,7 +1593,8 @@ export async function POST(request: NextRequest) {
         const session = await launchAgent({
           repoPath: fleetCorePath,
           repoName: "fleet-core",
-          prompt: `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr4}${feedbackBeadStr4}`,
+          // beads_web-y9u: apply standing-orders directive.
+          prompt: `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${repoPath}. Fleet-core: ${fleetCorePath}.${feedbackStr4}${feedbackBeadStr4}\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "planner")}`,
           model: "opus",
           maxTurns: 200,
           allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
@@ -1803,7 +1816,8 @@ export async function POST(request: NextRequest) {
         }
         const contextBlock = contextParts.join("");
 
-        const cohPrompt = `You are the Coherence agent. Diagnose why epic ${epicId} is in an incoherent state and dispatch ONE action from your finite vocabulary.\n\nContext:\n- epicId: ${epicId}\n- epicTitle: ${epicTitle}\n- anomalyClass: ${anomalyClass}\n- currentLabels: ${JSON.stringify(actualLabels)}\n- shipType: ${shipType}\n- fleetCorePath: ${fleetCorePath}${contextBlock}\n\nFollow .claude/agents/coherence.md exactly. Append the required [COHERENCE] / [ACTION] / [REASONING] note to the epic before dispatching. Exit immediately after dispatch.`;
+        // beads_web-y9u: apply standing-orders directive (coherence — universal off-ramp).
+        const cohPrompt = `You are the Coherence agent. Diagnose why epic ${epicId} is in an incoherent state and dispatch ONE action from your finite vocabulary.\n\nContext:\n- epicId: ${epicId}\n- epicTitle: ${epicTitle}\n- anomalyClass: ${anomalyClass}\n- currentLabels: ${JSON.stringify(actualLabels)}\n- shipType: ${shipType}\n- fleetCorePath: ${fleetCorePath}${contextBlock}\n\nFollow .claude/agents/coherence.md exactly. Append the required [COHERENCE] / [ACTION] / [REASONING] note to the epic before dispatching. Exit immediately after dispatch.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "coherence")}`;
 
         // agent:running label so the dashboard reflects the live
         // coherence session. We do NOT change pipeline:* — the coherence
@@ -3066,7 +3080,8 @@ export async function POST(request: NextRequest) {
 
         const reviewSpecInfo = reviewSpecPath ? ` Spec: ${reviewSpecPath}.` : "";
         const reviewArchInfo = reviewArchPath ? ` Architecture: ${reviewArchPath}.` : "";
-        const reviewPrompt = `Review the plan for "${epicTitle}" (epic: ${epicId}, stage: plan, platform: ${shipType}).${reviewSpecInfo}${reviewArchInfo} Product repo: ${reviewRepoPath}. Follow Stage 3 in .claude/agents/reviewer.md.`;
+        // beads_web-y9u: apply standing-orders directive (review-plan dispatches reviewer).
+        const reviewPrompt = `Review the plan for "${epicTitle}" (epic: ${epicId}, stage: plan, platform: ${shipType}).${reviewSpecInfo}${reviewArchInfo} Product repo: ${reviewRepoPath}. Follow Stage 3 in .claude/agents/reviewer.md.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "reviewer")}`;
 
         try {
           const reviewSession = await launchAgent({
@@ -3161,7 +3176,8 @@ export async function POST(request: NextRequest) {
         );
 
         const feedbackArg = ` --feedback=${reviewFilePath}`;
-        const revisePrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${reviseRepoPath}. Fleet-core: ${fleetCorePath}.${feedbackArg}`;
+        // beads_web-y9u: apply standing-orders directive (revise-plan-from-review dispatches planner).
+        const revisePrompt = `Revise plan for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: revise-plan. Product repo: ${reviseRepoPath}. Fleet-core: ${fleetCorePath}.${feedbackArg}\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "planner")}`;
 
         try {
           const reviseSession = await launchAgent({
