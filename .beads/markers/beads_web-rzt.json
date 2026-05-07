@@ -30,5 +30,5 @@
   "recommendation_for_next": "Round 2 QA can now re-verify on a green test suite. The three QA round 1 bugs (hfw P1 shell injection, q8w P1 event-loop blocking, cqe P2 hardcoded path) are all addressed in commit 384f832; the test gap that was left over is now closed in this commit. Suggested QA round-2 spot checks: (a) confirm bead-status-reader spawns bd directly without /bin/sh — the new regression tests do this statically; an integration test could spawn a real bd subprocess to confirm. (b) Ensure no other reader was patched with the same execSync-shell-string pattern (reconciler-bootstrap.ts:206, 696 still carry the pre-existing anti-pattern, flagged in hfw's description as out-of-scope — not introduced or worsened by this epic).",
   "next_agent": "qa",
   "blocker_class": null,
-  "commit_sha": "PENDING_COMMIT_HASH"
+  "commit_sha": "45badaa3c09bc5d767495e23745712d36a9431ac"
 }
