@@ -1,0 +1,34 @@
+{
+  "version": "1",
+  "bead_id": "beads_web-rzt",
+  "status": "success",
+  "stage": "builder",
+  "what_was_done": [
+    {
+      "ac_item": 1,
+      "summary": "Replaced stale execSync mock with execFile callback-style mock + custom promisify symbol (pattern from __tests__/lib/pipeline-labels.test.ts:22-31 and __tests__/lib/bv-client.test.ts:29-69). All 24 pre-existing tests now pass. The post-hfw/q8w fix moved the production code from execSync to promisify(execFile); the test file was not updated then, leaving 16 of 24 tests failing.",
+      "files": ["__tests__/lib/bead-status-reader.test.ts"],
+      "verification": "standard — unit tests run against the mocked execFile path; 24 pre-existing scenarios + 2 new regression tests = 26/26 pass."
+    },
+    {
+      "ac_item": 2,
+      "summary": "Added shell-injection regression test suite (2 cases) per hfw bug AC: a malicious bead ID containing shell metacharacters (semicolons, pipes, command substitution, backticks) and a malicious bead ID containing newlines both pass through as a single argv literal — no shell interpretation possible because execFile bypasses /bin/sh. Asserts cmd === bd binary path, args[1] === verbatim malicious ID, args does not contain the chained commands as separate tokens.",
+      "files": ["__tests__/lib/bead-status-reader.test.ts"],
+      "verification": "standard — tests confirm the spawn argv shape directly; both new tests pass."
+    },
+    {
+      "ac_item": "spawn-shape",
+      "summary": "Updated existing spawn-shape contract test to assert argv-array shape (cmd === '/usr/bin/bd', args === ['show', id, '--json']) instead of the legacy regex-matched shell-string command. This is the load-bearing post-condition for both q8w (non-blocking) and hfw (no shell) — if the assertion ever regresses, both bugs return.",
+      "files": ["__tests__/lib/bead-status-reader.test.ts"],
+      "verification": "standard — assertion shape verified in test pass."
+    }
+  ],
+  "what_was_tested": "Ran __tests__/lib/bead-status-reader.test.ts in isolation — 26/26 pass (24 pre-existing + 2 new). Ran full beads_web jest suite — 117 suites pass, 2355 tests pass, 2 skipped (unchanged). No regressions in other tests. Verified the new shell-injection cases by reading the assertions: args[1] preserves malicious ID verbatim, no shell-token-splitting, cmd is the bd binary not /bin/sh. Verified the q8w/hfw fix still in place at src/lib/bead-status-reader.ts:32-35 (execFileAsync = promisify(execFile)) and :114 (execFileAsync(bd, ['show', beadId, '--json'], ...)).",
+  "deviations_from_ac": "None. The bead's AC was: (1) update mock to track execFile callback-style + promisify-custom-symbol pattern, and (2) add a shell-injection regression test per hfw's recommended fix. Both delivered. No scope creep — only the single test file changed.",
+  "surprises_or_findings": "Confirmed the original closure of hfw + q8w (commit 384f832) was incomplete — production code was correctly fixed but the matching test mock was not updated and the recommended regression test was never added. This is the documented-degradation anti-pattern shape: production fix landed, bugs were closed, test suite regressed silently because no one re-ran the suite. The test failure was only surfaced when this dispatch reviewed the suite. Worth noting in lessons: a fix that switches a mocked API (execSync → execFile) is a flag for the corresponding test file to be updated; QA's verdict-FAIL surfaced the bugs but the post-QA closure didn't re-run jest. Filed beads_web-rzt to capture and close the gap.",
+  "whats_open": [],
+  "recommendation_for_next": "Round 2 QA can now re-verify on a green test suite. The three QA round 1 bugs (hfw P1 shell injection, q8w P1 event-loop blocking, cqe P2 hardcoded path) are all addressed in commit 384f832; the test gap that was left over is now closed in this commit. Suggested QA round-2 spot checks: (a) confirm bead-status-reader spawns bd directly without /bin/sh — the new regression tests do this statically; an integration test could spawn a real bd subprocess to confirm. (b) Ensure no other reader was patched with the same execSync-shell-string pattern (reconciler-bootstrap.ts:206, 696 still carry the pre-existing anti-pattern, flagged in hfw's description as out-of-scope — not introduced or worsened by this epic).",
+  "next_agent": "qa",
+  "blocker_class": null,
+  "commit_sha": "PENDING_COMMIT_HASH"
+}
