@@ -48,6 +48,50 @@ import path from "path";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+// ---------------------------------------------------------------------------
+// beads_web-poh.9 — revert helper for failed launches.
+//
+// Action handlers historically mutate labels + status BEFORE calling
+// launchAgent. If the launch throws (fingerprint refusal, in-process
+// collision, file-system error, etc.) the mutations are NOT reverted —
+// leaving the bead with stale `agent:running` + a half-applied pipeline
+// label that requires manual operator cleanup before the next dispatch
+// can fire (empirically blocked C2 V1+V2 retests, 2026-05-07).
+//
+// Per the bead's recommended Option B (transactional revert), each
+// affected handler now wraps its launchAgent call in a try/catch that
+// invokes this helper on failure. The helper is best-effort: a revert
+// failure is logged but does NOT mask the original launch error
+// (the route's outer catch returns the launch error verbatim).
+//
+// Scope of this fix: the six C2 critical-path handlers
+// (start-research, run-pm, run-architect, run-planner, run-test-spec,
+// start-wave). The remaining ~20 handlers carry the same risk shape
+// and are tracked under beads_web-poh as a follow-on.
+// ---------------------------------------------------------------------------
+async function revertLaunchSideEffects(
+  epicId: string,
+  fleetCorePath: string,
+  reverts: {
+    addedLabels?: string[];
+    statusReverted?: "open" | "in_progress";
+  },
+): Promise<void> {
+  try {
+    if (reverts.addedLabels && reverts.addedLabels.length > 0) {
+      await removeLabelsFromEpic(epicId, reverts.addedLabels, fleetCorePath);
+    }
+    if (reverts.statusReverted) {
+      await updateEpicStatus(epicId, reverts.statusReverted, fleetCorePath);
+    }
+    invalidateCache({ type: "epic", epicId });
+  } catch (revertErr) {
+    console.error(
+      `[poh.9] revertLaunchSideEffects failed for ${epicId}: ${revertErr instanceof Error ? revertErr.message : revertErr}`,
+    );
+  }
+}
+
 type PipelineAction =
   | "start-research"
   | "send-for-development"
@@ -339,11 +383,8 @@ async function launchPmAgent(params: {
   // zsjv.4 fix: clear ALL pipeline:* labels first to prevent doubles.
   const pmLabelsNow = await getEpicLabels(epicId, fleetCorePath);
   await removeAllPipelineLabels(epicId, pmLabelsNow, fleetCorePath);
-  await addLabelsToEpic(
-    epicId,
-    ["pipeline:product-spec", "agent:running"],
-    fleetCorePath,
-  );
+  const pmAddedLabels = ["pipeline:product-spec", "agent:running"];
+  await addLabelsToEpic(epicId, pmAddedLabels, fleetCorePath);
   // factory-core-g5sa: ensure bd status transitions to in_progress on EVERY
   // path into PM. The non-skip `start-research` case also calls this (line
   // 385 in its own branch for the pre-research transition), but the skip:
@@ -370,18 +411,30 @@ async function launchPmAgent(params: {
     ? `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. No research report — the epic description is provided inline below as your input context (skip:research bypass). Epic description:\n\n${descriptionOverride}\n\nFleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "product-manager")}`
     : `Write functional spec for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Research report: ${pmResearchPath}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "product-manager")}`;
 
-  const pmSession = await launchAgent({
-    repoPath: fleetCorePath,
-    repoName: "fleet-core",
-    prompt: pmPrompt,
-    model: "opus",
-    maxTurns: 150,
-    allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
-    epicId: epicId,
-    epicLabels: labels,
-    pipelineStage: "product-spec",
-    agentName: "product-manager",
-  });
+  // beads_web-poh.9: revert pipeline + agent:running labels and the
+  // status transition if launchAgent throws — keeps the bead clean
+  // for the next attempt.
+  let pmSession;
+  try {
+    pmSession = await launchAgent({
+      repoPath: fleetCorePath,
+      repoName: "fleet-core",
+      prompt: pmPrompt,
+      model: "opus",
+      maxTurns: 150,
+      allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+      epicId: epicId,
+      epicLabels: labels,
+      pipelineStage: "product-spec",
+      agentName: "product-manager",
+    });
+  } catch (launchErr) {
+    await revertLaunchSideEffects(epicId, fleetCorePath, {
+      addedLabels: pmAddedLabels,
+      statusReverted: "open",
+    });
+    throw launchErr;
+  }
 
   return pmSession;
 }
@@ -690,25 +743,38 @@ export async function POST(request: NextRequest) {
 
         // Default (non-skip:research) path — preserved byte-for-byte per
         // F7 AC bullet 3 / 3yqr.2 acceptance criteria.
-        await addLabelsToEpic(epicId, ["pipeline:research", "agent:running"], fleetCorePath);
+        const startResearchAddedLabels = ["pipeline:research", "agent:running"];
+        await addLabelsToEpic(epicId, startResearchAddedLabels, fleetCorePath);
         await updateEpicStatus(epicId, "in_progress", fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
         // beads_web-y9u: apply standing-orders directive.
         const researchPrompt = `Research epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "research")}`;
 
-        const session = await launchAgent({
-          repoPath: fleetCorePath,
-          repoName: "fleet-core",
-          prompt: researchPrompt,
-          model: "opus",
-          maxTurns: 200,
-          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch",
-          epicId: epicId,
-          epicLabels: labels,
-          pipelineStage: "research",
-          agentName: "research",
-        });
+        // beads_web-poh.9: revert labels + status if launchAgent throws,
+        // so a refused/failed launch does not leave the bead with a
+        // stuck `agent:running` that blocks the next attempt.
+        let session;
+        try {
+          session = await launchAgent({
+            repoPath: fleetCorePath,
+            repoName: "fleet-core",
+            prompt: researchPrompt,
+            model: "opus",
+            maxTurns: 200,
+            allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task,WebSearch",
+            epicId: epicId,
+            epicLabels: labels,
+            pipelineStage: "research",
+            agentName: "research",
+          });
+        } catch (launchErr) {
+          await revertLaunchSideEffects(epicId, fleetCorePath, {
+            addedLabels: startResearchAddedLabels,
+            statusReverted: "open",
+          });
+          throw launchErr;
+        }
 
         return NextResponse.json({ success: true, action, epicId, session });
       }
@@ -958,7 +1024,8 @@ export async function POST(request: NextRequest) {
         // zsjv.4 fix: clear ALL pipeline:* labels first.
         const raLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, raLabelsNow, fleetCorePath);
-        await addLabelsToEpic(epicId, ["pipeline:architecture", "agent:running"], fleetCorePath);
+        const runArchitectAddedLabels = ["pipeline:architecture", "agent:running"];
+        await addLabelsToEpic(epicId, runArchitectAddedLabels, fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
         const { researchPath: archResearchPath, specPath: archSpecPath } = resolveRepoPath(
@@ -973,7 +1040,10 @@ export async function POST(request: NextRequest) {
         // beads_web-y9u: apply standing-orders directive.
         const archPrompt = `Design architecture for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${archSpecPath}. Research report: ${archResearchPath}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "architect")}`;
 
-        const archSession = await launchAgent({
+        // beads_web-poh.9: revert on launch failure.
+        let archSession;
+        try {
+          archSession = await launchAgent({
           repoPath: fleetCorePath,
           repoName: "fleet-core",
           prompt: archPrompt,
@@ -984,7 +1054,13 @@ export async function POST(request: NextRequest) {
           epicLabels: labels,
           pipelineStage: "architecture",
           agentName: "architect",
-        });
+          });
+        } catch (launchErr) {
+          await revertLaunchSideEffects(epicId, fleetCorePath, {
+            addedLabels: runArchitectAddedLabels,
+          });
+          throw launchErr;
+        }
 
         return NextResponse.json({ success: true, action, epicId, session: archSession });
       }
@@ -1099,7 +1175,8 @@ export async function POST(request: NextRequest) {
         // zsjv.4 fix: clear ALL pipeline:* labels first.
         const rtsLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
         await removeAllPipelineLabels(epicId as string, rtsLabelsNow, fleetCorePath);
-        await addLabelsToEpic(epicId, ["pipeline:test-spec", "agent:running"], fleetCorePath);
+        const runTestSpecAddedLabels = ["pipeline:test-spec", "agent:running"];
+        await addLabelsToEpic(epicId, runTestSpecAddedLabels, fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
         const { repoPath: tsRepoPath, researchPath: tsResearchPath, specPath: tsSpecPath, architecturePath: tsArchPath } = resolveRepoPath(
@@ -1113,18 +1190,27 @@ export async function POST(request: NextRequest) {
         // beads_web-y9u: apply standing-orders directive.
         const tsPrompt = `Write test scenarios for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Functional spec: ${tsSpecPath}. Architecture: ${tsArchPath}. Research: ${tsResearchPath}. Product repo: ${tsRepoPath}. Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "test-spec")}`;
 
-        const tsSession = await launchAgent({
-          repoPath: fleetCorePath,
-          repoName: "fleet-core",
-          prompt: tsPrompt,
-          model: "opus",
-          maxTurns: 200,
-          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
-          epicId: epicId,
-          epicLabels: labels,
-          pipelineStage: "test-spec",
-          agentName: "test-spec",
-        });
+        // beads_web-poh.9: revert on launch failure.
+        let tsSession;
+        try {
+          tsSession = await launchAgent({
+            repoPath: fleetCorePath,
+            repoName: "fleet-core",
+            prompt: tsPrompt,
+            model: "opus",
+            maxTurns: 200,
+            allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+            epicId: epicId,
+            epicLabels: labels,
+            pipelineStage: "test-spec",
+            agentName: "test-spec",
+          });
+        } catch (launchErr) {
+          await revertLaunchSideEffects(epicId, fleetCorePath, {
+            addedLabels: runTestSpecAddedLabels,
+          });
+          throw launchErr;
+        }
 
         return NextResponse.json({ success: true, action, epicId, session: tsSession });
       }
@@ -1343,7 +1429,8 @@ export async function POST(request: NextRequest) {
         // Transition to plan-review from research-complete (ventures) or architecture (non-ventures)
         // (factory-core-lxc.5: architecture is the new pre-plan stage for non-ventures)
         await removeLabelsFromEpic(epicId, ["pipeline:research-complete", "pipeline:architecture"], fleetCorePath);
-        await addLabelsToEpic(epicId, ["pipeline:plan-review", "agent:running"], fleetCorePath);
+        const generatePlanAddedLabels = ["pipeline:plan-review", "agent:running"];
+        await addLabelsToEpic(epicId, generatePlanAddedLabels, fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
         const { repoPath, researchPath, specPath, architecturePath } = resolveRepoPath(
@@ -1361,18 +1448,27 @@ export async function POST(request: NextRequest) {
         // beads_web-y9u: apply standing-orders directive.
         const planPrompt = `Plan epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Entry point: from-research. Product repo: ${repoPath}. Research report: ${researchPath}.${specInfo}${archInfo} Fleet-core: ${fleetCorePath}.\n\n${formatAgentStandingOrdersDirective(fleetCorePath, shipType, "planner")}`;
 
-        const session = await launchAgent({
-          repoPath: fleetCorePath,
-          repoName: "fleet-core",
-          prompt: planPrompt,
-          model: "opus",
-          maxTurns: 200,
-          allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
-          epicId: epicId,
-          epicLabels: labels,
-          pipelineStage: "planning",
-          agentName: "planner",
-        });
+        // beads_web-poh.9: revert on launch failure.
+        let session;
+        try {
+          session = await launchAgent({
+            repoPath: fleetCorePath,
+            repoName: "fleet-core",
+            prompt: planPrompt,
+            model: "opus",
+            maxTurns: 200,
+            allowedTools: "Bash,Read,Write,Edit,Glob,Grep,Task",
+            epicId: epicId,
+            epicLabels: labels,
+            pipelineStage: "planning",
+            agentName: "planner",
+          });
+        } catch (launchErr) {
+          await revertLaunchSideEffects(epicId, fleetCorePath, {
+            addedLabels: generatePlanAddedLabels,
+          });
+          throw launchErr;
+        }
 
         return NextResponse.json({ success: true, action, epicId, session });
       }
