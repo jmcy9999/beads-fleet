@@ -147,6 +147,19 @@ export interface MarkerDrivenRoutingRuleOptions {
    * marker is gone, nothing to dispatch).
    */
   statMarkerMtime?: (repoPath: string, markerId: string) => number;
+
+  /**
+   * beads_web-poh.18: throttle the filesystem-walk fallback path
+   * specifically. The event-based path is cheap (walks the in-memory
+   * events array) and must run every tick so an at-HEAD coherence
+   * marker is dispatched before stuck-in-stage gets a chance to
+   * pre-empt it. The filesystem walk is expensive (~400ms per repo
+   * scan across ~40 repos) and gets its own throttle.
+   *
+   * Default 300_000 ms (5 minutes) — the same value the outer
+   * `throttled()` wrapper used pre-poh.18.
+   */
+  filesystemWalkThrottleMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,11 +171,17 @@ export function buildMarkerDrivenRoutingRule(
   opts: MarkerDrivenRoutingRuleOptions,
 ): ReconcilerRule {
   const actionUrl = opts.actionUrl ?? getDefaultActionUrl();
+  // beads_web-poh.18: per-rule state used to throttle ONLY the expensive
+  // filesystem-walk fallback. The cheap event-based path is unthrottled
+  // so a coherence-exit marker is dispatched within one tick and
+  // pre-empts stuck-in-stage on the same tick.
+  const filesystemWalkThrottleMs = opts.filesystemWalkThrottleMs ?? 300_000;
+  let lastFilesystemWalkAtMs = 0;
 
   return {
     name: MARKER_DRIVEN_ROUTING_RULE_NAME,
 
-    async matches(events, _now) {
+    async matches(events, now) {
       // Event-based discovery: filter for agent-exited events within the
       // reconciler's lookback window (typically 60 min). For each epic-id
       // in those events, read marker and check routing intent.
@@ -220,21 +239,35 @@ export function buildMarkerDrivenRoutingRule(
       //
       // If event-based discovery returned zero matches AND the filesystem-
       // walk callbacks are configured, walk .beads/markers/ in every
-      // registered repo to find orphaned markers. The throttle is enforced
-      // by the reconciler core (minTickIntervalMs on the rule) — matches()
-      // is only called when the throttle permits, so no second throttle
-      // check here.
+      // registered repo to find orphaned markers.
+      //
+      // beads_web-poh.18: throttle moved INTO the rule and scoped to the
+      // filesystem-walk path only. Pre-poh.18 the whole rule was wrapped
+      // in `throttled(..., 300_000)` which suppressed the cheap event-
+      // based path too — meaning a fresh coherence-exit marker waited up
+      // to 5 minutes for the next unblocked tick, during which
+      // stuck-in-stage was free to pre-empt it. Now the event-based
+      // path runs every tick and the filesystem walk has its own 5-min
+      // budget.
       //
       // De-dupe: if event-based discovery DID produce matches for a given
       // (epicId, stage), skip filesystem-discovered duplicates. In practice
       // this branch only runs when event-based matches are empty, but the
       // de-dupe is defensive.
       // -------------------------------------------------------------------
+      const nowMs = now.getTime();
+      const filesystemWalkAllowed =
+        nowMs - lastFilesystemWalkAtMs >= filesystemWalkThrottleMs;
       if (
         matches.length === 0 &&
+        filesystemWalkAllowed &&
         opts.listRegisteredRepos &&
         opts.listMarkerFiles
       ) {
+        // Mark the walk start before doing it — even if the walk yields
+        // zero matches we have paid the filesystem cost and the throttle
+        // should hold off the next walk by the configured budget.
+        lastFilesystemWalkAtMs = nowMs;
         // Collect (epicId, stage) tuples already matched by event-based path.
         const eventMatchedKeys = new Set<string>();
         for (const m of matches) {

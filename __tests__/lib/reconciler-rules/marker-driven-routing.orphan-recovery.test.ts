@@ -740,6 +740,110 @@ describe("marker-driven-routing dispatch sentinels (beads_web-poh.17)", () => {
     expect(fetchCalls).toHaveLength(1); // dispatch fires
   });
 
+  test("filesystem-walk throttle is now scoped INSIDE the rule (poh.18) — second call within budget skips walk only, event-based runs every tick", async () => {
+    // Pre-poh.18: the whole rule was wrapped in throttled(rule, 300_000)
+    // and a coherence-exit marker waited up to 5 minutes for the next
+    // unblocked tick — long enough for stuck-in-stage to dispatch
+    // coherence ahead of it. Now the throttle is INSIDE the rule and
+    // only gates the filesystem-walk fallback. The cheap event-based
+    // path runs every tick.
+    let walkCallCount = 0;
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () =>
+        makeEpicMarker({
+          epic_id: "factory-core-walk",
+          stage: "planner",
+          next_agent: "test-spec",
+        }),
+      readEpicSnapshot: async () => makeSnapshot(),
+      repoPath: "/tmp/poh18-walk",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      filesystemWalkThrottleMs: 60_000, // 60s for testing
+      listRegisteredRepos: () => {
+        walkCallCount += 1;
+        return [{ name: "factory-core", path: "/tmp/poh18-walk" }];
+      },
+      listMarkerFiles: () => ["factory-core-walk-planner.json"],
+      readBeadStatus: () => "open",
+    });
+
+    // First call at t=0 — walk runs, finds the orphan, returns 1 match.
+    const t0 = new Date("2026-05-07T13:54:00Z");
+    const matches1 = await rule.matches([], t0);
+    expect(matches1).toHaveLength(1);
+    expect(walkCallCount).toBe(1);
+
+    // Second call at t=30s — within the 60s budget, walk MUST be skipped.
+    const t30 = new Date("2026-05-07T13:54:30Z");
+    const matches2 = await rule.matches([], t30);
+    expect(walkCallCount).toBe(1); // walk did NOT run again
+    expect(matches2).toHaveLength(0); // event-based had no events
+
+    // Third call at t=70s — past the 60s budget, walk runs again.
+    const t70 = new Date("2026-05-07T13:55:10Z");
+    const matches3 = await rule.matches([], t70);
+    expect(walkCallCount).toBe(2);
+    expect(matches3).toHaveLength(1);
+  });
+
+  test("event-based path is UNTHROTTLED — runs every tick even when filesystem walk is in cooldown (poh.18)", async () => {
+    // Same scenario as the previous test but driving the event-based
+    // path: any agent-exited event in the lookback window produces a
+    // match on every tick, regardless of the filesystem-walk throttle.
+    let walkCallCount = 0;
+    let eventReadCount = 0;
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => {
+        eventReadCount += 1;
+        return makeEpicMarker({
+          epic_id: "factory-core-evt",
+          stage: "coherence",
+          next_agent: "product-manager",
+        });
+      },
+      readEpicSnapshot: async () => makeSnapshot(),
+      repoPath: "/tmp/poh18-evt",
+      actionUrl: "http://localhost:3000/api/fleet/action",
+      filesystemWalkThrottleMs: 60_000,
+      listRegisteredRepos: () => {
+        walkCallCount += 1;
+        return [];
+      },
+      listMarkerFiles: () => [],
+    });
+
+    const events: import("@/lib/event-log").PipelineEvent[] = [
+      {
+        type: "agent-exited",
+        epicId: "factory-core-evt",
+        stage: "coherence",
+        timestamp: "2026-05-07T13:53:00Z",
+        correlationId: "evt-1",
+        payload: {},
+      },
+    ];
+
+    // Three back-to-back ticks 1s apart. The walk would be blocked on
+    // ticks 2 and 3 if it were ever invoked, but the event-based path
+    // produces a match on every tick so the walk never runs at all.
+    const t1 = new Date("2026-05-07T13:54:00Z");
+    const t2 = new Date("2026-05-07T13:54:01Z");
+    const t3 = new Date("2026-05-07T13:54:02Z");
+    const m1 = await rule.matches(events, t1);
+    const m2 = await rule.matches(events, t2);
+    const m3 = await rule.matches(events, t3);
+
+    expect(m1).toHaveLength(1);
+    expect(m2).toHaveLength(1);
+    expect(m3).toHaveLength(1);
+    // Walk was never invoked because event-based path produced matches.
+    expect(walkCallCount).toBe(0);
+    // Marker was read three times — once per tick, no throttle.
+    expect(eventReadCount).toBe(3);
+  });
+
   test("matches() ignores the sentinel when statMarkerMtime is unavailable (fail-safe)", async () => {
     // Defensive case: if statMarkerMtime is not configured, we cannot
     // compare the marker's freshness to the sentinel — fail open and

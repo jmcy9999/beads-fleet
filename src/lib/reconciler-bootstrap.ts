@@ -282,6 +282,109 @@ export function ensureReconcilerRunning(): void {
       }),
     );
 
+    // beads_web-xfc / hs5 / poh.17 / poh.18 — marker-driven-routing
+    // reconciler rule: defense-in-depth complement to kvn's inline fast
+    // path. Catches cases where the inline branch didn't fire (agent
+    // exited outside normal chain, orchestrator restarted, etc.). hs5
+    // adds a filesystem-walk fallback for orphaned markers; poh.17 adds
+    // persistent dispatch sentinels; poh.18 moves registration BEFORE
+    // stuck-in-stage so a fresh next_agent marker is honoured on the
+    // same tick instead of being pre-empted by the coherence-escalation
+    // path. The cheap event-based path runs every tick; only the
+    // expensive filesystem walk is throttled (5 min, internal to the
+    // rule) — see filesystemWalkThrottleMs.
+    rec.registerRule(
+      buildMarkerDrivenRoutingRule({
+        readMarker: async (rp: string, markerId: string) => {
+          const { readMarker } = await import("./marker-reader");
+          return readMarker(rp, markerId);
+        },
+        readEpicSnapshot: async (epicId: string) => {
+          const snap = await readEpicState(epicId, repoPath);
+          const pipelineLabel = snap.labels.find((l) =>
+            l.startsWith("pipeline:"),
+          );
+          const currentStage = pipelineLabel
+            ? pipelineLabel.replace("pipeline:", "")
+            : null;
+          return {
+            currentStage,
+            labels: snap.labels,
+            title: readEpicTitle(epicId, repoPath),
+          };
+        },
+        repoPath,
+        filesystemWalkThrottleMs: 300_000,
+        // --- hs5 filesystem-walk fallback callbacks ---
+        listRegisteredRepos: () => {
+          try {
+            const configPath = path.join(os.homedir(), ".beads-web.json");
+            const raw = require("fs").readFileSync(configPath, "utf-8");
+            const config = JSON.parse(raw);
+            if (!Array.isArray(config.repos)) return [];
+            return config.repos
+              .filter((r: { name?: string; path?: string }) => r.name && r.path)
+              .map((r: { name: string; path: string }) => ({
+                name: r.name,
+                path: r.path,
+              }));
+          } catch (err) {
+            console.warn(
+              "[xfc] listRegisteredRepos: failed to read ~/.beads-web.json —",
+              err instanceof Error ? err.message : err,
+            );
+            return [];
+          }
+        },
+        listMarkerFiles: (rp: string) => {
+          try {
+            const markersDir = path.join(rp, ".beads", "markers");
+            return readdirSync(markersDir).filter((f) => f.endsWith(".json"));
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            if (code !== "ENOENT") {
+              console.warn(
+                `[xfc] listMarkerFiles: error reading ${rp}/.beads/markers/ — ${code}`,
+              );
+            }
+            return [];
+          }
+        },
+        readBeadStatus: (beadId: string, rp: string) => {
+          try {
+            const bd = getBdPath();
+            const env = getBdEnv();
+            const out = execSync(`${bd} show ${beadId} --json`, {
+              cwd: rp,
+              encoding: "utf-8",
+              env,
+              timeout: 10_000,
+            });
+            const parsed = JSON.parse(out);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              return (parsed[0].status as string) ?? null;
+            }
+            return null;
+          } catch {
+            return null; // bd failure — tolerate, skip marker
+          }
+        },
+        // --- poh.17 persistent dispatch sentinels ---
+        readDispatchSentinel: (rp: string, key: string) => {
+          const { readDispatchSentinelSync } = require("./marker-dispatch-sentinel");
+          return readDispatchSentinelSync(rp, key);
+        },
+        writeDispatchSentinel: async (rp: string, key: string, sentinel) => {
+          const { writeDispatchSentinel } = await import("./marker-dispatch-sentinel");
+          await writeDispatchSentinel(rp, key, sentinel);
+        },
+        statMarkerMtime: (rp: string, markerId: string) => {
+          const { statMarkerMtimeSync } = require("./marker-dispatch-sentinel");
+          return statMarkerMtimeSync(rp, markerId);
+        },
+      }),
+    );
+
     // factory-core-zsjv.1: stuck-in-stage detector — generalises the
     // missed-wave-review recovery pattern to every pipeline stage.
     // beads_web-ehp.5: repoPath wired so the rule's act() can call
@@ -625,104 +728,16 @@ export function ensureReconcilerRunning(): void {
       }), 60_000), // factory-core-3akh.2: label leaks don't need 10s reactivity
     );
 
-    // beads_web-xfc — marker-driven-routing reconciler rule: defense-in-
-    // depth complement to kvn's inline fast path. Catches cases where
-    // inline branch didn't fire (agent exited outside normal chain,
-    // orchestrator restarted, etc.).
-    // beads_web-hs5: extended with filesystem-walk fallback for orphaned
-    // markers (markers with no agent-exited event). Throttle increased
-    // from 60s to 300s (5 min) per ADR-hs5 Q3 — filesystem walk over
-    // all registered repos is expensive (~400ms per walk).
-    rec.registerRule(
-      throttled(buildMarkerDrivenRoutingRule({
-        readMarker: async (rp: string, markerId: string) => {
-          const { readMarker } = await import("./marker-reader");
-          return readMarker(rp, markerId);
-        },
-        readEpicSnapshot: async (epicId: string) => {
-          const snap = await readEpicState(epicId, repoPath);
-          const pipelineLabel = snap.labels.find((l) =>
-            l.startsWith("pipeline:"),
-          );
-          const currentStage = pipelineLabel
-            ? pipelineLabel.replace("pipeline:", "")
-            : null;
-          return {
-            currentStage,
-            labels: snap.labels,
-            title: readEpicTitle(epicId, repoPath),
-          };
-        },
-        repoPath,
-        // --- hs5 filesystem-walk fallback callbacks ---
-        listRegisteredRepos: () => {
-          try {
-            const configPath = path.join(os.homedir(), ".beads-web.json");
-            const raw = require("fs").readFileSync(configPath, "utf-8");
-            const config = JSON.parse(raw);
-            if (!Array.isArray(config.repos)) return [];
-            return config.repos
-              .filter((r: { name?: string; path?: string }) => r.name && r.path)
-              .map((r: { name: string; path: string }) => ({
-                name: r.name,
-                path: r.path,
-              }));
-          } catch (err) {
-            console.warn(
-              "[xfc] listRegisteredRepos: failed to read ~/.beads-web.json —",
-              err instanceof Error ? err.message : err,
-            );
-            return [];
-          }
-        },
-        listMarkerFiles: (rp: string) => {
-          try {
-            const markersDir = path.join(rp, ".beads", "markers");
-            return readdirSync(markersDir).filter((f) => f.endsWith(".json"));
-          } catch (err) {
-            const code = (err as NodeJS.ErrnoException).code;
-            if (code !== "ENOENT") {
-              console.warn(
-                `[xfc] listMarkerFiles: error reading ${rp}/.beads/markers/ — ${code}`,
-              );
-            }
-            return [];
-          }
-        },
-        readBeadStatus: (beadId: string, rp: string) => {
-          try {
-            const bd = getBdPath();
-            const env = getBdEnv();
-            const out = execSync(`${bd} show ${beadId} --json`, {
-              cwd: rp,
-              encoding: "utf-8",
-              env,
-              timeout: 10_000,
-            });
-            const parsed = JSON.parse(out);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              return (parsed[0].status as string) ?? null;
-            }
-            return null;
-          } catch {
-            return null; // bd failure — tolerate, skip marker
-          }
-        },
-        // --- poh.17 persistent dispatch sentinels ---
-        readDispatchSentinel: (rp: string, key: string) => {
-          const { readDispatchSentinelSync } = require("./marker-dispatch-sentinel");
-          return readDispatchSentinelSync(rp, key);
-        },
-        writeDispatchSentinel: async (rp: string, key: string, sentinel) => {
-          const { writeDispatchSentinel } = await import("./marker-dispatch-sentinel");
-          await writeDispatchSentinel(rp, key, sentinel);
-        },
-        statMarkerMtime: (rp: string, markerId: string) => {
-          const { statMarkerMtimeSync } = require("./marker-dispatch-sentinel");
-          return statMarkerMtimeSync(rp, markerId);
-        },
-      }), 300_000), // beads_web-hs5: 5-min throttle per ADR-hs5 Q3
-    );
+    // beads_web-poh.18: marker-driven-routing was previously registered
+    // here, last in the rule list. That made stuck-in-stage win the race
+    // to dispatch coherence on every tick following a coherence exit —
+    // the at-HEAD coherence marker's next_agent was never honoured
+    // because the rule didn't get a chance to run before the
+    // stuck-in-stage→coherence escalation fired. The registration moved
+    // to BEFORE stuck-in-stage (search "buildMarkerDrivenRoutingRule"
+    // earlier in this file). The 5-min throttle that used to wrap the
+    // whole rule is now scoped inside the rule to the filesystem-walk
+    // path only, so the cheap event-based path runs every tick.
 
     rec.start();
     console.log("[reconciler-bootstrap] reconciler started from route handler");
