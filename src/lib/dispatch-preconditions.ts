@@ -119,7 +119,11 @@ export type RefusalCode =
   // Class D — plan-file modified after stage-entered (ehp.13)
   | "PLAN_INSTABILITY"
   // Class E — action vs marker.next_agent mismatch (ehp.13)
-  | "ACTION_NEXT_AGENT_MISMATCH";
+  | "ACTION_NEXT_AGENT_MISMATCH"
+  // Class A — wave-cascade gate (mm5d.7 / F5): start-wave N+1 refused unless
+  // wave-N reviewer marker exists with verdict=PASS. Required by mm5d.3 Q1
+  // override (multi-wave epics must work for C2 PASS).
+  | "PREVIOUS_WAVE_NOT_REVIEWED";
 
 /**
  * Runtime exhaustiveness map for RefusalCode. A test in
@@ -144,6 +148,7 @@ export const REFUSAL_CODES: Record<RefusalCode, true> = {
   REVIEW_NEEDS_HUMAN: true,
   PLAN_INSTABILITY: true,
   ACTION_NEXT_AGENT_MISMATCH: true,
+  PREVIOUS_WAVE_NOT_REVIEWED: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -236,6 +241,22 @@ export interface DispatchContext {
    * narrow ehp.3's contract).
    */
   readonly planFileMtime?: number | null;
+  /**
+   * mm5d.7 (F5 fix) — previous wave's reviewer marker (verdict + status).
+   * Populated by `buildDispatchContext` via `readMarker` against the
+   * filename `<epicId>-reviewer-4-wave-<N-1>.json` when `waveNumber` >= 2;
+   * undefined for waveNumber=1 (no prior wave) or when waveNumber unset.
+   *
+   * `PRECOND_PREVIOUS_WAVE_REVIEWED_PASS` consults this for `start-wave`
+   * dispatches: refuses with `PREVIOUS_WAVE_NOT_REVIEWED` if the marker
+   * is absent OR its verdict is not "PASS". Populated as `null` when
+   * waveNumber >= 2 but the readMarker call returns null (marker absent
+   * or unreadable); the predicate treats null as missing and refuses.
+   *
+   * Optional (`?:`) so ehp.3 / ehp.13 callers that don't construct this
+   * field continue to type-check.
+   */
+  readonly previousWaveReviewMarker?: { verdict?: string; status?: string } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +816,52 @@ export const PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST: Precondition = {
 };
 
 /**
+ * A — previous-wave-reviewed-pass → PREVIOUS_WAVE_NOT_REVIEWED  (mm5d.7 / F5 fix)
+ *
+ * Refuses `start-wave waveNumber=N+1` until Wave-N has a reviewer marker
+ * with verdict=PASS. Closes the F5 wave-cascade gap: previously, bd-close
+ * cascade (or operator dispatch) could fire Wave-N+1's builders before the
+ * Wave-N reviewer ran, skipping the review gate between waves.
+ *
+ * Predicate is action-scoped (only `start-wave`) and wave-conditional
+ * (skips when waveNumber < 2 — no prior wave exists). Reads
+ * `previousWaveReviewMarker` from DispatchContext, which buildDispatchContext
+ * populates via `readMarker(<epicId>-reviewer-4-wave-<N-1>)` only when
+ * waveNumber >= 2.
+ *
+ * Per mm5d.3 Q1 OVERRIDE: multi-wave epics must be working for C2 PASS.
+ * This predicate is the load-bearing protection.
+ */
+export const PRECOND_PREVIOUS_WAVE_REVIEWED_PASS: Precondition = {
+  name: "previous-wave-reviewed-pass",
+  refusalCode: "PREVIOUS_WAVE_NOT_REVIEWED",
+  appliesTo(action) {
+    return action === "start-wave";
+  },
+  evaluate(ctx) {
+    // No prior wave to gate on (Wave 1 has no Wave 0 to review).
+    if (ctx.previousWaveReviewMarker === undefined) return { ok: true };
+    if (ctx.previousWaveReviewMarker === null) {
+      return {
+        ok: false,
+        refusalCode: "PREVIOUS_WAVE_NOT_REVIEWED",
+        failedCheck: "previous-wave-reviewed-pass",
+        reason: `cannot start-wave: no reviewer marker found for the prior wave (expected <epicId>-reviewer-4-wave-<N-1>.json with verdict=PASS) — F5 wave-cascade protection refuses to skip the review gate`,
+      };
+    }
+    if (ctx.previousWaveReviewMarker.verdict !== "PASS") {
+      return {
+        ok: false,
+        refusalCode: "PREVIOUS_WAVE_NOT_REVIEWED",
+        failedCheck: "previous-wave-reviewed-pass",
+        reason: `cannot start-wave: prior-wave reviewer marker verdict='${ctx.previousWaveReviewMarker.verdict ?? "<unset>"}' (required: PASS) — F5 wave-cascade protection refuses to advance past an unresolved review`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
  * A — architect-marker-not-success → ARCHITECT_MARKER_SUCCESS
  *
  * Refuses re-dispatch of run-architect when the prior architect marker
@@ -1092,6 +1159,7 @@ export const PER_ACTION_PRECONDITIONS: readonly Precondition[] = [
   PRECOND_WAVE_BEADS_EXIST,
   PRECOND_WAVE_BEADS_NOT_ALL_CLOSED,
   PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST, // beads_web-m2c (review-wave only)
+  PRECOND_PREVIOUS_WAVE_REVIEWED_PASS, // mm5d.7 / F5 (start-wave only, when waveNumber >= 2)
   PRECOND_ARCHITECT_MARKER_NOT_SUCCESS,
   // Class B
   PRECOND_PIPELINE_LABEL_SINGLETON,
@@ -1439,6 +1507,25 @@ export async function buildDispatchContext(
     }
   }
 
+  // mm5d.7 (F5 fix): read the prior wave's reviewer marker when waveNumber >= 2.
+  // Field stays undefined for waveNumber=1 / waveNumber unset → predicate skips.
+  // null indicates "marker absent or unreadable" → predicate refuses.
+  let previousWaveReviewMarker: { verdict?: string; status?: string } | null | undefined;
+  if (input.waveNumber !== undefined && input.waveNumber >= 2) {
+    const priorWave = input.waveNumber - 1;
+    const markerName = `${input.epicId}-reviewer-4-wave-${priorWave}`;
+    try {
+      const m = await readMarker(input.repoPath, markerName);
+      previousWaveReviewMarker = m
+        ? { verdict: (m as { verdict?: string }).verdict, status: m.status }
+        : null;
+    } catch {
+      // readMarker is documented to tolerate failures internally, but defend
+      // anyway — fail-closed: treat as missing.
+      previousWaveReviewMarker = null;
+    }
+  }
+
   return {
     action: input.action,
     bead,
@@ -1449,6 +1536,7 @@ export async function buildDispatchContext(
     anyStatusWaveBeadIds,
     stageEnteredAt,
     planFileMtime: planFileMeta.mtimeMs,
+    previousWaveReviewMarker,
   };
 }
 
