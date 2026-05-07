@@ -27,12 +27,62 @@ export interface RepoStore {
 
 const CONFIG_PATH = path.join(os.homedir(), ".beads-web.json");
 
+// beads_web-poh.5: in-process write lock. Atomic writes (rename pattern)
+// stop concurrent readers from seeing partial files, but two concurrent
+// mutators can still suffer the lost-update problem (read-A → read-B →
+// write-A → write-B; A's changes are silently dropped). The lock
+// serializes every read-mutate-write inside a single Node process so
+// each mutation observes the result of the previous one. Cross-process
+// races are not in scope (Next.js dev/prod runs as one process).
+let writeLock: Promise<unknown> = Promise.resolve();
+
+function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = writeLock.then(() => fn());
+  // Swallow rejections on the chain so one failed mutation does not
+  // permanently poison the lock. The original promise is still returned
+  // to the caller, so the caller still sees the error.
+  writeLock = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
 async function readConfig(): Promise<RepoStore> {
+  let content: string;
   try {
-    const content = await fs.readFile(CONFIG_PATH, "utf-8");
+    content = await fs.readFile(CONFIG_PATH, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      // Genuine first run — config file does not exist yet. Safe to
+      // bootstrap with an empty store.
+      return { repos: [] };
+    }
+    // beads_web-poh.5: any other read error (EACCES, EBUSY, EISDIR…)
+    // means we cannot trust the store. Propagating the failure prevents
+    // downstream mutators (addRepo, getRepos seed) from clobbering the
+    // registry to a single-repo state under the assumption of "no
+    // repos configured".
+    throw err;
+  }
+
+  // beads_web-poh.5: an empty file is a partial-write artefact, not a
+  // bootstrap signal. Refuse to silently treat it as "no repos" — that
+  // is exactly the failure mode that produced the 191-byte single-repo
+  // collapse observed on 2026-05-07.
+  if (content.trim().length === 0) {
+    throw new Error(
+      `Registry file ${CONFIG_PATH} is empty — likely a partial-write race. Restore from a .bak.* backup or remove the file to bootstrap.`,
+    );
+  }
+
+  try {
     return JSON.parse(content) as RepoStore;
-  } catch {
-    return { repos: [] };
+  } catch (err) {
+    throw new Error(
+      `Registry file ${CONFIG_PATH} failed to parse: ${err instanceof Error ? err.message : String(err)}. Restore from a .bak.* backup or remove the file to bootstrap.`,
+    );
   }
 }
 
@@ -54,7 +104,27 @@ async function writeConfig(store: RepoStore): Promise<void> {
     }
   }
 
-  await fs.writeFile(CONFIG_PATH, JSON.stringify(store, null, 2), "utf-8");
+  // beads_web-poh.5: atomic write via temp-file + rename. fs.writeFile
+  // opens with O_TRUNC and only then writes the bytes, leaving a window
+  // where concurrent readers see an empty file → JSON.parse fails →
+  // readConfig used to return { repos: [] } → mutator clobbers to a
+  // single-repo registry. POSIX rename(2) is atomic on the same
+  // filesystem, so concurrent readers see either the old file or the
+  // new file in full — never a partial truncate.
+  const tmpPath = `${CONFIG_PATH}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    await fs.writeFile(tmpPath, JSON.stringify(store, null, 2), "utf-8");
+    await fs.rename(tmpPath, CONFIG_PATH);
+  } catch (err) {
+    // Best-effort cleanup of the temp file. Ignore unlink failures —
+    // the original error is what matters.
+    try {
+      await fs.unlink(tmpPath);
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
 
   // Best-effort pruning: keep last 5 backups, delete older ones.
   await pruneOldBackups();
@@ -96,18 +166,23 @@ async function pruneOldBackups(): Promise<void> {
  * the BEADS_PROJECT_PATH env var (if set).
  */
 export async function getRepos(): Promise<RepoStore> {
-  const store = await readConfig();
+  // beads_web-poh.5: serialize the read-mutate-write seed path. Without
+  // the lock, two concurrent GETs can both observe an empty store and
+  // both write a single-repo seed, racing on the rename.
+  return withWriteLock(async () => {
+    const store = await readConfig();
 
-  // Seed from env var if no repos configured
-  if (store.repos.length === 0 && process.env.BEADS_PROJECT_PATH) {
-    const envPath = process.env.BEADS_PROJECT_PATH;
-    const name = path.basename(envPath);
-    store.repos.push({ name, path: envPath });
-    store.activeRepo = envPath;
-    await writeConfig(store);
-  }
+    // Seed from env var if no repos configured
+    if (store.repos.length === 0 && process.env.BEADS_PROJECT_PATH) {
+      const envPath = process.env.BEADS_PROJECT_PATH;
+      const name = path.basename(envPath);
+      store.repos.push({ name, path: envPath });
+      store.activeRepo = envPath;
+      await writeConfig(store);
+    }
 
-  return store;
+    return store;
+  });
 }
 
 /**
@@ -144,46 +219,50 @@ export async function getAllRepoPaths(): Promise<string[]> {
  * Add a repository to the config.
  */
 export async function addRepo(repoPath: string, name?: string): Promise<RepoStore> {
-  const store = await readConfig();
-  const resolvedPath = path.resolve(repoPath);
+  return withWriteLock(async () => {
+    const store = await readConfig();
+    const resolvedPath = path.resolve(repoPath);
 
-  // Check if already exists
-  if (store.repos.some((r) => r.path === resolvedPath)) {
+    // Check if already exists
+    if (store.repos.some((r) => r.path === resolvedPath)) {
+      return store;
+    }
+
+    // Verify .beads directory exists
+    try {
+      await fs.access(path.join(resolvedPath, ".beads"));
+    } catch {
+      throw new Error(`No .beads directory found at ${resolvedPath}`);
+    }
+
+    const repoName = name || path.basename(resolvedPath);
+    store.repos.push({ name: repoName, path: resolvedPath });
+
+    if (!store.activeRepo) {
+      store.activeRepo = resolvedPath;
+    }
+
+    await writeConfig(store);
     return store;
-  }
-
-  // Verify .beads directory exists
-  try {
-    await fs.access(path.join(resolvedPath, ".beads"));
-  } catch {
-    throw new Error(`No .beads directory found at ${resolvedPath}`);
-  }
-
-  const repoName = name || path.basename(resolvedPath);
-  store.repos.push({ name: repoName, path: resolvedPath });
-
-  if (!store.activeRepo) {
-    store.activeRepo = resolvedPath;
-  }
-
-  await writeConfig(store);
-  return store;
+  });
 }
 
 /**
  * Remove a repository from the config.
  */
 export async function removeRepo(repoPath: string): Promise<RepoStore> {
-  const store = await readConfig();
-  const resolvedPath = path.resolve(repoPath);
-  store.repos = store.repos.filter((r) => r.path !== resolvedPath);
+  return withWriteLock(async () => {
+    const store = await readConfig();
+    const resolvedPath = path.resolve(repoPath);
+    store.repos = store.repos.filter((r) => r.path !== resolvedPath);
 
-  if (store.activeRepo === resolvedPath) {
-    store.activeRepo = store.repos[0]?.path;
-  }
+    if (store.activeRepo === resolvedPath) {
+      store.activeRepo = store.repos[0]?.path;
+    }
 
-  await writeConfig(store);
-  return store;
+    await writeConfig(store);
+    return store;
+  });
 }
 
 /**
@@ -284,24 +363,26 @@ export async function findRepoForIssue(issueId: string): Promise<string | null> 
  * Set the active repository. Pass `"__all__"` to enable aggregation mode.
  */
 export async function setActiveRepo(repoPath: string): Promise<RepoStore> {
-  const store = await readConfig();
+  return withWriteLock(async () => {
+    const store = await readConfig();
 
-  // Allow the "all projects" sentinel without path resolution
-  if (repoPath === ALL_PROJECTS_SENTINEL) {
-    store.activeRepo = ALL_PROJECTS_SENTINEL;
+    // Allow the "all projects" sentinel without path resolution
+    if (repoPath === ALL_PROJECTS_SENTINEL) {
+      store.activeRepo = ALL_PROJECTS_SENTINEL;
+      await writeConfig(store);
+      return store;
+    }
+
+    const resolvedPath = path.resolve(repoPath);
+
+    if (!store.repos.some((r) => r.path === resolvedPath)) {
+      throw new Error(`Repository not found: ${resolvedPath}`);
+    }
+
+    store.activeRepo = resolvedPath;
     await writeConfig(store);
     return store;
-  }
-
-  const resolvedPath = path.resolve(repoPath);
-
-  if (!store.repos.some((r) => r.path === resolvedPath)) {
-    throw new Error(`Repository not found: ${resolvedPath}`);
-  }
-
-  store.activeRepo = resolvedPath;
-  await writeConfig(store);
-  return store;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -320,10 +401,12 @@ export async function getWatchDirs(): Promise<string[]> {
  * Set watch directories (overwrites existing list).
  */
 export async function setWatchDirs(dirs: string[]): Promise<RepoStore> {
-  const store = await readConfig();
-  store.watchDirs = dirs.map((d) => path.resolve(d));
-  await writeConfig(store);
-  return store;
+  return withWriteLock(async () => {
+    const store = await readConfig();
+    store.watchDirs = dirs.map((d) => path.resolve(d));
+    await writeConfig(store);
+    return store;
+  });
 }
 
 /**
@@ -334,47 +417,49 @@ export async function setWatchDirs(dirs: string[]): Promise<RepoStore> {
  * Only scans one level deep within each watch directory.
  */
 export async function scanWatchDirs(): Promise<string[]> {
-  const store = await readConfig();
-  const watchDirs = store.watchDirs ?? [];
-  if (watchDirs.length === 0) return [];
+  return withWriteLock(async () => {
+    const store = await readConfig();
+    const watchDirs = store.watchDirs ?? [];
+    if (watchDirs.length === 0) return [];
 
-  const existingPaths = new Set(store.repos.map((r) => r.path));
-  const newPaths: string[] = [];
+    const existingPaths = new Set(store.repos.map((r) => r.path));
+    const newPaths: string[] = [];
 
-  for (const dir of watchDirs) {
-    let entries: string[];
-    try {
-      const dirents = await fs.readdir(dir, { withFileTypes: true });
-      entries = dirents
-        .filter((d) => d.isDirectory())
-        .map((d) => path.join(dir, d.name));
-    } catch {
-      // Watch dir doesn't exist or isn't readable — skip
-      continue;
-    }
-
-    for (const candidate of entries) {
-      if (existingPaths.has(candidate)) continue;
-
-      // Check if this directory has .beads/
-      const beadsDir = path.join(candidate, ".beads");
+    for (const dir of watchDirs) {
+      let entries: string[];
       try {
-        await fs.access(beadsDir);
+        const dirents = await fs.readdir(dir, { withFileTypes: true });
+        entries = dirents
+          .filter((d) => d.isDirectory())
+          .map((d) => path.join(dir, d.name));
       } catch {
+        // Watch dir doesn't exist or isn't readable — skip
         continue;
       }
 
-      // New beads project found — register it
-      const name = path.basename(candidate);
-      store.repos.push({ name, path: candidate });
-      existingPaths.add(candidate);
-      newPaths.push(candidate);
+      for (const candidate of entries) {
+        if (existingPaths.has(candidate)) continue;
+
+        // Check if this directory has .beads/
+        const beadsDir = path.join(candidate, ".beads");
+        try {
+          await fs.access(beadsDir);
+        } catch {
+          continue;
+        }
+
+        // New beads project found — register it
+        const name = path.basename(candidate);
+        store.repos.push({ name, path: candidate });
+        existingPaths.add(candidate);
+        newPaths.push(candidate);
+      }
     }
-  }
 
-  if (newPaths.length > 0) {
-    await writeConfig(store);
-  }
+    if (newPaths.length > 0) {
+      await writeConfig(store);
+    }
 
-  return newPaths;
+    return newPaths;
+  });
 }
