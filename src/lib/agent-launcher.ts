@@ -1505,14 +1505,21 @@ export async function listOpenWaveBeads(
       );
     }
 
-    // Confirm wave label matches the requested wave — filter defensively
-    // since we're not using a composite --label filter on bd list.
-    const waveMatch = showResult.stdout.match(/wave:(\d+)/);
+    // Confirm wave label matches the requested wave — filter defensively.
+    // beads_web-q9c fix (2026-05-07): use the LABELS line specifically, not
+    // the entire bd show stdout. The previous regex /wave:(\d+)/ matched
+    // description text (e.g., ehp.12's niii reproduction-scenario references
+    // to "wave:3" / "wave:4") before reaching the bead's actual labels.
+    // Reproduced empirically when start-wave 5 dispatched and pulled in
+    // ehp.12 (correctly labelled wave:5) FAILED because its description text
+    // contains wave:3/wave:4 references (the niii reproduction targets).
+    const labelLineMatch = showResult.stdout.match(/^LABELS:\s*([^\n]+)/m);
+    const labelLine = labelLineMatch ? labelLineMatch[1] : "";
+    const waveMatch = labelLine.match(/wave:(\d+)/);
     if (!waveMatch) {
-      // factory-core-so74 A.8 fix: log skip reason for diagnosis.
       console.info(
         `[cross-repo] listOpenWaveBeads: child ${child.id} in ${path.basename(repoPath)} ` +
-        `skipped — no wave:N label found in bd show output`,
+        `skipped — no wave:N label on LABELS line (q9c-fixed scope)`,
       );
       continue;
     }
