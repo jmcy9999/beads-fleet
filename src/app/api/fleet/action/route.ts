@@ -481,25 +481,21 @@ async function checkPreconditionsOrRefuse(params: {
   action: PipelineAction;
   waveNumber?: number;
 }): Promise<NextResponse | null> {
-  // Cross-repo epic resolution: beads_web-* lives in beads_web's bd repo, not factory-core.
-  // Without this, readBeadStatus runs `bd show beads_web-ehp --repo=<factory-core>` and
-  // returns null → BD_READ_FAILED fail-closed refuses every legitimate dispatch.
+  // Cross-repo epic resolution (2c2cab5 + 32c76b8 + cqe-fix): beads_web-* lives in
+  // beads_web's bd repo, not factory-core. Without this, readBeadStatus runs from
+  // the wrong cwd → null → BD_READ_FAILED fail-closed refuses every legitimate dispatch.
   //
-  // Fast-path by ID prefix for known repos (factory-core, beads_web) to avoid the cost
-  // of findRepoForIssue's parallel probe over every registered repo (which can stall if
-  // any repo has a slow/stuck bd state — empirically observed 2026-05-06: 60s timeouts).
-  // For unknown prefixes, fall back to findRepoForIssue with a 5s ceiling.
+  // Fast-path by ID prefix for factory-core (the orchestrator's own repo). For all
+  // other prefixes, defer to findRepoForIssue which probes registered repos via
+  // (already-async) MySQL queries. The historical 5s timeout shim was needed when
+  // event-loop contention from reconciler ticks made findRepoForIssue slow; the
+  // root cause (poh.4 throttle + q8w execFile fix) makes the timeout unnecessary.
+  // cqe (2026-05-07): hardcoded "/Users/janemckay/dev/claude_projects/beads_web"
+  // removed — use registry lookup instead.
   let repoPath = params.fleetCorePath;
-  if (params.epicId.startsWith("factory-core-")) {
-    // factory-core epics live in fleet-core path — already correct.
-  } else if (params.epicId.startsWith("beads_web-")) {
-    repoPath = "/Users/janemckay/dev/claude_projects/beads_web";
-  } else {
+  if (!params.epicId.startsWith("factory-core-")) {
     try {
-      const homeRepo = await Promise.race([
-        findRepoForIssue(params.epicId),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-      ]);
+      const homeRepo = await findRepoForIssue(params.epicId);
       if (homeRepo) repoPath = homeRepo;
     } catch {
       // Fall through to fleetCorePath default; downstream readBeadStatus will fail-closed

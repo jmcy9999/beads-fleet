@@ -29,7 +29,10 @@
 //   Status enum: open | in_progress | blocked | closed | deferred.
 // =============================================================================
 
-import { execSync } from "child_process";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
 import { getBdEnv, getBdPath } from "./bd-path";
 
 /**
@@ -103,13 +106,18 @@ export async function readBeadStatus(
   try {
     const bd = getBdPath();
     const env = getBdEnv();
-    raw = execSync(`${bd} show ${beadId} --json`, {
+    // hfw + q8w (2026-05-07 fix): execFile (argv) replaces execSync (shell-string).
+    // hfw: shell-string interpolation made `${beadId}` a shell-injection vector.
+    // q8w: blocking execSync inside an async function stalled Next.js's event loop
+    // on every dispatch (60s+ tail latency under load).
+    // Now: argv-based execFile via promisify — no shell, non-blocking.
+    const { stdout } = await execFileAsync(bd, ["show", beadId, "--json"], {
       cwd: repoPath,
       encoding: "utf-8",
       env,
       timeout: BD_TIMEOUT_MS,
-      stdio: ["ignore", "pipe", "ignore"],
     });
+    raw = stdout;
   } catch {
     return null; // binary missing | non-zero exit | timeout — tolerate, callers treat null as "unknown"
   }
