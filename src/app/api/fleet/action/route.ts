@@ -2435,6 +2435,28 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: "Invalid waveNumber" }, { status: 400 });
         }
 
+        // beads_web-bot: re-read fresh labels for shipType. The currentLabels
+        // payload forwarded by chainToNextStage (agent-launcher.ts:2054) is
+        // session.epicLabels captured at the previous agent's launch time —
+        // if any upstream dispatcher fired the epic without ship-type:<x> in
+        // currentLabels, that staleness propagates through every auto-chain
+        // hop. Earlier stages (research/PM/architect/planner/test-spec)
+        // tolerate this because their launchAgent cwd is hardcoded to
+        // fleetCorePath (e.g. route.ts:1198, 1461); start-wave is the first
+        // handler whose cwd derivation depends on shipType via
+        // resolveRepoPath. Re-reading from bd is the only fail-safe — mirrors
+        // the rtsLabelsNow / raLabelsNow / pmLabelsNow / generatePlanLabelsNow
+        // pattern already used in this route. swLabelsNow is also propagated
+        // forward as the launched builder's epicLabels so downstream chain
+        // hops don't inherit the inbound staleness.
+        const swLabelsNow = await getEpicLabels(epicId as string, fleetCorePath);
+        const swShipTypeLabel = swLabelsNow.find((l) =>
+          l.startsWith("ship-type:"),
+        );
+        const swShipType = swShipTypeLabel
+          ? swShipTypeLabel.replace("ship-type:", "")
+          : shipType;
+
         await addLabelsToEpic(epicId, ["agent:running"], fleetCorePath);
         invalidateCache({ type: "epic", epicId });
 
@@ -2447,7 +2469,7 @@ export async function POST(request: NextRequest) {
           architecturePath: waveArchitecturePath,
           testScenariosPath: waveTestScenariosPath,
         } = resolveRepoPath(
-          shipType,
+          swShipType,
           epicTitle as string,
           appName,
           epicId as string,
@@ -2577,7 +2599,10 @@ export async function POST(request: NextRequest) {
         // Legacy fallback: no enumerable open beads → launch one wave-scoped
         // session as before. Keeps pre-z9h.7 epics working.
         if (openBeads.length === 0) {
-          const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)} ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
+          // beads_web-bot: swShipType + swLabelsNow used so the prompt and
+          // forwarded epicLabels reflect bd ground truth, not the inbound
+          // (possibly stale) currentLabels payload.
+          const startWavePrompt = `Build Wave ${wave} beads for epic ${epicId} (${epicTitle}). Ship type: ${swShipType}. Product repo: ${waveRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, swShipType)} ONLY work beads with wave:${wave} label. Do not advance to the next wave.`;
 
           const startWaveSession = await launchAgent({
             repoPath: waveRepoPath,
@@ -2587,7 +2612,7 @@ export async function POST(request: NextRequest) {
             maxTurns: 500,
             allowedTools,
             epicId: epicId,
-            epicLabels: labels,
+            epicLabels: swLabelsNow,
             pipelineStage: "development",
             agentName: "builder",
             waveNumber: wave,
@@ -2689,7 +2714,7 @@ export async function POST(request: NextRequest) {
                 beadFiles: detail.files.length > 0 ? detail.files : head.files,
                 epicId: epicId as string,
                 epicTitle: epicTitle as string,
-                shipType,
+                shipType: swShipType,
                 waveNumber: wave,
                 repoPath: beadRepoPath,
                 fleetCorePath,
@@ -2704,8 +2729,10 @@ export async function POST(request: NextRequest) {
               });
             } catch (err) {
               // Fallback to a simple prompt; log so we can investigate.
+              // beads_web-bot: swShipType used so the fallback prompt reflects
+              // bd ground truth, mirroring the buildPerBeadPrompt path above.
               console.error(`[start-wave] Failed to build per-bead prompt for ${head.id}:`, err);
-              perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${shipType}. Product repo: ${beadRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, shipType)} ONLY work bead ${head.id}. Do not start any other bead.`;
+              perBeadPrompt = `Build bead ${head.id} (${head.title}) for epic ${epicId} (${epicTitle}). Ship type: ${swShipType}. Product repo: ${beadRepoPath}. Research report: ${waveResearchPath}. Build plan: ${wavePlanPath}. Fleet-core: ${fleetCorePath}.${waveTestScenariosInfo} ${formatBuilderStandingOrdersDirective(fleetCorePath, swShipType)} ONLY work bead ${head.id}. Do not start any other bead.`;
             }
 
             const beadSession = await launchAgent({
@@ -2716,7 +2743,7 @@ export async function POST(request: NextRequest) {
               maxTurns: 500,
               allowedTools,
               epicId: epicId,
-              epicLabels: labels,
+              epicLabels: swLabelsNow,
               pipelineStage: "development",
               agentName: "builder",
               waveNumber: wave,
