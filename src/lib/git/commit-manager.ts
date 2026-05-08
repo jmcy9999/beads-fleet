@@ -22,6 +22,14 @@
 // This library is NOT called by beads_web routes. It is consumed by:
 //   - builder prompts that commit inside an agent
 //   - `tools/generic/commit-gate.sh` shell wrapper (ppx.2 Task 3)
+//
+// poh.26 NOTE (2026-05-08): cross-process commit-serialization (flock on
+// .git/shipyard-commit.lock) was added to commit-gate.sh to fix the
+// parallel-agent commit-race observed in the C2 attempt-4 retest battery.
+// This TS library does NOT yet take that lock — currently no caller uses
+// it (verified: no `commitWithRetry` importers anywhere in src/). If/when
+// a caller is wired up, this library MUST acquire the same flock before
+// `git add`. See `tools/generic/commit-gate.sh` for the reference shape.
 // =============================================================================
 
 import { execFile } from "child_process";
