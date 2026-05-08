@@ -167,6 +167,20 @@ export interface MarkerDrivenRoutingRuleOptions {
 // Import is at the top of this file.
 // ---------------------------------------------------------------------------
 
+// 2026-05-08 (C2 attempt 3 empirical): launchAgent records pipeline-label
+// stage names (e.g. "product-spec", "architecture") on agent-exited events,
+// but agents write markers using their AGENT names (e.g. "product-manager",
+// "architect"). Translate before constructing markerId. Identity rows ("X" →
+// "X") are listed for documentation; the lookup falls back to identity.
+const STAGE_TO_AGENT_NAME: Record<string, string> = {
+  research: "research",
+  "product-spec": "product-manager",
+  architecture: "architect",
+  "plan-review": "planner",
+  "test-spec": "test-spec",
+  development: "builder",
+};
+
 export function buildMarkerDrivenRoutingRule(
   opts: MarkerDrivenRoutingRuleOptions,
 ): ReconcilerRule {
@@ -199,10 +213,18 @@ export function buildMarkerDrivenRoutingRule(
 
       for (const [epicId, stage] of epicStages.entries()) {
         // Read marker for this (epicId, stage). Marker filename convention
-        // per marker-protocol: epic-scope agents use <epicId>-<stage>.json;
+        // per marker-protocol: epic-scope agents use <epicId>-<agentName>.json;
         // per-bead agents use <beadId>.json. xfc targets epic-scope agents
-        // (architect, planner, qa, etc.) so the markerId is <epicId>-<stage>.
-        const markerId = `${epicId}-${stage}`;
+        // (architect, planner, qa, etc.).
+        //
+        // 2026-05-08 fix (C2 attempt 3 empirical): the agent-exited event's
+        // `stage` field carries the PIPELINE-LABEL name (e.g. "product-spec",
+        // "architecture") set by launchAgent, but agents write marker files
+        // using their AGENT name (e.g. "product-manager", "architect").
+        // research-stage worked by coincidence (both names equal). Translate
+        // pipeline-label → agent-name before constructing markerId.
+        const agentName = STAGE_TO_AGENT_NAME[stage] ?? stage;
+        const markerId = `${epicId}-${agentName}`;
         const marker = await opts.readMarker(opts.repoPath, markerId);
 
         if (!marker) continue; // marker missing/unreadable — skip
