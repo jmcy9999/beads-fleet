@@ -345,8 +345,13 @@ describe("repeat-dispatch-escalation × dispatch-preconditions integration (bead
     const matches = await rule.matches(events, now);
     expect(matches).toHaveLength(1);
 
-    // Must NOT throw — 412 is a refusal, not a failure.
-    await expect(rule.act(matches[0])).resolves.toBeUndefined();
+    // Must NOT throw — 412 is a refusal, not a failure. Under beads_web-3e6
+    // the rule returns RuleActResult { refused: true, refusalCode } so the
+    // reconciler skips the action-taken append on refusal.
+    await expect(rule.act(matches[0])).resolves.toEqual({
+      refused: true,
+      refusalCode: "ROUTE_REFUSED_412",
+    });
 
     // Fetch DID fire (the route is the gate that refused).
     expect(fetchCalls).toHaveLength(1);

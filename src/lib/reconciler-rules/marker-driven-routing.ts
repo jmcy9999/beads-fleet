@@ -555,6 +555,30 @@ export function buildMarkerDrivenRoutingRule(
       const actionName = getActionForAgent(nextAgent);
 
       // -----------------------------------------------------------------
+      // beads_web-vpu (2026-05-08): waveNumber derivation for wave-actions.
+      //
+      // For action ∈ { start-wave, review-wave } the precondition gate
+      // needs waveNumber so PRECOND_WAVE_BEADS_EXIST can read the open
+      // wave-N children. Without it, dispatch-preconditions short-circuits
+      // openWaveBeadIds=[] and the gate refuses NO_WAVE_BEADS — guaranteed
+      // failure, regardless of whether wave-1 children actually exist.
+      // Mirrors the route handler's parsedWaveNumber pattern (route.ts:637).
+      // Read wave:N from the epic's own labels; default 1 (first start-wave
+      // is conventionally wave-1).
+      // -----------------------------------------------------------------
+      const isWaveAction =
+        actionName === "start-wave" || actionName === "review-wave";
+      let waveNumberForDispatch: number | undefined;
+      if (isWaveAction) {
+        const waveLabel = epicSnapshot.labels.find((l) =>
+          /^wave:\d+$/.test(l),
+        );
+        waveNumberForDispatch = waveLabel
+          ? parseInt(waveLabel.split(":")[1], 10)
+          : 1;
+      }
+
+      // -----------------------------------------------------------------
       // beads_web-ehp.4: dispatch-precondition gate (Wave 3 integration).
       //
       // Architecture § Component Boundaries Contract 2: precondition check
@@ -578,6 +602,7 @@ export function buildMarkerDrivenRoutingRule(
         epicId: match.epicId,
         repoPath: markerRepoPath,
         action: actionName,
+        waveNumber: waveNumberForDispatch,
       });
       const precondResult = evaluatePreconditions(precondCtx);
       if (!precondResult.ok) {
@@ -612,6 +637,14 @@ export function buildMarkerDrivenRoutingRule(
             epicId: match.epicId,
             epicTitle: epicSnapshot.title,
             currentLabels: epicSnapshot.labels,
+            // beads_web-vpu: forward waveNumber so the route handler's
+            // own precondition check (defense-in-depth Seam 5) and the
+            // start-wave / review-wave body have the same wave context
+            // the rule used at the rule-side gate. Undefined for non-
+            // wave actions (route's parsedWaveNumber tolerates absent).
+            ...(waveNumberForDispatch !== undefined
+              ? { waveNumber: waveNumberForDispatch }
+              : {}),
           }),
           signal: controller.signal,
         });

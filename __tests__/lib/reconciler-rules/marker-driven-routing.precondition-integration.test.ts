@@ -50,6 +50,19 @@ jest.mock("@/lib/marker-reader", () => {
 jest.mock("@/lib/pipeline-labels", () => ({
   getEpicLabels: jest.fn(),
 }));
+// beads_web-vpu: agent-launcher mock so the wave-bead-listing readers used
+// by buildDispatchContext can be driven per-test. Required for regression
+// tests that exercise actionName="start-wave" / "review-wave" — the rule
+// derives waveNumber and forwards it to buildDispatchContext, which calls
+// these readers via safeListOpenWaveBeads / safeListAllStatusWaveBeads.
+jest.mock("@/lib/agent-launcher", () => {
+  const actual = jest.requireActual("@/lib/agent-launcher");
+  return {
+    ...actual,
+    listOpenWaveBeads: jest.fn(),
+    listAllStatusWaveBeads: jest.fn(),
+  };
+});
 
 import { Reconciler } from "@/lib/reconciler";
 import { appendEvent, readEvents } from "@/lib/event-log";
@@ -63,6 +76,7 @@ import type { BeadSnapshot } from "@/lib/bead-status-reader";
 import { readBeadStatus } from "@/lib/bead-status-reader";
 import { readMarker } from "@/lib/marker-reader";
 import { getEpicLabels } from "@/lib/pipeline-labels";
+import { listOpenWaveBeads, listAllStatusWaveBeads } from "@/lib/agent-launcher";
 import type { PipelineEvent } from "@/lib/event-log";
 
 const mockReadBeadStatus = readBeadStatus as jest.MockedFunction<
@@ -72,11 +86,31 @@ const mockReadMarker = readMarker as jest.MockedFunction<typeof readMarker>;
 const mockGetEpicLabels = getEpicLabels as jest.MockedFunction<
   typeof getEpicLabels
 >;
+const mockListOpenWaveBeads = listOpenWaveBeads as jest.MockedFunction<
+  typeof listOpenWaveBeads
+>;
+const mockListAllStatusWaveBeads = listAllStatusWaveBeads as jest.MockedFunction<
+  typeof listAllStatusWaveBeads
+>;
 
 // ---- Helpers --------------------------------------------------------------
 
 async function makeRepo(): Promise<string> {
   return await fs.mkdtemp(path.join(os.tmpdir(), "ehp4-test-"));
+}
+
+/**
+ * Create a stub plan file at the conventional location so the start-wave /
+ * approve-plan PLAN_FILE_EXISTS predicate is satisfied. Required for any
+ * test that drives an action subject to PLAN_FILE_MISSING (start-wave,
+ * approve-plan, send-for-development). Returns the plan-file path.
+ */
+async function writePlanFile(repo: string, epicId: string): Promise<string> {
+  const planDir = path.join(repo, ".beads", "plans");
+  await fs.mkdir(planDir, { recursive: true });
+  const planPath = path.join(planDir, `${epicId}.md`);
+  await fs.writeFile(planPath, `# Plan for ${epicId}\n\nstub\n`);
+  return planPath;
 }
 
 function makeMarker(overrides: Partial<MarkerData> = {}): MarkerData {
@@ -148,9 +182,13 @@ describe("marker-driven-routing × dispatch-preconditions integration (beads_web
     mockReadBeadStatus.mockReset();
     mockReadMarker.mockReset();
     mockGetEpicLabels.mockReset();
+    mockListOpenWaveBeads.mockReset();
+    mockListAllStatusWaveBeads.mockReset();
     // Sane defaults — explicit per-test overrides supersede.
     mockReadMarker.mockResolvedValue(null);
     mockGetEpicLabels.mockResolvedValue([]);
+    mockListOpenWaveBeads.mockResolvedValue([]);
+    mockListAllStatusWaveBeads.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -452,8 +490,13 @@ describe("marker-driven-routing × dispatch-preconditions integration (beads_web
     const matches = await rule.matches(events, new Date());
     expect(matches).toHaveLength(1);
 
-    // Must NOT throw — 412 is a refusal, not a failure.
-    await expect(rule.act(matches[0])).resolves.toBeUndefined();
+    // Must NOT throw — 412 is a refusal, not a failure. Under beads_web-3e6
+    // the rule returns RuleActResult { refused: true, refusalCode } instead
+    // of undefined so the reconciler skips the action-taken append.
+    await expect(rule.act(matches[0])).resolves.toEqual({
+      refused: true,
+      refusalCode: "ROUTE_REFUSED_412",
+    });
 
     // Fetch DID fire (the route is the gate that refused).
     expect(fetchCalls).toHaveLength(1);
@@ -469,5 +512,278 @@ describe("marker-driven-routing × dispatch-preconditions integration (beads_web
     expect(payload.refusalCode).toBe("ROUTE_REFUSED_412");
     expect(payload.failedCheck).toBe("route-side-precondition");
     expect(typeof payload.reason).toBe("string");
+  });
+
+  // ==========================================================================
+  // beads_web-vpu — start-wave dispatch passes waveNumber to buildDispatchContext
+  // ==========================================================================
+  // Empirical reproducer: factory-core-855c (C2 attempt-7 T2) at 2026-05-08
+  // 21:29 BST. Marker-driven-routing rule retried start-wave indefinitely,
+  // every retry refused NO_WAVE_BEADS even though the wave-1 child existed.
+  // Root cause: buildDispatchContext called without waveNumber → openWaveBeadIds
+  // short-circuits to []. Fix: derive waveNumber from epic labels (wave:N) or
+  // default 1 for first start-wave; pass to buildDispatchContext AND POST body.
+  // --------------------------------------------------------------------------
+  test("vpu AC2: start-wave dispatch with open wave-1 child → no NO_WAVE_BEADS refusal, fetch fires with waveNumber=1", async () => {
+    const repo = await makeRepo();
+    const epicId = "factory-core-vpu-test";
+    await writePlanFile(repo, epicId);
+    // The marker that fires start-wave is the test-spec exit marker — its
+    // stage is "test-spec" and next_agent="builder" routes to start-wave.
+    const stage = "test-spec";
+
+    const stageMarker = makeMarker({
+      epic_id: epicId,
+      status: "success",
+      stage,
+      next_agent: "builder",
+    });
+
+    // Open epic with the wave-1 child still open. No wave:N on the epic
+    // itself — first start-wave should default to wave=1.
+    mockReadBeadStatus.mockResolvedValue(
+      makeBead({ id: epicId, status: "open" }),
+    );
+    mockReadMarker.mockResolvedValue(null);
+    mockGetEpicLabels.mockResolvedValue([
+      "pipeline:test-spec",
+      "ship-type:internal",
+    ]);
+    // Wave-1 children exist: precondition gate must NOT refuse.
+    mockListOpenWaveBeads.mockResolvedValue([`${epicId}.1`]);
+    mockListAllStatusWaveBeads.mockResolvedValue([`${epicId}.1`]);
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => stageMarker,
+      readEpicSnapshot: async () =>
+        makeSnapshot({
+          currentStage: stage,
+          labels: ["pipeline:test-spec", "ship-type:internal"],
+          title: "vpu Regression Test",
+        }),
+      repoPath: repo,
+      actionUrl: "http://localhost:3000/api/fleet/action",
+    });
+
+    const events: PipelineEvent[] = [
+      {
+        type: "agent-exited",
+        epicId,
+        stage,
+        timestamp: new Date(Date.now() - 1 * 60_000).toISOString(),
+        payload: { exitCode: 0 },
+      },
+    ];
+
+    const matches = await rule.matches(events, new Date());
+    expect(matches).toHaveLength(1);
+
+    await rule.act(matches[0]);
+
+    // No NO_WAVE_BEADS refusal — gate passed.
+    const refusals = await readEvents(repo, {
+      type: "reconciler-action-refused",
+    });
+    expect(refusals).toHaveLength(0);
+
+    // Fetch DID fire with waveNumber=1 in the POST body.
+    expect(fetchCalls).toHaveLength(1);
+    const body = fetchCalls[0].body as Record<string, unknown>;
+    expect(body.action).toBe("start-wave");
+    expect(body.epicId).toBe(epicId);
+    expect(body.waveNumber).toBe(1);
+
+    // listOpenWaveBeads was called with waveNumber=1.
+    expect(mockListOpenWaveBeads).toHaveBeenCalledWith(
+      epicId,
+      1,
+      expect.any(String),
+    );
+  });
+
+  test("vpu AC1: review-wave dispatch reads wave:N from epic labels (wave:2)", async () => {
+    const repo = await makeRepo();
+    const epicId = "factory-core-vpu-review";
+    await writePlanFile(repo, epicId);
+    const stage = "review:wave-2";
+
+    const stageMarker = makeMarker({
+      epic_id: epicId,
+      status: "success",
+      stage,
+      next_agent: "reviewer",
+    });
+
+    mockReadBeadStatus.mockResolvedValue(
+      makeBead({ id: epicId, status: "open" }),
+    );
+    mockReadMarker.mockResolvedValue(null);
+    mockGetEpicLabels.mockResolvedValue([
+      `pipeline:${stage}`,
+      "ship-type:internal",
+      "wave:2",
+    ]);
+    mockListOpenWaveBeads.mockResolvedValue([`${epicId}.2`]);
+    mockListAllStatusWaveBeads.mockResolvedValue([`${epicId}.2`]);
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => stageMarker,
+      readEpicSnapshot: async () =>
+        makeSnapshot({
+          currentStage: stage,
+          labels: [`pipeline:${stage}`, "ship-type:internal", "wave:2"],
+          title: "vpu Review Wave Test",
+        }),
+      repoPath: repo,
+      actionUrl: "http://localhost:3000/api/fleet/action",
+    });
+
+    const events: PipelineEvent[] = [
+      {
+        type: "agent-exited",
+        epicId,
+        stage,
+        timestamp: new Date(Date.now() - 1 * 60_000).toISOString(),
+        payload: { exitCode: 0 },
+      },
+    ];
+
+    const matches = await rule.matches(events, new Date());
+    expect(matches).toHaveLength(1);
+
+    await rule.act(matches[0]);
+
+    // listOpenWaveBeads was called with waveNumber=2 (read from wave:2 label).
+    expect(mockListOpenWaveBeads).toHaveBeenCalledWith(
+      epicId,
+      2,
+      expect.any(String),
+    );
+    // Fetch fired with waveNumber=2.
+    expect(fetchCalls).toHaveLength(1);
+    const body = fetchCalls[0].body as Record<string, unknown>;
+    expect(body.action).toBe("review-wave");
+    expect(body.waveNumber).toBe(2);
+  });
+
+  test("vpu AC3: start-wave with NO open wave-N beads still refuses NO_WAVE_BEADS (legitimate refusal preserved)", async () => {
+    const repo = await makeRepo();
+    const epicId = "factory-core-vpu-empty";
+    await writePlanFile(repo, epicId);
+    const stage = "test-spec";
+
+    const stageMarker = makeMarker({
+      epic_id: epicId,
+      status: "success",
+      stage,
+      next_agent: "builder",
+    });
+
+    mockReadBeadStatus.mockResolvedValue(
+      makeBead({ id: epicId, status: "open" }),
+    );
+    mockReadMarker.mockResolvedValue(null);
+    mockGetEpicLabels.mockResolvedValue([
+      "pipeline:test-spec",
+      "ship-type:internal",
+    ]);
+    // No wave-1 children exist — legitimate NO_WAVE_BEADS case.
+    mockListOpenWaveBeads.mockResolvedValue([]);
+    mockListAllStatusWaveBeads.mockResolvedValue([]);
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => stageMarker,
+      readEpicSnapshot: async () =>
+        makeSnapshot({
+          currentStage: stage,
+          labels: ["pipeline:test-spec", "ship-type:internal"],
+          title: "vpu Empty Wave Test",
+        }),
+      repoPath: repo,
+      actionUrl: "http://localhost:3000/api/fleet/action",
+    });
+
+    const events: PipelineEvent[] = [
+      {
+        type: "agent-exited",
+        epicId,
+        stage,
+        timestamp: new Date(Date.now() - 1 * 60_000).toISOString(),
+        payload: { exitCode: 0 },
+      },
+    ];
+
+    const matches = await rule.matches(events, new Date());
+    expect(matches).toHaveLength(1);
+
+    await rule.act(matches[0]);
+
+    // No fetch — refused at gate.
+    expect(fetchCalls).toHaveLength(0);
+
+    // Refusal event recorded with NO_WAVE_BEADS.
+    const refusals = await readEvents(repo, {
+      type: "reconciler-action-refused",
+    });
+    expect(refusals).toHaveLength(1);
+    const payload = refusals[0].payload as Record<string, unknown>;
+    expect(payload.refusalCode).toBe("NO_WAVE_BEADS");
+    expect(payload.action).toBe("start-wave");
+  });
+
+  test("vpu: non-wave action (run-architect) still passes waveNumber=undefined (no regression)", async () => {
+    const repo = await makeRepo();
+    const epicId = "factory-core-vpu-non-wave";
+    const stage = "plan-review";
+
+    const stageMarker = makeMarker({
+      epic_id: epicId,
+      status: "blocked",
+      stage,
+      next_agent: "architect",
+    });
+
+    mockReadBeadStatus.mockResolvedValue(
+      makeBead({ id: epicId, status: "open" }),
+    );
+    mockReadMarker.mockResolvedValue(null);
+    mockGetEpicLabels.mockResolvedValue(["pipeline:plan-review"]);
+
+    const rule = buildMarkerDrivenRoutingRule({
+      readMarker: async () => stageMarker,
+      readEpicSnapshot: async () =>
+        makeSnapshot({
+          currentStage: stage,
+          labels: ["pipeline:plan-review"],
+          title: "vpu Non-Wave Action Test",
+        }),
+      repoPath: repo,
+      actionUrl: "http://localhost:3000/api/fleet/action",
+    });
+
+    const events: PipelineEvent[] = [
+      {
+        type: "agent-exited",
+        epicId,
+        stage,
+        timestamp: new Date(Date.now() - 1 * 60_000).toISOString(),
+        payload: { exitCode: 0 },
+      },
+    ];
+
+    const matches = await rule.matches(events, new Date());
+    expect(matches).toHaveLength(1);
+
+    await rule.act(matches[0]);
+
+    // Fetch fired without waveNumber in the body.
+    expect(fetchCalls).toHaveLength(1);
+    const body = fetchCalls[0].body as Record<string, unknown>;
+    expect(body.action).toBe("run-architect");
+    expect(body).not.toHaveProperty("waveNumber");
+
+    // listOpenWaveBeads was NOT called (action is not start-wave/review-wave;
+    // dispatch-preconditions short-circuits when waveNumber is undefined).
+    expect(mockListOpenWaveBeads).not.toHaveBeenCalled();
   });
 });
