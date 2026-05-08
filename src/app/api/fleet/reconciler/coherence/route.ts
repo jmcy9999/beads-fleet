@@ -11,6 +11,15 @@
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+// beads_web-poh follow-on (2026-05-08): MUST be force-dynamic. The
+// response is built from a fresh JSONL event-log read every call, so
+// caching at the framework layer is wrong on its face. More
+// importantly, the sibling route /api/fleet/reconciler/status was
+// silently being prerendered (build-time response cached forever), and
+// this route shares the same structural risk — a stale prerender here
+// would mask coherence escalations from the dashboard. Marking dynamic
+// matches every other /api/fleet/* route's contract.
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

@@ -17,6 +17,15 @@ import { NextResponse } from "next/server";
 import { ensureDoltLifecycleRegistered } from "@/lib/dolt-lifecycle";
 
 export const runtime = "nodejs";
+// beads_web-poh follow-on (2026-05-08): MUST be force-dynamic. Without
+// this declaration, Next.js App Router prerenders the GET response at
+// build time, so the handler never runs in production and the SIGTERM/
+// SIGINT lifecycle handlers are never registered. See the matching
+// comment in /api/fleet/reconciler/status/route.ts for the full
+// failure mode. Same symptom shape: lifecycle bootstrap routes that
+// rely on first-GET to register process-wide hooks must be marked
+// dynamic, otherwise their hooks never get installed.
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

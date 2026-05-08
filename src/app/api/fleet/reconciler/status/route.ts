@@ -11,6 +11,25 @@
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+// beads_web-poh follow-on (2026-05-08): MUST be force-dynamic. Without
+// this declaration, Next.js App Router prerenders the GET response at
+// build time. The build process spins up its OWN reconciler (because
+// `ensureReconcilerRunning()` is called inside the handler), captures
+// `lastTickAt` at build time, and serializes the response body to
+// `.next/server/app/api/fleet/reconciler/status.body`. In production
+// every GET hits that cached body (`x-nextjs-cache: HIT`), the route
+// handler NEVER runs, `ensureReconcilerRunning()` is NEVER called from
+// the running server, and the actual production reconciler is never
+// bootstrapped — yet the cached body shows `running: true` with a frozen
+// `lastTickAt` from the build process. Symptoms: pipeline stalls because
+// no rule fires (no reconciler in the running process); status banner
+// claims "running" with a stale tick.
+//
+// `force-dynamic` opts the route out of prerendering so the handler
+// executes on every request, the production reconciler bootstraps on
+// first hit, and `lastTickAt` reflects the running process's actual
+// state.
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

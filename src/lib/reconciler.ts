@@ -252,6 +252,15 @@ export class Reconciler {
   private async _tickInternal(now: Date): Promise<void> {
     const since = new Date(now.getTime() - this.lookbackMs).toISOString();
     this.lastTickAt = now.toISOString();
+    // beads_web-poh follow-on (2026-05-08): regression-visibility log.
+    // Without this we cannot distinguish "reconciler is ticking, just
+    // doing nothing" from "reconciler is wedged / never bootstrapped"
+    // by reading the orchestrator log alone — and the status endpoint
+    // can lie (see the prerender cache failure mode in the status
+    // route's force-dynamic comment). One line per tick at info level
+    // is cheap (60s default tick) and makes "is it actually running?"
+    // a one-grep question.
+    console.log(`[reconciler] tick fired at ${this.lastTickAt}`);
 
     let events: PipelineEvent[];
     try {
