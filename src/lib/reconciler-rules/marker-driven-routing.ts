@@ -172,10 +172,19 @@ export interface MarkerDrivenRoutingRuleOptions {
 // but agents write markers using their AGENT names (e.g. "product-manager",
 // "architect"). Translate before constructing markerId. Identity rows ("X" →
 // "X") are listed for documentation; the lookup falls back to identity.
+//
+// 2026-05-08 (poh.24, C2 attempt 4 empirical): launchAgent at the planner
+// dispatch sites (route.ts:1469,1614,1656,1705,3343) sets pipelineStage="planning"
+// but the canonical pipeline-label name is "plan-review" and the planner agent
+// writes its marker as <epic>-planner.json. The "plan-review" entry below is
+// kept for the route.ts:3247 outlier and for forward-consistency with the label
+// lexicon; "planning" is added so the 4 main call sites resolve the same way.
+// Both keys map to "planner" → identical markerId construction.
 const STAGE_TO_AGENT_NAME: Record<string, string> = {
   research: "research",
   "product-spec": "product-manager",
   architecture: "architect",
+  planning: "planner",
   "plan-review": "planner",
   "test-spec": "test-spec",
   development: "builder",

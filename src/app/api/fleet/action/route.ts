@@ -1990,7 +1990,14 @@ export async function POST(request: NextRequest) {
           allowedTools: "Bash,Read,Glob,Grep",
           epicId: epicId as string,
           epicLabels: actualLabels,
-          pipelineStage: undefined, // coherence is meta, not a pipeline stage
+          // beads_web-poh.23 (2026-05-08): set pipelineStage="coherence" so the
+          // resulting agent-exited event carries stage="coherence" (matching the
+          // marker filename <epic>-coherence.json + STAGE_TO_AGENT_NAME identity
+          // entry). Without this, agent-exited.stage was undefined and
+          // marker-driven-routing's event-based path filtered the event out
+          // entirely (matches() requires stage); the coherence marker was only
+          // discoverable via the 5-min filesystem-walk fallback.
+          pipelineStage: "coherence",
           agentName: "coherence",
         });
 
