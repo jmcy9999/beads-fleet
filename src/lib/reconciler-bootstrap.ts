@@ -47,7 +47,11 @@ import { readEpicState } from "./agent-launcher";
 import { removeLabelsFromEpic } from "./pipeline-labels";
 import { appendEvent, readEvents } from "./event-log";
 import { execSync } from "child_process";
-import { statSync, readdirSync } from "fs";
+import { readFileSync, statSync, readdirSync } from "fs";
+import {
+  readDispatchSentinelSync,
+  statMarkerMtimeSync,
+} from "./marker-dispatch-sentinel";
 import * as path from "path";
 import * as os from "os";
 import { getBdPath, getBdEnv } from "./bd-path";
@@ -320,7 +324,7 @@ export function ensureReconcilerRunning(): void {
         listRegisteredRepos: () => {
           try {
             const configPath = path.join(os.homedir(), ".beads-web.json");
-            const raw = require("fs").readFileSync(configPath, "utf-8");
+            const raw = readFileSync(configPath, "utf-8");
             const config = JSON.parse(raw);
             if (!Array.isArray(config.repos)) return [];
             return config.repos
@@ -372,7 +376,6 @@ export function ensureReconcilerRunning(): void {
         },
         // --- poh.17 persistent dispatch sentinels ---
         readDispatchSentinel: (rp: string, key: string) => {
-          const { readDispatchSentinelSync } = require("./marker-dispatch-sentinel");
           return readDispatchSentinelSync(rp, key);
         },
         writeDispatchSentinel: async (rp: string, key: string, sentinel) => {
@@ -380,7 +383,6 @@ export function ensureReconcilerRunning(): void {
           await writeDispatchSentinel(rp, key, sentinel);
         },
         statMarkerMtime: (rp: string, markerId: string) => {
-          const { statMarkerMtimeSync } = require("./marker-dispatch-sentinel");
           return statMarkerMtimeSync(rp, markerId);
         },
       }),
