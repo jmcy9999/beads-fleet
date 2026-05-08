@@ -95,6 +95,24 @@ export async function readMarker(
     const content = await fs.readFile(markerPath, "utf-8");
     const parsed = JSON.parse(content);
 
+    // beads_web-poh.20 — best-effort timestamp override per marker-protocol §1
+    // and marker-schema.md ADR-002. Agents do NOT author started_at / exited_at;
+    // orchestrator stamps them at ingest. When the agent-written value is null
+    // or missing, fall back to the marker file's mtime (the atomic *.tmp →
+    // *.json rename guarantees mtime reflects the moment writing finished).
+    // Yields zero duration on the orphan path; honest signal for downstream
+    // filtering rather than a fabricated value.
+    if (!parsed.started_at || !parsed.exited_at) {
+      try {
+        const stat = await fs.stat(markerPath);
+        const mtimeIso = stat.mtime.toISOString();
+        if (!parsed.started_at) parsed.started_at = mtimeIso;
+        if (!parsed.exited_at) parsed.exited_at = mtimeIso;
+      } catch {
+        // stat failed — fall through to validation, which will reject
+      }
+    }
+
     // Validate required fields (AC 5)
     if (!parsed.version) {
       console.warn(
