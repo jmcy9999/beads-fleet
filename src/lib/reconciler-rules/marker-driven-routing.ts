@@ -199,14 +199,34 @@ export function buildMarkerDrivenRoutingRule(
       // Event-based discovery: filter for agent-exited events within the
       // reconciler's lookback window (typically 60 min). For each epic-id
       // in those events, read marker and check routing intent.
-      const epicStages = new Map<string, string>(); // epicId -> stage
+      //
+      // beads_web-poh.22 (2026-05-08): track the MOST RECENT stage per epic
+      // by explicit timestamp comparison. Earlier implementation used
+      // `Map.set` overwrite while iterating the events array and assumed
+      // "later in iteration = later in time". But `readEvents` returns
+      // events newest-first (`filtered.reverse()` at event-log.ts:256), so
+      // the last iteration was actually the OLDEST event — inverted intent.
+      // Comparing `Date.parse(e.timestamp)` is order-independent and
+      // survives any future change to readEvents's ordering.
+      const epicLatest = new Map<string, { stage: string; ts: number }>();
       for (const e of events) {
-        if (e.type === "agent-exited" && e.epicId && e.stage) {
-          // Track the MOST RECENT stage for each epicId (later events in
-          // the array overwrite earlier ones). Handles cases where an
-          // epic has multiple agent-exited events in the lookback window.
-          epicStages.set(e.epicId, e.stage);
+        if (e.type !== "agent-exited" || !e.epicId || !e.stage) continue;
+        const ts = Date.parse(e.timestamp);
+        if (Number.isNaN(ts)) continue;
+        const existing = epicLatest.get(e.epicId);
+        if (!existing || ts > existing.ts) {
+          epicLatest.set(e.epicId, { stage: e.stage, ts });
         }
+      }
+      const epicStages = new Map<string, string>();
+      for (const [epicId, { stage }] of epicLatest.entries()) {
+        epicStages.set(epicId, stage);
+      }
+      if (epicStages.size > 0) {
+        const summary = Array.from(epicStages.entries())
+          .map(([id, s]) => `${id}=${s}`)
+          .join(", ");
+        console.log(`[xfc] matches: latest-stage-per-epic { ${summary} }`);
       }
 
       const matches: ReconcilerMatch[] = [];
