@@ -312,7 +312,8 @@ export function buildWaveBeadMismatchRule(
             reason: waveBeadsResult.reason,
           },
         });
-        return;
+        // beads_web-3e6: signal refusal so reconciler skips action-taken
+        return { refused: true, refusalCode: waveBeadsResult.refusalCode };
       }
 
       // Universal + per-action predicates registered against
@@ -335,7 +336,8 @@ export function buildWaveBeadMismatchRule(
             reason: precondResult.reason,
           },
         });
-        return;
+        // beads_web-3e6: signal refusal so reconciler skips action-taken
+        return { refused: true, refusalCode: precondResult.refusalCode };
       }
 
       // zsjv hotfix 2026-04-21: fetch timeout (15s — preserved from prior
@@ -393,7 +395,8 @@ export function buildWaveBeadMismatchRule(
             reason: text,
           },
         });
-        return;
+        // beads_web-3e6: signal refusal so reconciler skips action-taken
+        return { refused: true, refusalCode: "ROUTE_REFUSED_412" };
       }
 
       if (!res.ok) {

@@ -452,7 +452,8 @@ export function buildStuckInStageRule(
               reason: precondResult.reason,
             },
           });
-          return;
+          // beads_web-3e6: signal refusal so reconciler skips action-taken
+          return { refused: true, refusalCode: precondResult.refusalCode };
         }
       } else {
         console.warn(
@@ -565,7 +566,8 @@ export function buildStuckInStageRule(
             },
           });
         }
-        return;
+        // beads_web-3e6: signal refusal so reconciler skips action-taken
+        return { refused: true, refusalCode: "ROUTE_REFUSED_412" };
       }
 
       if (!res.ok) {

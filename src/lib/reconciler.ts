@@ -81,8 +81,37 @@ export interface ReconcilerRule {
    * /api/fleet/action. Must be safe to retry — if it throws, the
    * reconciler logs and continues; the next tick will see the same
    * match again and try again unless the idempotency check blocks it.
+   *
+   * beads_web-3e6 (2026-05-08): act() may now return a `RuleActResult`
+   * to signal a precondition refusal (e.g. PLAN_PENDING, AGENT_RUNNING_
+   * NO_SESSION). When a refusal is returned, the reconciler does NOT
+   * append a `reconciler-action-taken` event, so the idempotency bucket
+   * is NOT consumed and the rule will re-fire on subsequent ticks once
+   * the underlying refusal-condition has cleared (e.g. plan flipped from
+   * pending → approved by auto-approve-internal-plans). Returning void
+   * (or an undefined / non-refusal result) preserves the prior contract:
+   * the action-taken event is appended and the bucket is consumed. Throws
+   * still preserve zsjv hotfix semantics — error recorded with success=
+   * false, bucket consumed (no infinite retry on permanent failure).
    */
-  act(match: ReconcilerMatch): Promise<void>;
+  act(match: ReconcilerMatch): Promise<void | RuleActResult>;
+}
+
+/**
+ * beads_web-3e6: rule.act() may return this sentinel to signal that the
+ * dispatch was refused at a precondition gate. The reconciler treats
+ * refusals as "condition not met yet — try again next tick" and skips
+ * the action-taken event so the idempotency bucket stays open. Use this
+ * for STATE-DEPENDENT refusals where the condition can plausibly change
+ * (auto-approve flips plan:pending → plan:approved; agent:running gets
+ * stripped on session-exit; review:* labels get cleared by operator).
+ * Do NOT use this for permanent errors (4xx from action endpoint, missing
+ * required param) — those should THROW so the bucket is consumed under
+ * zsjv semantics.
+ */
+export interface RuleActResult {
+  refused: true;
+  refusalCode?: string;
 }
 
 export interface ReconcilerStatus {
@@ -355,17 +384,27 @@ export class Reconciler {
         this.inFlightDispatches += 1;
 
         // factory-core-zsjv hotfix 2026-04-21: ALWAYS emit action-taken
-        // regardless of act() success/failure. Previously a throwing
-        // act() left the idempotency bucket unconsumed, so a permanent
-        // failure (missing param, 4xx from action endpoint) would hammer
-        // the same dispatch every tick for the entire idempotency
-        // horizon. Now: bucket is consumed whether the dispatch
-        // succeeded or not; transient failures still get retried when
-        // the idempotency bucket naturally rotates (15 min for
-        // stuck-in-stage, 1 hour for rule-scoped buckets).
+        // when act() returns normally OR throws — preventing infinite
+        // retry on permanent failures (missing param, 4xx).
+        //
+        // beads_web-3e6 2026-05-08: EXCEPTION — act() may now return
+        // `{ refused: true, refusalCode }` to signal a state-dependent
+        // refusal (PLAN_PENDING, AGENT_RUNNING_NO_SESSION, REVIEW_NEEDS_
+        // HUMAN, ROUTE_REFUSED_412). On refusal we do NOT append the
+        // action-taken event, so the idempotency bucket stays open and
+        // the rule re-fires next tick once the refusal-condition has
+        // cleared. The rule itself appends a `reconciler-action-refused`
+        // event for accountability. This closes the cascade where a
+        // first-attempt refusal (e.g. start-wave called BEFORE auto-
+        // approve-internal-plans flips plan:pending → plan:approved)
+        // would block all subsequent attempts even after the refusal-
+        // reason was gone. zsjv's permanent-failure protection is
+        // preserved: throws still consume the bucket; only EXPLICIT
+        // refusal sentinels skip the action-taken event.
         let actError: string | undefined;
+        let actResult: void | RuleActResult = undefined;
         try {
-          await rule.act(match);
+          actResult = await rule.act(match);
           this.actionsDispatchedLastTick += 1;
         } catch (err) {
           actError = err instanceof Error ? err.message : String(err);
@@ -374,11 +413,36 @@ export class Reconciler {
           );
         }
 
+        const refused =
+          !!actResult &&
+          (actResult as RuleActResult).refused === true;
+
         const stats =
           this.ruleStats.get(rule.name) ?? { totalActionsDispatched: 0 };
-        stats.totalActionsDispatched += 1;
+        // Refusals don't count as a dispatched action: nothing was
+        // actually dispatched. lastMatchedAt still updates so observers
+        // can see the rule is alive.
+        if (!refused) {
+          stats.totalActionsDispatched += 1;
+        }
         stats.lastMatchedAt = now.toISOString();
         this.ruleStats.set(rule.name, stats);
+
+        if (refused) {
+          // 3e6: roll back the dispatched-counter increment we
+          // optimistically did above (line "this.actionsDispatchedLast
+          // Tick += 1"). The increment lives inside the try{} because
+          // it has to be paired with `actResult = await rule.act()` —
+          // a refusal shouldn't count toward dispatched-this-tick.
+          this.actionsDispatchedLastTick = Math.max(
+            0,
+            this.actionsDispatchedLastTick - 1,
+          );
+          console.log(
+            `[reconciler] rule "${rule.name}" act() refused with code=${(actResult as RuleActResult).refusalCode ?? "<none>"} for key="${match.idempotencyKey}" — idempotency bucket NOT consumed (will re-fire next tick if conditions still match)`,
+          );
+          continue;
+        }
 
         const actionRecord = {
           at: now.toISOString(),
@@ -391,9 +455,11 @@ export class Reconciler {
           this.recentActions = this.recentActions.slice(0, 50);
         }
 
-        // Always-emit: consumes the idempotency bucket so the next tick
-        // sees this action as already taken. Errors in the payload make
-        // the failure visible for debugging.
+        // Always-emit (success path + throw path): consumes the
+        // idempotency bucket so the next tick sees this action as
+        // already taken. Errors in the payload make the failure visible
+        // for debugging. Refusal path returns above and skips this
+        // emit — see beads_web-3e6 above.
         await appendEvent(this.repoPath, {
           type: "reconciler-action-taken",
           epicId: match.epicId,

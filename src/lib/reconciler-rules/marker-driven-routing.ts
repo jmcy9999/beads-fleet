@@ -565,13 +565,14 @@ export function buildMarkerDrivenRoutingRule(
       // tagged `reconciler_dispatch_refused` + a `reconciler-action-refused`
       // event (Wave-1 variant) + early return WITHOUT dispatching.
       //
-      // FOLLOW-ON (architecture ADR-006): refusals currently consume the
-      // reconciler-action-taken idempotency bucket because reconciler.ts
-      // appends that event unconditionally after act() returns. The proper
-      // bucketing key for refusals is (epicId, ruleName, refusalCode,
-      // 15-min window); implementing that requires a reconciler.ts change
-      // and is tracked as a separate reconciler-core bead. This rule's
-      // act() is correct: it returns cleanly so the loop continues.
+      // RESOLVED (beads_web-3e6, 2026-05-08): refusals now signal back to
+      // the reconciler loop via the `RuleActResult` return value, so the
+      // action-taken event is NOT appended on refusal and the bucket
+      // stays open for the next tick. The architectural FOLLOW-ON noted
+      // above (ADR-006 — refusal-code bucketing key) is superseded by
+      // this simpler approach: rule signals intent via return value;
+      // reconciler treats refusal as "condition not met yet — try again
+      // next tick". See reconciler.ts and beads_web-3e6 for details.
       // -----------------------------------------------------------------
       const precondCtx = await buildDispatchContext({
         epicId: match.epicId,
@@ -595,7 +596,7 @@ export function buildMarkerDrivenRoutingRule(
             reason: precondResult.reason,
           },
         });
-        return;
+        return { refused: true, refusalCode: precondResult.refusalCode };
       }
 
       // Dispatch via /api/fleet/action (same pattern as stuck-in-stage
@@ -647,7 +648,7 @@ export function buildMarkerDrivenRoutingRule(
               reason: text,
             },
           });
-          return;
+          return { refused: true, refusalCode: "ROUTE_REFUSED_412" };
         }
 
         if (!res.ok) {

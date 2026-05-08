@@ -287,6 +287,110 @@ describe("Reconciler", () => {
     expect(matchCalls).toBe(3);
   });
 
+  // ---------------------------------------------------------------------
+  // beads_web-3e6 (2026-05-08): refusal-aware idempotency.
+  //
+  // When act() returns { refused: true, refusalCode }, the reconciler
+  // does NOT emit a `reconciler-action-taken` event so the idempotency
+  // bucket stays open and the rule re-fires next tick. This closes the
+  // cascade where a first-attempt refusal (e.g. start-wave called BEFORE
+  // auto-approve-internal-plans flipped plan:pending → plan:approved)
+  // would block all subsequent attempts even after the refusal-reason
+  // was gone. Empirical reproducer: factory-core-r4im (C2 attempt-6
+  // T2) at 19:49-20:00 BST 2026-05-08.
+  //
+  // Compare against the "act that throws" test above: throws STILL emit
+  // action-taken (zsjv hotfix invariant — permanent failures consume
+  // the bucket so we don't infinite-retry on bad params / 4xx). Only
+  // EXPLICIT refusal sentinels skip the action-taken event.
+  // ---------------------------------------------------------------------
+
+  test("3e6: refused act() does NOT emit action-taken (idempotency bucket NOT consumed)", async () => {
+    const repo = await makeRepo();
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule({
+      name: "refusing-rule",
+      matches: async () => [{ idempotencyKey: "k1", epicId: "e1" }],
+      act: async () => ({ refused: true, refusalCode: "PLAN_PENDING" }),
+    });
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    await rec.tick();
+    logSpy.mockRestore();
+    const events = await readEvents(repo, {
+      type: "reconciler-action-taken",
+    });
+    expect(events).toHaveLength(0);
+  });
+
+  test("3e6: refused match re-fires on next tick (idempotency bucket open)", async () => {
+    const repo = await makeRepo();
+    const rec = new Reconciler({ repoPath: repo });
+    let attempt = 0;
+    const actCalls: string[] = [];
+    rec.registerRule({
+      name: "conditional-refuser",
+      matches: async () => [{ idempotencyKey: "k1", epicId: "e1" }],
+      act: async (m) => {
+        actCalls.push(m.idempotencyKey);
+        attempt += 1;
+        // Tick 1: refuse (plan-pending). Tick 2: succeed.
+        if (attempt === 1) {
+          return { refused: true, refusalCode: "PLAN_PENDING" };
+        }
+        // Tick 2: void = success path
+      },
+    });
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    await rec.tick(); // tick 1: refused → bucket open
+    await rec.tick(); // tick 2: succeeds → bucket consumed
+    await rec.tick(); // tick 3: dedup blocks → no new attempt
+    logSpy.mockRestore();
+    expect(actCalls).toEqual(["k1", "k1"]); // tick 1 + tick 2; tick 3 is dedup-blocked
+    const taken = await readEvents(repo, { type: "reconciler-action-taken" });
+    expect(taken).toHaveLength(1); // only tick 2 emitted
+  });
+
+  test("3e6: refusal does NOT count toward totalActionsDispatched / actionsDispatchedLastTick", async () => {
+    const repo = await makeRepo();
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule({
+      name: "refusing-rule",
+      matches: async () => [{ idempotencyKey: "k1", epicId: "e1" }],
+      act: async () => ({ refused: true, refusalCode: "AGENT_RUNNING_NO_SESSION" }),
+    });
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    await rec.tick();
+    logSpy.mockRestore();
+    const status = rec.getStatus();
+    expect(status.actionsDispatchedLastTick).toBe(0);
+    expect(status.rulesRegistered[0].totalActionsDispatched).toBe(0);
+    // recentActions should NOT include the refused match
+    expect(status.recentActions).toHaveLength(0);
+  });
+
+  test("3e6: refusal does NOT pollute action-taken events recorded by other rules in the same tick", async () => {
+    const repo = await makeRepo();
+    const rec = new Reconciler({ repoPath: repo });
+    rec.registerRule({
+      name: "refuser",
+      matches: async () => [{ idempotencyKey: "kr", epicId: "er" }],
+      act: async () => ({ refused: true, refusalCode: "REVIEW_NEEDS_HUMAN" }),
+    });
+    rec.registerRule({
+      name: "succeeder",
+      matches: async () => [{ idempotencyKey: "ks", epicId: "es" }],
+      act: async () => {},
+    });
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    await rec.tick();
+    logSpy.mockRestore();
+    const taken = await readEvents(repo, { type: "reconciler-action-taken" });
+    expect(taken).toHaveLength(1);
+    expect((taken[0].payload as { ruleName?: string }).ruleName).toBe(
+      "succeeder",
+    );
+  });
+
   test("idempotency horizon: ancient action-taken does NOT block current match", async () => {
     const repo = await makeRepo();
     // Pre-populate an action-taken event from 2 hours ago (beyond 1h horizon).
