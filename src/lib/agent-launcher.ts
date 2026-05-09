@@ -986,6 +986,95 @@ function parseChildrenFromTree(
 }
 
 // ---------------------------------------------------------------------------
+// beads_web-alq (2026-05-09): union-filter child enumeration
+// ---------------------------------------------------------------------------
+//
+// Empirically (factory-core-0pxw at C2 attempt-8 T7 23:19:26 BST 2026-05-08)
+// the `bd list --status=all --parent=<id>` filter returned 0 children when
+// the same filter run from the operator's CLI returned the wave-1 child.
+// Same cwd, same bd binary, different process — different result. The
+// rule path's review-wave dispatch refused with NO_WAVE_BEADS even though
+// the wave-1 bead existed; only coherence's explicit-waveNumber workaround
+// (route-handler path) made progress.
+//
+// This helper queries by BOTH `--parent=<id>` AND `--label=epic:<id>` and
+// unions the results de-duped by id. For internal epics (where both
+// filters target the same children) divergence implies subprocess/daemon
+// staleness on at least one path; the union is the safer approximation
+// of bd's source of truth. For non-internal epics the parent filter
+// returns nothing (different graph) so the label filter is the only
+// authoritative source — union still works.
+//
+// On total failure of both filters we throw (preserves z9h.9 contract).
+// Diagnostic logging records the counts from each filter so divergence
+// is visible in production logs going forward.
+async function unionEnumerateChildren(
+  epicId: string,
+  repoPath: string,
+  callerName: string,
+): Promise<Map<string, { id: string; isClosed: boolean }>> {
+  const byId = new Map<string, { id: string; isClosed: boolean }>();
+  const parentArgs = ["list", "--status=all", `--parent=${epicId}`];
+  const labelArgs = ["list", "--status=all", "--label", `epic:${epicId}`];
+
+  const parentRes = execBdSync(parentArgs, repoPath, 10000);
+  const labelRes = execBdSync(labelArgs, repoPath, 10000);
+
+  let parentCount = 0;
+  if (parentRes.success) {
+    for (const c of parseChildrenFromTree(parentRes.stdout, epicId)) {
+      byId.set(c.id, c);
+      parentCount += 1;
+    }
+  }
+  let labelCount = 0;
+  if (labelRes.success) {
+    for (const c of parseChildrenFromTree(labelRes.stdout, epicId)) {
+      // Prefer existing entry's isClosed if both filters returned the
+      // same id (parent-filter wins; both should agree but safe-default).
+      if (!byId.has(c.id)) byId.set(c.id, c);
+      labelCount += 1;
+    }
+  }
+
+  // Both filters failing simultaneously is a hard failure — preserve
+  // the z9h.9 contract (do NOT silently collapse to empty).
+  if (!parentRes.success && !labelRes.success) {
+    throw new Error(
+      `${callerName}: bd list failed for epic ${epicId} on BOTH filters (--parent=${epicId} AND --label=epic:${epicId}) — cannot enumerate wave beads`,
+    );
+  }
+
+  // Diagnostic logging: surface divergence between filters. When counts
+  // disagree, dump the raw stdout from the lower-yield side so we can
+  // root-cause future regressions.
+  if (parentCount !== labelCount) {
+    console.warn(
+      `[cross-repo] ${callerName}: filter divergence for epic ${epicId} in ${path.basename(repoPath)} — ` +
+      `parent-filter=${parentCount}, label-filter=${labelCount}, union=${byId.size} ` +
+      `(parentSuccess=${parentRes.success}, labelSuccess=${labelRes.success})`,
+    );
+    if (parentCount === 0 && parentRes.success) {
+      const sample = parentRes.stdout.length > 400
+        ? parentRes.stdout.slice(0, 400) + "…"
+        : parentRes.stdout;
+      console.warn(
+        `[cross-repo] ${callerName}: parent-filter stdout for epic ${epicId} (truncated): ${sample.replace(/\n/g, "\\n")}`,
+      );
+    }
+    if (labelCount === 0 && labelRes.success) {
+      const sample = labelRes.stdout.length > 400
+        ? labelRes.stdout.slice(0, 400) + "…"
+        : labelRes.stdout;
+      console.warn(
+        `[cross-repo] ${callerName}: label-filter stdout for epic ${epicId} (truncated): ${sample.replace(/\n/g, "\\n")}`,
+      );
+    }
+  }
+  return byId;
+}
+
+// ---------------------------------------------------------------------------
 // Wave status detection
 // ---------------------------------------------------------------------------
 
@@ -1481,26 +1570,24 @@ export async function listOpenWaveBeads(
     `bd show ${epicResult.success ? "succeeded" : "failed"}, isInternal=${isInternal}` +
     (epicResult.success ? "" : " (expected for cross-repo epics — using label-based filter)"),
   );
-  const filterArgs = isInternal
-    ? ["list", "--status=all", `--parent=${epicId}`]
-    : ["list", "--status=all", "--label", `epic:${epicId}`];
-  const listResult = execBdSync(filterArgs, repoPath, 10000);
-  if (!listResult.success) {
-    // factory-core-z9h.9: do NOT silently collapse a bd failure into an
-    // empty list. Throw so start-wave returns 500 and the auto-chain
-    // registers the failure instead of falling through to the legacy
-    // wave-session branch (route.ts:1155) with an empty bead set — that
-    // would silently mask unclosed work.
-    throw new Error(
-      `listOpenWaveBeads: bd list failed for epic ${epicId} (filter=${filterArgs.slice(1).join(" ")}) — cannot enumerate wave beads`,
-    );
-  }
-
-  const children = parseChildrenFromTree(listResult.stdout, epicId);
-  // factory-core-so74 A.8 fix: log child count from bd list.
+  // beads_web-alq (2026-05-09): enumerate via BOTH the parent filter AND
+  // the epic-label filter and union the results. Empirically (factory-
+  // core-0pxw at C2 attempt-8 T7 23:19:26 BST) the `--parent=` filter
+  // returned 0 children when the bd CLI run from the same cwd returned
+  // the wave-1 child — a subprocess/daemon discrepancy the rule path
+  // cannot afford. Each filter scopes differently:
+  //   - `--parent=<id>` reads the parent linkage in the bd graph
+  //   - `--label=epic:<id>` reads the label table
+  // For internal epics both should be in lockstep but the operator-
+  // observed divergence proves they aren't always. Union (de-dup by
+  // child.id) is robust against either-side staleness; both empty
+  // (the legitimate empty case) still yields []. Diagnostic logging
+  // surfaces any divergence on every call.
+  const childrenById = await unionEnumerateChildren(epicId, repoPath, "listOpenWaveBeads");
+  const children = Array.from(childrenById.values()).filter((c) => c.id !== epicId);
   console.info(
-    `[cross-repo] listOpenWaveBeads: bd list found ${children.length} children for epic ${epicId} ` +
-    `in ${path.basename(repoPath)} (filter: ${filterArgs.slice(1).join(" ")})`,
+    `[cross-repo] listOpenWaveBeads: union-filter found ${children.length} children for epic ${epicId} ` +
+    `in ${path.basename(repoPath)}`,
   );
   const open: WaveBead[] = [];
   for (const child of children) {
@@ -1611,19 +1698,14 @@ export async function listAllStatusWaveBeads(
 ): Promise<WaveBead[]> {
   if (!Number.isFinite(wave) || wave < 1) return [];
 
-  const epicResult = execBdSync(["show", epicId], repoPath, 10000);
-  const isInternal = epicResult.success && epicResult.stdout.includes("ship-type:internal");
-  const filterArgs = isInternal
-    ? ["list", "--status=all", `--parent=${epicId}`]
-    : ["list", "--status=all", "--label", `epic:${epicId}`];
-  const listResult = execBdSync(filterArgs, repoPath, 10000);
-  if (!listResult.success) {
-    throw new Error(
-      `listAllStatusWaveBeads: bd list failed for epic ${epicId} (filter=${filterArgs.slice(1).join(" ")}) — cannot enumerate wave beads`,
-    );
-  }
-
-  const children = parseChildrenFromTree(listResult.stdout, epicId);
+  // beads_web-alq (2026-05-09): union-filter enumeration. See
+  // listOpenWaveBeads above for rationale.
+  const childrenById = await unionEnumerateChildren(epicId, repoPath, "listAllStatusWaveBeads");
+  const children = Array.from(childrenById.values()).filter((c) => c.id !== epicId);
+  console.info(
+    `[cross-repo] listAllStatusWaveBeads: union-filter found ${children.length} children for epic ${epicId} ` +
+    `in ${path.basename(repoPath)}`,
+  );
   const all: WaveBead[] = [];
   for (const child of children) {
     // NOTE: Unlike listOpenWaveBeads, we do NOT skip closed beads here —

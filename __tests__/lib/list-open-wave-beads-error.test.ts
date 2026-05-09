@@ -269,3 +269,114 @@ describe("listOpenWaveBeads — happy path (factory-core-z9h.9)", () => {
     expect(beads).toEqual([]);
   });
 });
+
+// =============================================================================
+// beads_web-alq (2026-05-09): union-filter recovery from filter divergence
+// =============================================================================
+//
+// Empirical reproducer (factory-core-0pxw at C2 attempt-8 T7 23:19:26 BST):
+// `bd list --status=all --parent=<id>` returned 0 children when the same
+// filter run from the operator's CLI returned the wave-1 child. Same cwd,
+// same bd binary, different process, different result. The rule path's
+// review-wave dispatch refused with NO_WAVE_BEADS even though wave-1 beads
+// existed; only coherence's explicit-waveNumber workaround unblocked it.
+//
+// Fix: enumerate via BOTH `--parent=<id>` AND `--label=epic:<id>` and union
+// the results. Filter divergence is logged as a structured warning; either
+// filter alone can satisfy the request.
+// =============================================================================
+describe("listOpenWaveBeads — alq union-filter divergence recovery", () => {
+  it("returns the union when --parent= sees 0 but --label=epic: sees the child", async () => {
+    execBehaviour = (args) => {
+      if (args[0] === "show") {
+        if (args[1] === "factory-core-z9h") return { stdout: INTERNAL_EPIC_SHOW };
+        if (args[1] === "factory-core-z9h.aaa") return { stdout: CHILD_AAA_SHOW };
+      }
+      if (args[0] === "list") {
+        // Parent filter returns 0 children (the alq divergence).
+        if (args.some((a) => a.startsWith("--parent="))) {
+          return { stdout: "" };
+        }
+        // Label filter returns the wave-1 child (the operator-CLI truth).
+        if (args.includes("--label")) {
+          return {
+            stdout: "○ factory-core-z9h.aaa ● P1 task Open child A\n",
+          };
+        }
+      }
+      return { stdout: "" };
+    };
+
+    const beads = await listOpenWaveBeads(
+      "factory-core-z9h",
+      1,
+      "/Users/janemckay/dev/fleet/fleet-core",
+    );
+    expect(beads.map((b) => b.id)).toEqual(["factory-core-z9h.aaa"]);
+  });
+
+  it("returns the union when --label= sees 0 but --parent=<id> sees the child", async () => {
+    // Symmetric scenario: label table is stale, parent linkage is fresh.
+    execBehaviour = (args) => {
+      if (args[0] === "show") {
+        if (args[1] === "factory-core-z9h") return { stdout: INTERNAL_EPIC_SHOW };
+        if (args[1] === "factory-core-z9h.aaa") return { stdout: CHILD_AAA_SHOW };
+      }
+      if (args[0] === "list") {
+        if (args.some((a) => a.startsWith("--parent="))) {
+          return {
+            stdout: "○ factory-core-z9h.aaa ● P1 task Open child A\n",
+          };
+        }
+        if (args.includes("--label")) {
+          return { stdout: "" };
+        }
+      }
+      return { stdout: "" };
+    };
+
+    const beads = await listOpenWaveBeads(
+      "factory-core-z9h",
+      1,
+      "/Users/janemckay/dev/fleet/fleet-core",
+    );
+    expect(beads.map((b) => b.id)).toEqual(["factory-core-z9h.aaa"]);
+  });
+
+  it("de-dups when both filters return the same child", async () => {
+    execBehaviour = (args) => {
+      if (args[0] === "show") {
+        if (args[1] === "factory-core-z9h") return { stdout: INTERNAL_EPIC_SHOW };
+        if (args[1] === "factory-core-z9h.aaa") return { stdout: CHILD_AAA_SHOW };
+      }
+      if (args[0] === "list") {
+        // Both filters return the same child.
+        return { stdout: "○ factory-core-z9h.aaa ● P1 task Open\n" };
+      }
+      return { stdout: "" };
+    };
+
+    const beads = await listOpenWaveBeads(
+      "factory-core-z9h",
+      1,
+      "/Users/janemckay/dev/fleet/fleet-core",
+    );
+    expect(beads.map((b) => b.id)).toEqual(["factory-core-z9h.aaa"]);
+  });
+
+  it("throws when BOTH filters fail (z9h.9 contract preserved)", async () => {
+    execBehaviour = (args) => {
+      if (args[0] === "show") return { stdout: INTERNAL_EPIC_SHOW };
+      if (args[0] === "list") return { error: new Error("bd: connection refused") };
+      return { stdout: "" };
+    };
+
+    await expect(
+      listOpenWaveBeads(
+        "factory-core-z9h",
+        1,
+        "/Users/janemckay/dev/fleet/fleet-core",
+      ),
+    ).rejects.toThrow(/BOTH filters/);
+  });
+});
