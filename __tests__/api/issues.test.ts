@@ -10,20 +10,39 @@ import type { RobotPlan } from "@/lib/types";
 
 jest.mock("@/lib/repo-config", () => ({
   getActiveProjectPath: jest.fn(),
+  getAllRepoPaths: jest.fn(),
+  ALL_PROJECTS_SENTINEL: "__all__",
 }));
 
 jest.mock("@/lib/bv-client", () => ({
-  getPlan: jest.fn(),
+  invalidateCache: jest.fn(),
+}));
+
+jest.mock("@/lib/read-model-snapshot", () => ({
+  getRepoReadSnapshot: jest.fn(),
+  getPortfolioReadSnapshot: jest.fn(),
 }));
 
 import { GET } from "@/app/api/issues/route";
-import { getActiveProjectPath } from "@/lib/repo-config";
-import { getPlan } from "@/lib/bv-client";
+import { getActiveProjectPath, getAllRepoPaths } from "@/lib/repo-config";
+import {
+  getPortfolioReadSnapshot,
+  getRepoReadSnapshot,
+} from "@/lib/read-model-snapshot";
 
 const mockGetActiveProjectPath = getActiveProjectPath as jest.MockedFunction<
   typeof getActiveProjectPath
 >;
-const mockGetPlan = getPlan as jest.MockedFunction<typeof getPlan>;
+const mockGetAllRepoPaths = getAllRepoPaths as jest.MockedFunction<
+  typeof getAllRepoPaths
+>;
+const mockGetRepoReadSnapshot = getRepoReadSnapshot as jest.MockedFunction<
+  typeof getRepoReadSnapshot
+>;
+const mockGetPortfolioReadSnapshot =
+  getPortfolioReadSnapshot as jest.MockedFunction<
+    typeof getPortfolioReadSnapshot
+  >;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -65,7 +84,14 @@ describe("GET /api/issues", () => {
 
   it("returns 200 with plan data", async () => {
     mockGetActiveProjectPath.mockResolvedValue(TEST_PROJECT_PATH);
-    mockGetPlan.mockResolvedValue(MOCK_PLAN);
+    mockGetRepoReadSnapshot.mockResolvedValue({
+      repoPath: TEST_PROJECT_PATH,
+      repoName: "test-project",
+      issues: [],
+      plan: MOCK_PLAN,
+      generatedAt: MOCK_PLAN.timestamp,
+      refreshDurationMs: 1,
+    });
 
     const response = await GET();
     const body = await response.json();
@@ -73,7 +99,31 @@ describe("GET /api/issues", () => {
     expect(response.status).toBe(200);
     expect(body).toEqual(MOCK_PLAN);
     expect(mockGetActiveProjectPath).toHaveBeenCalledTimes(1);
-    expect(mockGetPlan).toHaveBeenCalledWith(TEST_PROJECT_PATH);
+    expect(mockGetRepoReadSnapshot).toHaveBeenCalledWith(TEST_PROJECT_PATH);
+  });
+
+  it("returns 200 with aggregated plan data in all-projects mode", async () => {
+    mockGetActiveProjectPath.mockResolvedValue("__all__");
+    mockGetAllRepoPaths.mockResolvedValue(["/repo-a", "/repo-b"]);
+    mockGetPortfolioReadSnapshot.mockResolvedValue({
+      repoPaths: ["/repo-a", "/repo-b"],
+      repos: [],
+      issues: [],
+      plan: { ...MOCK_PLAN, project_path: "__all__" },
+      offline_repos: [],
+      generatedAt: MOCK_PLAN.timestamp,
+      refreshDurationMs: 1,
+    });
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.project_path).toBe("__all__");
+    expect(mockGetPortfolioReadSnapshot).toHaveBeenCalledWith([
+      "/repo-a",
+      "/repo-b",
+    ]);
   });
 
   it("returns 503 when BEADS_PROJECT_PATH is not configured", async () => {
@@ -93,7 +143,7 @@ describe("GET /api/issues", () => {
 
   it("returns 500 on generic errors", async () => {
     mockGetActiveProjectPath.mockResolvedValue(TEST_PROJECT_PATH);
-    mockGetPlan.mockRejectedValue(new Error("Unexpected failure"));
+    mockGetRepoReadSnapshot.mockRejectedValue(new Error("Unexpected failure"));
 
     const response = await GET();
     const body = await response.json();

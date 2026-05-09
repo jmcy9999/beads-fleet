@@ -4,6 +4,8 @@
 
 import type { BeadsIssue } from "@/lib/types";
 
+const mockReadIssues = jest.fn<Promise<BeadsIssue[]>, [string]>();
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -15,17 +17,63 @@ jest.mock("@/lib/repo-config", () => ({
 }));
 
 jest.mock("@/lib/dolt-reader", () => ({
-  readIssuesFromDolt: jest.fn(),
+  readIssuesFromDolt: (...args: [string]) => mockReadIssues(...args),
+}));
+
+jest.mock("@/lib/read-model-snapshot", () => ({
+  getRepoReadSnapshot: async (repoPath: string) => ({
+    repoPath,
+    repoName: repoPath.split("/").pop() ?? "repo",
+    issues: await mockReadIssues(repoPath),
+    plan: {
+      timestamp: "2026-02-10T00:00:00Z",
+      project_path: repoPath,
+      summary: {
+        open_count: 0,
+        in_progress_count: 0,
+        blocked_count: 0,
+        closed_count: 0,
+      },
+      tracks: [],
+      all_issues: [],
+    },
+    generatedAt: "2026-02-10T00:00:00Z",
+    refreshDurationMs: 1,
+  }),
+  getPortfolioReadSnapshot: async (repoPaths: string[]) => {
+    const issueArrays = await Promise.all(
+      repoPaths.map((repoPath) => mockReadIssues(repoPath)),
+    );
+    return {
+      repoPaths,
+      repos: [],
+      issues: issueArrays.flat(),
+      plan: {
+        timestamp: "2026-02-10T00:00:00Z",
+        project_path: "__all__",
+        summary: {
+          open_count: 0,
+          in_progress_count: 0,
+          blocked_count: 0,
+          closed_count: 0,
+        },
+        tracks: [],
+        all_issues: [],
+        offline_repos: [],
+      },
+      offline_repos: [],
+      generatedAt: "2026-02-10T00:00:00Z",
+      refreshDurationMs: 1,
+    };
+  },
 }));
 
 import { GET } from "@/app/api/signals/route";
 import { getActiveProjectPath, getAllRepoPaths } from "@/lib/repo-config";
-import { readIssuesFromDolt } from "@/lib/dolt-reader";
 import { NextRequest } from "next/server";
 
 const mockGetActiveProjectPath = getActiveProjectPath as jest.MockedFunction<typeof getActiveProjectPath>;
 const mockGetAllRepoPaths = getAllRepoPaths as jest.MockedFunction<typeof getAllRepoPaths>;
-const mockReadIssues = readIssuesFromDolt as jest.MockedFunction<typeof readIssuesFromDolt>;
 
 // ---------------------------------------------------------------------------
 // Helpers

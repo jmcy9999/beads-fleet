@@ -12,14 +12,22 @@ import { NextRequest } from "next/server";
 import type { RobotPlan, PlanIssue, PlanSummary } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
-// Mocks — mock getAllProjectsPlan and getAllRepoPaths
+// Mocks — mock getPortfolioReadSnapshot and getAllRepoPaths
 // ---------------------------------------------------------------------------
 
-const mockGetAllProjectsPlan = jest.fn<Promise<RobotPlan>, [string[]]>();
+const mockGetPortfolioPlan = jest.fn<Promise<RobotPlan>, [string[]]>();
 const mockGetAllRepoPaths = jest.fn<Promise<string[]>, []>();
 
-jest.mock("@/lib/bv-client", () => ({
-  getAllProjectsPlan: (...args: unknown[]) => mockGetAllProjectsPlan(...(args as [string[]])),
+jest.mock("@/lib/read-model-snapshot", () => ({
+  getPortfolioReadSnapshot: async (repoPaths: string[]) => ({
+    repoPaths,
+    repos: [],
+    issues: [],
+    plan: await mockGetPortfolioPlan(repoPaths),
+    offline_repos: [],
+    generatedAt: "2026-01-01T00:00:00Z",
+    refreshDurationMs: 1,
+  }),
 }));
 
 jest.mock("@/lib/repo-config", () => ({
@@ -133,7 +141,7 @@ describe("AC 8a: label-filter precision (exact match, not substring)", () => {
   });
 
   beforeEach(() => {
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan([issueSo74, issueSo7]));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan([issueSo74, issueSo7]));
   });
 
   it("returns ONLY the so74 issue when filtering by epic:factory-core-so74", async () => {
@@ -196,7 +204,7 @@ describe("AC 8c: status filter applies correctly", () => {
   });
 
   beforeEach(() => {
-    mockGetAllProjectsPlan.mockResolvedValue(
+    mockGetPortfolioPlan.mockResolvedValue(
       makePlan([openIssue, closedIssue, inProgressIssue]),
     );
   });
@@ -248,7 +256,7 @@ describe("AC 8d: .repo field populated from project:<repoName> label", () => {
       labels: ["epic:test-epic", "project:factory-core"],
       status: "open",
     });
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan([issue]));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan([issue]));
 
     const req = makeGetRequest({ label: "epic:test-epic" });
     const res = await GET(req);
@@ -265,7 +273,7 @@ describe("AC 8d: .repo field populated from project:<repoName> label", () => {
       labels: ["epic:test-epic"],
       status: "open",
     });
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan([issue]));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan([issue]));
 
     const req = makeGetRequest({ label: "epic:test-epic" });
     const res = await GET(req);
@@ -289,7 +297,7 @@ describe("AC 8d: .repo field populated from project:<repoName> label", () => {
       labels: ["epic:test-epic", "project:beads_web"],
       status: "open",
     });
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan([issue1, issue2]));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan([issue1, issue2]));
 
     const req = makeGetRequest({ label: "epic:test-epic" });
     const res = await GET(req);
@@ -308,7 +316,7 @@ describe("AC 8d: .repo field populated from project:<repoName> label", () => {
 
 describe("Response shape", () => {
   it("includes label, status, count, and issues fields", async () => {
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan([]));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan([]));
 
     const req = makeGetRequest({ label: "epic:test" });
     const res = await GET(req);
@@ -324,8 +332,8 @@ describe("Response shape", () => {
 });
 
 describe("Error handling", () => {
-  it("returns 500 when getAllProjectsPlan throws", async () => {
-    mockGetAllProjectsPlan.mockRejectedValue(new Error("Dolt unreachable"));
+  it("returns 500 when the portfolio snapshot throws", async () => {
+    mockGetPortfolioPlan.mockRejectedValue(new Error("Dolt unreachable"));
 
     const req = makeGetRequest({ label: "epic:test" });
     const res = await GET(req);
@@ -349,7 +357,7 @@ describe("Error handling", () => {
 // ---------------------------------------------------------------------------
 // These tests exercise A.4's route in combination with A.1-A.3's primitives,
 // covering the integration surface between the cross-repo enumeration
-// HTTP route and the underlying getAllProjectsPlan + getAllRepoPaths chain.
+// HTTP route and the underlying read snapshot + getAllRepoPaths chain.
 // ---------------------------------------------------------------------------
 
 describe("A.8 cross-cutting: multi-repo response shape", () => {
@@ -374,7 +382,7 @@ describe("A.8 cross-cutting: multi-repo response shape", () => {
         status: "open",
       }),
     ];
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan(issues));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan(issues));
 
     const req = makeGetRequest({ label: "epic:test-cross" });
     const res = await GET(req);
@@ -387,7 +395,7 @@ describe("A.8 cross-cutting: multi-repo response shape", () => {
   });
 
   it("getAllRepoPaths is called to resolve repo paths for the aggregation", async () => {
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan([]));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan([]));
     mockGetAllRepoPaths.mockResolvedValue([
       "/repos/factory-core",
       "/repos/beads_web",
@@ -396,8 +404,8 @@ describe("A.8 cross-cutting: multi-repo response shape", () => {
     const req = makeGetRequest({ label: "epic:test" });
     await GET(req);
 
-    // getAllRepoPaths must have been called to get the repo list for
-    // getAllProjectsPlan.
+    // getAllRepoPaths must have been called to get the repo list for the
+    // portfolio snapshot.
     expect(mockGetAllRepoPaths).toHaveBeenCalled();
   });
 
@@ -414,7 +422,7 @@ describe("A.8 cross-cutting: multi-repo response shape", () => {
         status: "in_progress",
       }),
     ];
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan(issues));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan(issues));
 
     const req = makeGetRequest({ label: "epic:test-filter" });
     const res = await GET(req);
@@ -444,7 +452,7 @@ describe("A.8 cross-cutting: multi-repo response shape", () => {
         status: "closed",
       }),
     ];
-    mockGetAllProjectsPlan.mockResolvedValue(makePlan(issues));
+    mockGetPortfolioPlan.mockResolvedValue(makePlan(issues));
 
     const req = makeGetRequest({ label: "epic:test-all", status: "all" });
     const res = await GET(req);

@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { getInsights } from "@/lib/bv-client";
 import { getActiveProjectPath, getAllRepoPaths, ALL_PROJECTS_SENTINEL } from "@/lib/repo-config";
-import { readIssuesFromDolt } from "@/lib/dolt-reader";
 import { computeInsightsFromIssues } from "@/lib/graph-metrics";
 import { emptyInsights } from "@/lib/plan-builder";
+import { getPortfolioReadSnapshot } from "@/lib/read-model-snapshot";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,10 +15,8 @@ export async function GET() {
     if (projectPath === ALL_PROJECTS_SENTINEL) {
       // Aggregate insights across all repos
       const paths = await getAllRepoPaths();
-      const results = await Promise.allSettled(paths.map((p) => readIssuesFromDolt(p)));
-      const allIssues = results
-        .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof readIssuesFromDolt>>> => r.status === "fulfilled")
-        .flatMap((r) => r.value);
+      const snapshot = await getPortfolioReadSnapshot(paths);
+      const allIssues = snapshot.issues;
 
       if (allIssues.length === 0) {
         return NextResponse.json(emptyInsights("__all__"));

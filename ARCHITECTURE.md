@@ -94,10 +94,11 @@ Each line in `token-usage.jsonl`:
 ### How the Dashboard Reads Beads
 
 1. `dolt-reader.ts` connects to each repo's Dolt MySQL server (port from `.beads/dolt-server.port`, database name from `.beads/metadata.json`). Uses `SHOW COLUMNS` to detect which optional columns exist (handles schema differences across beads versions).
-2. `bv-client.ts` tries the `bv` CLI first (richer graph analytics), falls back to the Dolt reader.
+2. `read-model-snapshot.ts` builds cached repo and portfolio snapshots for hot dashboard/polling routes. See `docs/read-model-snapshot.md`.
 3. Issues are converted to `PlanIssue` objects via `plan-builder.ts` with resolved dependency cross-references, epic associations, and `project:` labels.
 4. API routes serve this data as JSON. React hooks poll every 30-60 seconds.
 5. In `__all__` aggregation mode, `Promise.allSettled` reads each repo independently — one failing repo doesn't block the rest.
+6. `bv-client.ts` remains the adapter for richer graph/priority/diff analytics.
 
 ### Creating Beads for Different Workflows
 
@@ -375,7 +376,7 @@ Or add it directly to `~/.beads-web.json`:
 ## Data Flow
 
 ```
-.beads/dolt/ (Dolt MySQL)  ─── dolt-reader.ts ──────────────────┐
+.beads/dolt/ (Dolt MySQL)  ─── dolt-reader.ts ─── read-model-snapshot.ts ──┐
 .beads/token-usage.jsonl   ─── token-usage.ts                   │
                                                                  v
 bv CLI (--robot-plan/insights/priority/diff)                     │
@@ -400,7 +401,9 @@ bv CLI (--robot-plan/insights/priority/diff)                     │
 
 **Data reader:** dolt-reader.ts connects to each repo's Dolt MySQL server. If the server is unavailable, returns an error (not stale data).
 
-**Multi-repo aggregation:** When `activeRepo === "__all__"`, API routes fetch each repo's data via `Promise.allSettled` from each project's Dolt server, merge results, and add `project:<repoName>` labels for filtering. Failed repos are skipped.
+**Read model snapshots:** Hot read routes use `read-model-snapshot.ts`, which caches repo and portfolio snapshots with single-flight refresh and stale-if-error behaviour. Mutation routes still invalidate through `bv-client.invalidateCache()`, which also clears read-model snapshots.
+
+**Multi-repo aggregation:** When `activeRepo === "__all__"`, API routes fetch each repo's data via `Promise.allSettled` from each project's Dolt server, merge results, and add `project:<repoName>` labels for filtering. Failed repos are surfaced as `offline_repos`.
 
 **Issue mutations:** The action route (`POST /api/issues/[id]/action`) uses `findRepoForIssue()` to resolve which project contains the issue, then runs `bd` in that project directory. This works in both single-project and `__all__` aggregation mode.
 
@@ -441,8 +444,11 @@ bv CLI (--robot-plan/insights/priority/diff)                     │
 
 ## Core Library Modules
 
-### `src/lib/bv-client.ts` (central data layer)
-Wraps `bv --robot-*` CLI commands via `execFile`. Normalizes PascalCase bv output to TypeScript types. 10-second TTL cache. Falls back to Dolt reader when bv unavailable.
+### `src/lib/read-model-snapshot.ts`
+Fast read boundary for dashboard and polling routes. Builds cached repo and portfolio snapshots from Dolt direct reads, returns existing `RobotPlan` shapes, surfaces offline repos, and supports single-flight refresh plus stale-if-error.
+
+### `src/lib/bv-client.ts`
+Wraps `bv --robot-*` CLI commands via `execFile`. Normalizes PascalCase bv output to TypeScript types. Used for graph/priority/diff analytics and legacy consumers.
 
 Key exports:
 - `getPlan(projectPath?)` -> `RobotPlan`

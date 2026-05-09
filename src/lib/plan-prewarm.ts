@@ -3,20 +3,19 @@
  *
  * Problem observed 2026-04-21: first /api/fleet/wave-status request after
  * a fresh `npm run dev` took 99.5 seconds. Root cause = cold-start cache
- * population. getPlan wraps execBv --robot-plan (subprocess) plus
- * readIssuesFromDolt inside cache.getOrCompute. The first call pays the
- * full cost; subsequent calls are fast. With ~N epics, the fleet page
- * issues N parallel wave-status requests — all queued behind the one
- * cold compute. User sees "Failed to fetch" because the browser times
- * out before 99s elapses.
+ * population. The hot dashboard routes now share a Dolt-backed portfolio
+ * read snapshot. The first call pays the full fan-out cost; subsequent
+ * calls are fast. With ~N epics, the fleet page issues N parallel
+ * wave-status requests — all queued behind the one cold compute. User sees
+ * "Failed to fetch" because the browser times out before 99s elapses.
  *
  * Fix: populate the cache from a route-handler-initiated lazy bootstrap,
  * exactly like reconciler-bootstrap.ts. First HTTP request to any route
  * that calls ensurePlanPrewarmed triggers a background fetch of the full
- * plan. By the time the fleet page issues its wave-status fetches, the
- * cache is hot (or warming in parallel — both fetches converge on the
- * same cache.getOrCompute promise so the second one waits for the first
- * rather than re-doing the work).
+ * portfolio snapshot. By the time the fleet page issues its wave-status
+ * fetches, the cache is hot (or warming in parallel — both fetches
+ * converge on the same read-model promise so the second one waits for the
+ * first rather than re-doing the work).
  *
  * Why not instrumentation.ts: Next.js compiles instrumentation.ts for
  * both node and edge runtimes. bv-client imports child_process, which
@@ -43,7 +42,7 @@ function getGlobal(): GlobalWithPrewarm {
 
 /**
  * Idempotent, fire-and-forget prewarm. Call freely from any route
- * handler — first call triggers a background getAllProjectsPlan;
+ * handler — first call triggers a background portfolio snapshot refresh;
  * subsequent calls return the same resolved promise.
  *
  * Callers typically do NOT await this. It's fire-and-forget; the cache
@@ -57,18 +56,27 @@ export function ensurePlanPrewarmed(): Promise<void> {
   const start = Date.now();
   g.__planPrewarmPromise = (async () => {
     try {
-      // Wake all per-repo Dolt sql-servers BEFORE plan queries fire.
-      // Without this, dead-Dolt repos shortcut to UnreachableRobotPlan
-      // (factory-core-8260.1's probe) and the dashboard shows them as
-      // offline. With this, the probe succeeds for all repos and the
-      // plan cache is populated with real data for the full portfolio.
+      // Wake all per-repo Dolt sql-servers BEFORE snapshot queries fire.
+      // With this, the read-model cache is populated with real data for the
+      // full portfolio when the user's first dashboard request arrives.
       const { ensureDoltPrewarmed } = await import("./dolt-prewarm");
       await ensureDoltPrewarmed();
 
-      const { getAllProjectsPlan } = await import("./bv-client");
+      const { getPortfolioReadSnapshot } = await import(
+        "./read-model-snapshot"
+      );
       const { getAllRepoPaths } = await import("./repo-config");
       const paths = await getAllRepoPaths();
-      await getAllProjectsPlan(paths);
+      await getPortfolioReadSnapshot(paths);
+
+      import("./startup-collision-scan")
+        .then(({ scanForBeadIdCollisions }) => scanForBeadIdCollisions())
+        .catch((err) => {
+          console.warn(
+            "[plan-prewarm] collision scan failed (non-fatal):",
+            err instanceof Error ? err.message : err,
+          );
+        });
       const elapsed = Date.now() - start;
       console.log(
         `[plan-prewarm] cache populated for ${paths.length} repo(s) in ${elapsed}ms`,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllProjectsPlan } from "@/lib/bv-client";
 import { getAllRepoPaths } from "@/lib/repo-config";
+import { getPortfolioReadSnapshot } from "@/lib/read-model-snapshot";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,14 +9,15 @@ export const runtime = "nodejs";
  * GET /api/cross-repo/list
  *
  * Enumerates beads across all configured repos, filtered by exact label match.
- * Reuses the existing `getAllProjectsPlan` aggregator (zero new Dolt connections).
+ * Reuses the portfolio read snapshot so concurrent dashboard endpoints share
+ * one repo fan-out.
  *
  * Query params:
  *   - label  (required) — exact label to filter by (e.g. "epic:factory-core-so74")
  *   - status (optional) — "open" | "closed" | "all" (default: "open")
  *
  * Each returned issue includes a top-level `.repo` field derived from the
- * `project:<repoName>` label that `getAllProjectsPlan` adds.
+ * `project:<repoName>` label that the portfolio snapshot adds.
  */
 export async function GET(request: NextRequest) {
   const label = request.nextUrl.searchParams.get("label");
@@ -38,7 +39,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const paths = await getAllRepoPaths();
-    const data = await getAllProjectsPlan(paths);
+    const { plan: data } = await getPortfolioReadSnapshot(paths);
 
     // Filter by EXACT label match — Array.includes uses strict equality,
     // not substring matching. This is critical: "epic:factory-core-so7"

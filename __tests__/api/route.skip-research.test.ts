@@ -133,6 +133,8 @@ jest.mock("@/lib/bead-prompt", () => ({
     mockLoadBeadTestScenarios(...args),
   buildPerBeadPrompt: (...args: unknown[]) =>
     mockBuildPerBeadPrompt(...(args as [unknown])),
+  formatAgentStandingOrdersDirective: (...args: unknown[]) =>
+    `standing orders ${args.join(" ")}`,
 }));
 
 // beads_web-ehp.11: dispatch-preconditions default mock — see fleet-action

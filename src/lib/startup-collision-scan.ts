@@ -11,22 +11,21 @@
 // Complements A.1's runtime collision detection (`isAgentActive` throws on
 // active collision during dispatch); this scan catches dormant collisions.
 //
-// Non-blocking: invoked via fire-and-forget from instrumentation.ts. Does NOT
-// block startup, mutate state, or feed back into the dispatcher.
+// Non-blocking: invoked via fire-and-forget from the Node boot prewarm path.
+// Does NOT block startup, mutate state, or feed back into the dispatcher.
 // =============================================================================
 
 import { getAllRepoPaths } from "./repo-config";
-import { getPlan } from "./bv-client";
-import type { RobotPlan } from "./types";
+import { getPortfolioReadSnapshot } from "./read-model-snapshot";
 
 /**
  * Scan all registered repos for bead-ID collisions (bead IDs appearing in
  * more than one repo's issue set). Logs warnings to console if collisions
  * are found; logs a clean-registry message otherwise.
  *
- * Uses `Promise.allSettled` so that per-repo failures are handled gracefully:
- * if `getPlan(repoPath)` fails for one repo, a warning is logged and the
- * scan continues with the remaining repos.
+ * Uses the portfolio read snapshot so the scan shares the same Dolt reads as
+ * dashboard prewarm. Per-repo failures are surfaced as `offline_repos` and
+ * the scan continues with the remaining repos.
  */
 export async function scanForBeadIdCollisions(): Promise<void> {
   const startMs = Date.now();
@@ -47,39 +46,40 @@ export async function scanForBeadIdCollisions(): Promise<void> {
     return;
   }
 
-  // Fetch plans for all repos concurrently, tolerating per-repo failures.
-  const results = await Promise.allSettled(
-    repoPaths.map((repoPath) => getPlan(repoPath)),
-  );
+  let snapshot;
+  try {
+    snapshot = await getPortfolioReadSnapshot(repoPaths);
+  } catch (err) {
+    console.warn(
+      "[COLLISION SCAN] Failed to read portfolio snapshot, skipping scan:",
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
 
   // Build Map<beadId, repoPath[]> from the union of all repos' all_issues arrays.
   const beadIdToRepos = new Map<string, string[]>();
   let scannedRepoCount = 0;
 
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    const repoPath = repoPaths[i];
+  for (const offline of snapshot.offline_repos) {
+    console.warn(
+      `[COLLISION SCAN] Failed to read plan for repo ${offline.repoPath}:`,
+      offline.reason,
+    );
+  }
 
-    if (result.status === "rejected") {
-      console.warn(
-        `[COLLISION SCAN] Failed to read plan for repo ${repoPath}:`,
-        result.reason instanceof Error ? result.reason.message : result.reason,
-      );
-      continue;
-    }
-
+  for (const repo of snapshot.repos) {
     scannedRepoCount++;
-    const plan: RobotPlan = result.value;
 
-    for (const issue of plan.all_issues) {
+    for (const issue of repo.plan.all_issues) {
       const existing = beadIdToRepos.get(issue.id);
       if (existing) {
         // Only add if this repo isn't already listed for this bead ID
-        if (!existing.includes(repoPath)) {
-          existing.push(repoPath);
+        if (!existing.includes(repo.repoPath)) {
+          existing.push(repo.repoPath);
         }
       } else {
-        beadIdToRepos.set(issue.id, [repoPath]);
+        beadIdToRepos.set(issue.id, [repo.repoPath]);
       }
     }
   }

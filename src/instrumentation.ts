@@ -41,16 +41,16 @@ export async function register() {
   //
   // beads_web-8wh note: Boot-time diagnostics that need Node-only code
   // can live directly in Node-only helpers that are already called at
-  // boot (e.g., getAllProjectsPlan via plan-prewarm). No self-fetch
-  // needed if the helper is already on the boot path.
+  // boot (e.g., the read-model prewarm path). No self-fetch needed if
+  // the helper is already on the boot path.
 
   // factory-core-6wrk.1: self-fetch the reconciler status endpoint after
   // the server starts listening. This triggers ensureReconcilerRunning
-  // AND ensurePlanPrewarmed on the server side — so the plan cache is
+  // AND ensurePlanPrewarmed on the server side — so the read-model cache is
   // warming BEFORE the user's browser hits /fleet. Without this, a
   // user who arrives within ~66s of `npm run dev` waits for the cold
   // prewarm to finish (all their parallel fetches converge on the same
-  // cache.getOrCompute promise).
+  // read-model refresh promise).
   //
   // Delayed so the HTTP listener is bound by the time we fetch. Uses a
   // self-fetch to localhost:3000 (or the configured port via env) so
@@ -89,10 +89,7 @@ export async function register() {
     });
   }, 3_000);
 
-  // beads_web-8wh redesign: collision scan is folded into getAllProjectsPlan
-  // (bv-client.ts) via a first-run flag. The plan-prewarm path already calls
-  // getAllProjectsPlan at boot via the reconciler-status self-fetch above,
-  // so the scan runs naturally without any new wiring here. See
-  // docs/aspirational-pipeline/a6-redesign.md for the design and
-  // ADR-001 (fold-into-aggregator over self-fetch-to-route).
+  // beads_web-8wh redesign: the collision scan is folded into the
+  // Node-only plan-prewarm path above. It shares the portfolio read snapshot
+  // rather than doing a second `bv --robot-plan` fan-out.
 }

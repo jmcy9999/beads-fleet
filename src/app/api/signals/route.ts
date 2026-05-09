@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readIssuesFromDolt } from "@/lib/dolt-reader";
 import {
   getActiveProjectPath,
   getAllRepoPaths,
   ALL_PROJECTS_SENTINEL,
 } from "@/lib/repo-config";
+import {
+  getPortfolioReadSnapshot,
+  getRepoReadSnapshot,
+} from "@/lib/read-model-snapshot";
 import type { BeadsIssue } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -65,12 +68,11 @@ export async function GET(request: NextRequest) {
     let allIssues: BeadsIssue[];
     if (projectPath === ALL_PROJECTS_SENTINEL) {
       const paths = await getAllRepoPaths();
-      const issueArrays = await Promise.all(
-        paths.map((p) => readIssuesFromDolt(p)),
-      );
-      allIssues = issueArrays.flat();
+      const snapshot = await getPortfolioReadSnapshot(paths);
+      allIssues = snapshot.issues;
     } else {
-      allIssues = await readIssuesFromDolt(projectPath);
+      const snapshot = await getRepoReadSnapshot(projectPath);
+      allIssues = snapshot.issues;
     }
 
     // Filter by status

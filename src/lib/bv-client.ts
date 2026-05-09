@@ -20,6 +20,7 @@ import { promisify } from "util";
 import { cache, type CacheScope } from "./cache";
 import { computeInsightsFromIssues } from "./graph-metrics";
 import { readIssuesFromDolt } from "./dolt-reader";
+import { invalidateReadModelSnapshots } from "./read-model-snapshot";
 import {
   issuesToPlan,
   emptyPriority,
@@ -1017,10 +1018,12 @@ export function invalidateCache(scope?: CacheScope): void {
       // Preserve the pre-ppx.7 contract: global invalidation wipes the
       // entire cache. This is what every legacy call site expects.
       cache.invalidateAll();
+      invalidateReadModelSnapshots(effectiveScope);
       return;
     case "epic":
     case "repo":
       cache.invalidateScope(effectiveScope);
+      invalidateReadModelSnapshots(effectiveScope);
       return;
     default: {
       const _exhaustive: never = effectiveScope;

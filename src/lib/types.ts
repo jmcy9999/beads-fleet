@@ -131,12 +131,12 @@ export interface PlanTrack {
 }
 
 /**
- * Per-repo offline marker emitted by `getAllProjectsPlan` when a fan-out
- * `getPlan(p)` rejects (e.g., stale Dolt server, ECONNREFUSED). Surfaced to
- * the renderer so offline repos appear in the dashboard rather than silently
- * disappearing. See architect memo § ADR-001 / ADR-002 (lmxb-dashboard-stale-
- * dolt-routing.md): additive optional field, captured at the aggregator
- * boundary — NOT a discriminated union, NOT inside `getPlan`.
+ * Per-repo offline marker emitted by portfolio aggregators when a repo read
+ * rejects (e.g., stale Dolt server, ECONNREFUSED). Surfaced to the renderer
+ * so offline repos appear in the dashboard rather than silently disappearing.
+ * See architect memo § ADR-001 / ADR-002 (lmxb-dashboard-stale-dolt-routing.md):
+ * additive optional field, captured at the aggregator boundary — NOT a
+ * discriminated union, NOT inside single-repo reads.
  */
 export interface OfflineRepoInfo {
   repoName: string; // basename of repoPath; matches the `project:<repoName>` label scheme
@@ -151,10 +151,10 @@ export interface RobotPlan {
   tracks: PlanTrack[];
   all_issues: PlanIssue[];
   /**
-   * Optional. Populated by `getAllProjectsPlan` (the aggregator) with one
-   * entry per fan-out rejection. Single-repo `getPlan` callers do not set
-   * this field — they throw and surface the error directly. The aggregator
-   * always sets it explicitly (`[]` when all fan-outs fulfil).
+   * Optional. Populated by portfolio aggregators with one entry per fan-out
+   * rejection. Single-repo callers do not set this field — they throw and
+   * surface the error directly. Aggregators set it explicitly (`[]` when all
+   * fan-outs fulfil).
    */
   offline_repos?: OfflineRepoInfo[];
 }

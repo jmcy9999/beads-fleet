@@ -2,14 +2,18 @@
 // Tests for src/lib/startup-collision-scan.ts — scanForBeadIdCollisions()
 // =============================================================================
 //
-// beads_web-8wh AC 7: verifies collision detection with mocked getPlan. Two
-// test cases:
+// beads_web-8wh AC 7: verifies collision detection with a mocked portfolio
+// read snapshot. Two test cases:
 //   1. Collision: two RobotPlans share a bead ID -> warns
 //   2. No collision: disjoint ID sets -> logs clean message
 //
 // No live .beads/issues.jsonl mutation.
 // =============================================================================
 
+import type {
+  PortfolioReadSnapshot,
+  RepoReadSnapshot,
+} from "@/lib/read-model-snapshot";
 import type { RobotPlan, PlanIssue } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -17,14 +21,22 @@ import type { RobotPlan, PlanIssue } from "@/lib/types";
 // ---------------------------------------------------------------------------
 
 const mockGetAllRepoPaths = jest.fn<Promise<string[]>, []>();
-const mockGetPlan = jest.fn<Promise<RobotPlan>, [string?]>();
+const mockGetPortfolioReadSnapshot = jest.fn<
+  Promise<PortfolioReadSnapshot>,
+  [string[]]
+>();
 
 jest.mock("@/lib/repo-config", () => ({
   getAllRepoPaths: (...args: unknown[]) => mockGetAllRepoPaths(...(args as [])),
 }));
 
-jest.mock("@/lib/bv-client", () => ({
-  getPlan: (...args: unknown[]) => mockGetPlan(...(args as [string?])),
+jest.mock("@/lib/read-model-snapshot", () => ({
+  getPortfolioReadSnapshot: (...args: unknown[]) =>
+    mockGetPortfolioReadSnapshot(...(args as [string[]])),
+}));
+
+jest.mock("@/lib/event-log", () => ({
+  appendEvent: jest.fn(async () => undefined),
 }));
 
 // Import module under test AFTER mocks are registered
@@ -61,6 +73,50 @@ function makeRobotPlan(projectPath: string, issues: PlanIssue[]): RobotPlan {
   };
 }
 
+function makeRepoSnapshot(
+  projectPath: string,
+  issues: PlanIssue[],
+): RepoReadSnapshot {
+  const plan = makeRobotPlan(projectPath, issues);
+  return {
+    repoPath: projectPath,
+    repoName: projectPath.split("/").pop() ?? projectPath,
+    issues: [],
+    plan,
+    generatedAt: plan.timestamp,
+    refreshDurationMs: 1,
+  };
+}
+
+function makePortfolioSnapshot(
+  repoPaths: string[],
+  repos: RepoReadSnapshot[],
+  offline_repos: PortfolioReadSnapshot["offline_repos"] = [],
+): PortfolioReadSnapshot {
+  const timestamp = new Date().toISOString();
+  return {
+    repoPaths,
+    repos,
+    issues: [],
+    plan: {
+      timestamp,
+      project_path: "__all__",
+      summary: {
+        open_count: 0,
+        in_progress_count: 0,
+        blocked_count: 0,
+        closed_count: 0,
+      },
+      tracks: [],
+      all_issues: repos.flatMap((repo) => repo.plan.all_issues),
+      offline_repos,
+    },
+    offline_repos,
+    generatedAt: timestamp,
+    refreshDurationMs: 1,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -87,21 +143,21 @@ describe("scanForBeadIdCollisions", () => {
     const repoB = "/repos/beta";
 
     mockGetAllRepoPaths.mockResolvedValue([repoA, repoB]);
-    mockGetPlan.mockImplementation(async (repoPath?: string) => {
-      if (repoPath === repoA) {
-        return makeRobotPlan(repoA, [
-          makePlanIssue("test-collision-1"),
-          makePlanIssue("alpha-only-1"),
-        ]);
-      }
-      if (repoPath === repoB) {
-        return makeRobotPlan(repoB, [
-          makePlanIssue("test-collision-1"),
-          makePlanIssue("beta-only-1"),
-        ]);
-      }
-      throw new Error(`Unexpected repo: ${repoPath}`);
-    });
+    mockGetPortfolioReadSnapshot.mockResolvedValue(
+      makePortfolioSnapshot(
+        [repoA, repoB],
+        [
+          makeRepoSnapshot(repoA, [
+            makePlanIssue("test-collision-1"),
+            makePlanIssue("alpha-only-1"),
+          ]),
+          makeRepoSnapshot(repoB, [
+            makePlanIssue("test-collision-1"),
+            makePlanIssue("beta-only-1"),
+          ]),
+        ],
+      ),
+    );
 
     await scanForBeadIdCollisions();
 
@@ -145,21 +201,21 @@ describe("scanForBeadIdCollisions", () => {
     const repoB = "/repos/beta";
 
     mockGetAllRepoPaths.mockResolvedValue([repoA, repoB]);
-    mockGetPlan.mockImplementation(async (repoPath?: string) => {
-      if (repoPath === repoA) {
-        return makeRobotPlan(repoA, [
-          makePlanIssue("alpha-issue-1"),
-          makePlanIssue("alpha-issue-2"),
-        ]);
-      }
-      if (repoPath === repoB) {
-        return makeRobotPlan(repoB, [
-          makePlanIssue("beta-issue-1"),
-          makePlanIssue("beta-issue-2"),
-        ]);
-      }
-      throw new Error(`Unexpected repo: ${repoPath}`);
-    });
+    mockGetPortfolioReadSnapshot.mockResolvedValue(
+      makePortfolioSnapshot(
+        [repoA, repoB],
+        [
+          makeRepoSnapshot(repoA, [
+            makePlanIssue("alpha-issue-1"),
+            makePlanIssue("alpha-issue-2"),
+          ]),
+          makeRepoSnapshot(repoB, [
+            makePlanIssue("beta-issue-1"),
+            makePlanIssue("beta-issue-2"),
+          ]),
+        ],
+      ),
+    );
 
     await scanForBeadIdCollisions();
 
@@ -186,25 +242,29 @@ describe("scanForBeadIdCollisions", () => {
     expect(completionCalls[0][0]).toContain("across 2 repos");
   });
 
-  it("handles per-repo getPlan failure gracefully via Promise.allSettled", async () => {
-    // AC 5: if getPlan fails for one repo, log a warning and continue
+  it("handles per-repo snapshot failure gracefully", async () => {
+    // AC 5: if one repo is offline, log a warning and continue
     const repoA = "/repos/alpha";
     const repoB = "/repos/beta-broken";
     const repoC = "/repos/gamma";
 
     mockGetAllRepoPaths.mockResolvedValue([repoA, repoB, repoC]);
-    mockGetPlan.mockImplementation(async (repoPath?: string) => {
-      if (repoPath === repoA) {
-        return makeRobotPlan(repoA, [makePlanIssue("alpha-1")]);
-      }
-      if (repoPath === repoB) {
-        throw new Error("Dolt server unreachable");
-      }
-      if (repoPath === repoC) {
-        return makeRobotPlan(repoC, [makePlanIssue("gamma-1")]);
-      }
-      throw new Error(`Unexpected repo: ${repoPath}`);
-    });
+    mockGetPortfolioReadSnapshot.mockResolvedValue(
+      makePortfolioSnapshot(
+        [repoA, repoB, repoC],
+        [
+          makeRepoSnapshot(repoA, [makePlanIssue("alpha-1")]),
+          makeRepoSnapshot(repoC, [makePlanIssue("gamma-1")]),
+        ],
+        [
+          {
+            repoName: "beta-broken",
+            repoPath: repoB,
+            reason: "Dolt server unreachable",
+          },
+        ],
+      ),
+    );
 
     await scanForBeadIdCollisions();
 
@@ -252,27 +312,25 @@ describe("scanForBeadIdCollisions", () => {
     const repoC = "/repos/gamma";
 
     mockGetAllRepoPaths.mockResolvedValue([repoA, repoB, repoC]);
-    mockGetPlan.mockImplementation(async (repoPath?: string) => {
-      if (repoPath === repoA) {
-        return makeRobotPlan(repoA, [
-          makePlanIssue("collision-1"),
-          makePlanIssue("collision-2"),
-        ]);
-      }
-      if (repoPath === repoB) {
-        return makeRobotPlan(repoB, [
-          makePlanIssue("collision-1"),
-          makePlanIssue("unique-b"),
-        ]);
-      }
-      if (repoPath === repoC) {
-        return makeRobotPlan(repoC, [
-          makePlanIssue("collision-2"),
-          makePlanIssue("unique-c"),
-        ]);
-      }
-      throw new Error(`Unexpected repo: ${repoPath}`);
-    });
+    mockGetPortfolioReadSnapshot.mockResolvedValue(
+      makePortfolioSnapshot(
+        [repoA, repoB, repoC],
+        [
+          makeRepoSnapshot(repoA, [
+            makePlanIssue("collision-1"),
+            makePlanIssue("collision-2"),
+          ]),
+          makeRepoSnapshot(repoB, [
+            makePlanIssue("collision-1"),
+            makePlanIssue("unique-b"),
+          ]),
+          makeRepoSnapshot(repoC, [
+            makePlanIssue("collision-2"),
+            makePlanIssue("unique-c"),
+          ]),
+        ],
+      ),
+    );
 
     await scanForBeadIdCollisions();
 

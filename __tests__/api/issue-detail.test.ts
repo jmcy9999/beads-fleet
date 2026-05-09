@@ -19,9 +19,13 @@ jest.mock("@/lib/bv-client", () => ({
   getIssueById: jest.fn(),
 }));
 
+jest.mock("@/lib/read-model-snapshot", () => ({
+  getRepoReadSnapshot: jest.fn(),
+}));
+
 import { GET } from "@/app/api/issues/[id]/route";
 import { getActiveProjectPath, findRepoForIssue } from "@/lib/repo-config";
-import { getIssueById } from "@/lib/bv-client";
+import { getRepoReadSnapshot } from "@/lib/read-model-snapshot";
 
 const mockGetActiveProjectPath = getActiveProjectPath as jest.MockedFunction<
   typeof getActiveProjectPath
@@ -29,8 +33,8 @@ const mockGetActiveProjectPath = getActiveProjectPath as jest.MockedFunction<
 const mockFindRepoForIssue = findRepoForIssue as jest.MockedFunction<
   typeof findRepoForIssue
 >;
-const mockGetIssueById = getIssueById as jest.MockedFunction<
-  typeof getIssueById
+const mockGetRepoReadSnapshot = getRepoReadSnapshot as jest.MockedFunction<
+  typeof getRepoReadSnapshot
 >;
 
 // ---------------------------------------------------------------------------
@@ -43,8 +47,36 @@ function makeRequest(id: string): NextRequest {
   return new NextRequest(`http://localhost:3000/api/issues/${id}`);
 }
 
-function makeParams(id: string): { params: { id: string } } {
-  return { params: { id } };
+function makeParams(id: string): { params: Promise<{ id: string }> } {
+  return { params: Promise.resolve({ id }) };
+}
+
+function mockSnapshot({
+  planIssue = MOCK_PLAN_ISSUE,
+  rawIssue = MOCK_RAW_ISSUE,
+}: {
+  planIssue?: PlanIssue;
+  rawIssue?: BeadsIssue | null;
+} = {}) {
+  mockGetRepoReadSnapshot.mockResolvedValue({
+    repoPath: TEST_PROJECT_PATH,
+    repoName: "test-project",
+    issues: rawIssue ? [rawIssue] : [],
+    plan: {
+      timestamp: "2026-01-10T00:00:00Z",
+      project_path: TEST_PROJECT_PATH,
+      summary: {
+        open_count: 1,
+        in_progress_count: 0,
+        blocked_count: 0,
+        closed_count: 0,
+      },
+      tracks: [],
+      all_issues: [planIssue],
+    },
+    generatedAt: "2026-01-10T00:00:00Z",
+    refreshDurationMs: 1,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +126,7 @@ describe("GET /api/issues/:id", () => {
 
   it("returns 200 with issue data", async () => {
     mockGetActiveProjectPath.mockResolvedValue(TEST_PROJECT_PATH);
-    mockGetIssueById.mockResolvedValue(MOCK_ISSUE_RESPONSE);
+    mockSnapshot();
 
     const response = await GET(makeRequest("TEST-001"), makeParams("TEST-001"));
     const body = await response.json();
@@ -102,17 +134,12 @@ describe("GET /api/issues/:id", () => {
     expect(response.status).toBe(200);
     expect(body).toEqual(MOCK_ISSUE_RESPONSE);
     expect(mockGetActiveProjectPath).toHaveBeenCalledTimes(1);
-    expect(mockGetIssueById).toHaveBeenCalledWith(
-      "TEST-001",
-      TEST_PROJECT_PATH,
-    );
+    expect(mockGetRepoReadSnapshot).toHaveBeenCalledWith(TEST_PROJECT_PATH);
   });
 
   it("returns 404 when issue is not found", async () => {
     mockGetActiveProjectPath.mockResolvedValue(TEST_PROJECT_PATH);
-    mockGetIssueById.mockRejectedValue(
-      new Error("Issue not found: NONEXISTENT-999"),
-    );
+    mockSnapshot();
 
     const response = await GET(
       makeRequest("NONEXISTENT-999"),
@@ -126,7 +153,9 @@ describe("GET /api/issues/:id", () => {
 
   it("returns 500 on generic errors", async () => {
     mockGetActiveProjectPath.mockResolvedValue(TEST_PROJECT_PATH);
-    mockGetIssueById.mockRejectedValue(new Error("Database connection lost"));
+    mockGetRepoReadSnapshot.mockRejectedValue(
+      new Error("Database connection lost"),
+    );
 
     const response = await GET(makeRequest("TEST-001"), makeParams("TEST-001"));
     const body = await response.json();
@@ -137,25 +166,19 @@ describe("GET /api/issues/:id", () => {
 
   it("passes the correct ID from params to getIssueById", async () => {
     mockGetActiveProjectPath.mockResolvedValue(TEST_PROJECT_PATH);
-    mockGetIssueById.mockResolvedValue({
-      plan_issue: { ...MOCK_PLAN_ISSUE, id: "PROJ-042" },
-      raw_issue: null,
+    mockSnapshot({
+      planIssue: { ...MOCK_PLAN_ISSUE, id: "PROJ-042" },
+      rawIssue: null,
     });
 
     await GET(makeRequest("PROJ-042"), makeParams("PROJ-042"));
 
-    expect(mockGetIssueById).toHaveBeenCalledWith(
-      "PROJ-042",
-      TEST_PROJECT_PATH,
-    );
+    expect(mockGetRepoReadSnapshot).toHaveBeenCalledWith(TEST_PROJECT_PATH);
   });
 
   it("returns issue data even when raw_issue is null", async () => {
     mockGetActiveProjectPath.mockResolvedValue(TEST_PROJECT_PATH);
-    mockGetIssueById.mockResolvedValue({
-      plan_issue: MOCK_PLAN_ISSUE,
-      raw_issue: null,
-    });
+    mockSnapshot({ rawIssue: null });
 
     const response = await GET(makeRequest("TEST-001"), makeParams("TEST-001"));
     const body = await response.json();
@@ -172,7 +195,25 @@ describe("GET /api/issues/:id", () => {
   it("resolves repo via findRepoForIssue in __all__ mode", async () => {
     mockGetActiveProjectPath.mockResolvedValue("__all__");
     mockFindRepoForIssue.mockResolvedValue("/tmp/resolved-project");
-    mockGetIssueById.mockResolvedValue(MOCK_ISSUE_RESPONSE);
+    mockGetRepoReadSnapshot.mockResolvedValue({
+      repoPath: "/tmp/resolved-project",
+      repoName: "resolved-project",
+      issues: [MOCK_RAW_ISSUE],
+      plan: {
+        timestamp: "2026-01-10T00:00:00Z",
+        project_path: "/tmp/resolved-project",
+        summary: {
+          open_count: 1,
+          in_progress_count: 0,
+          blocked_count: 0,
+          closed_count: 0,
+        },
+        tracks: [],
+        all_issues: [MOCK_PLAN_ISSUE],
+      },
+      generatedAt: "2026-01-10T00:00:00Z",
+      refreshDurationMs: 1,
+    });
 
     const response = await GET(makeRequest("TEST-001"), makeParams("TEST-001"));
     const body = await response.json();
@@ -180,7 +221,9 @@ describe("GET /api/issues/:id", () => {
     expect(response.status).toBe(200);
     expect(body).toEqual(MOCK_ISSUE_RESPONSE);
     expect(mockFindRepoForIssue).toHaveBeenCalledWith("TEST-001");
-    expect(mockGetIssueById).toHaveBeenCalledWith("TEST-001", "/tmp/resolved-project");
+    expect(mockGetRepoReadSnapshot).toHaveBeenCalledWith(
+      "/tmp/resolved-project",
+    );
   });
 
   it("returns 404 when issue not found in any repo in __all__ mode", async () => {
@@ -196,6 +239,6 @@ describe("GET /api/issues/:id", () => {
     expect(response.status).toBe(404);
     expect(body.error).toContain("GHOST-999");
     expect(body.error).toContain("not found in any configured repo");
-    expect(mockGetIssueById).not.toHaveBeenCalled();
+    expect(mockGetRepoReadSnapshot).not.toHaveBeenCalled();
   });
 });

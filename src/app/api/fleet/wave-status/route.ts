@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllProjectsPlan } from "@/lib/bv-client";
 import { getAllRepoPaths } from "@/lib/repo-config";
+import { getPortfolioReadSnapshot } from "@/lib/read-model-snapshot";
 import { getWaveInfo } from "@/components/fleet/fleet-utils";
 
 export const dynamic = "force-dynamic";
@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const paths = await getAllRepoPaths();
-    const data = await getAllProjectsPlan(paths);
+    const { plan: data } = await getPortfolioReadSnapshot(paths);
 
     // Find children by epic label or parent-child relationship
     const children = data.all_issues.filter(

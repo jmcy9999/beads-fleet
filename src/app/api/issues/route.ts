@@ -3,10 +3,11 @@ import { execFile as execFileCb } from "child_process";
 import { promisify } from "util";
 import Anthropic from "@anthropic-ai/sdk";
 import { startActiveObservation, propagateAttributes } from "@langfuse/tracing";
-import { getPlan, getAllProjectsPlan, invalidateCache } from "@/lib/bv-client";
+import { invalidateCache } from "@/lib/bv-client";
 import { getActiveProjectPath, getAllRepoPaths, getRepos, ALL_PROJECTS_SENTINEL } from "@/lib/repo-config";
 import { parseQuickNote } from "@/lib/parse-quick-note";
 import { getBdPath, getBdEnv } from "@/lib/bd-path";
+import { getPortfolioReadSnapshot, getRepoReadSnapshot } from "@/lib/read-model-snapshot";
 
 const execFile = promisify(execFileCb);
 const BD = getBdPath();
@@ -104,12 +105,12 @@ export async function GET() {
 
     if (projectPath === ALL_PROJECTS_SENTINEL) {
       const paths = await getAllRepoPaths();
-      const data = await getAllProjectsPlan(paths);
-      return NextResponse.json(data);
+      const snapshot = await getPortfolioReadSnapshot(paths);
+      return NextResponse.json(snapshot.plan);
     }
 
-    const data = await getPlan(projectPath);
-    return NextResponse.json(data);
+    const snapshot = await getRepoReadSnapshot(projectPath);
+    return NextResponse.json(snapshot.plan);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[API /api/issues]", message);
