@@ -2270,11 +2270,34 @@ async function dispatchChainAction(
           // false WITHOUT firing fetch. Preserves existing fall-through
           // semantics (override branch returns false when dispatch did NOT
           // fire).
+          //
+          // beads_web-?? (2026-05-09 attempt-9): waveNumber derivation for
+          // wave-actions. Mirrors beads_web-vpu's fix in marker-driven-
+          // routing (the reconciler-rule path). For action ∈ { start-wave,
+          // review-wave } the precondition gate needs waveNumber so
+          // PRECOND_WAVE_BEADS_OF_ANY_STATUS_EXIST can read the wave-N
+          // children. Without it, dispatch-preconditions short-circuits
+          // anyStatusWaveBeadIds=[] and the gate refuses NO_WAVE_BEADS.
+          // The kvn inline branch is the THIRD dispatch site (route handler
+          // has its own; reconciler rule has vpu's fix); this completes
+          // the trio. Read wave:N from the epic's own labels; default 1.
           // -----------------------------------------------------------------
+          const isWaveActionInline =
+            actionName === "start-wave" || actionName === "review-wave";
+          let waveNumberInline: number | undefined;
+          if (isWaveActionInline) {
+            const waveLabel = (session.epicLabels ?? []).find((l) =>
+              /^wave:\d+$/.test(l),
+            );
+            waveNumberInline = waveLabel
+              ? parseInt(waveLabel.split(":")[1], 10)
+              : 1;
+          }
           const precondCtx = await buildDispatchContext({
             epicId: session.epicId,
             repoPath: session.repoPath,
             action: actionName,
+            waveNumber: waveNumberInline,
           });
           const precondResult = evaluatePreconditions(precondCtx);
           if (!precondResult.ok) {
@@ -2306,6 +2329,12 @@ async function dispatchChainAction(
                 epicId: session.epicId,
                 epicTitle: session.repoName,
                 currentLabels: session.epicLabels,
+                // Forward waveNumber so the route handler's own precondition
+                // check (defense-in-depth Seam 5) and the start-wave / review-
+                // wave body have the same wave context the inline gate used.
+                ...(waveNumberInline !== undefined
+                  ? { waveNumber: waveNumberInline }
+                  : {}),
               }),
             });
 
