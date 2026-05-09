@@ -414,4 +414,168 @@ describe("Reconciler", () => {
     // Ancient event is outside the horizon, so the rule fires.
     expect(rule.actedKeys).toEqual(["k1"]);
   });
+
+  // -------------------------------------------------------------------------
+  // beads_web-w2t (2026-05-09): bucket-bypass on stage re-entry.
+  // -------------------------------------------------------------------------
+  describe("w2t: marker-mtime-aware bucket bypass", () => {
+    test("stage re-entry with NEWER marker mtime bypasses bucket dedup", async () => {
+      const repo = await makeRepo();
+      // Prior dispatch recorded at oldMtime (earlier).
+      const oldMtimeMs = Date.now() - 30 * 60_000; // 30 min ago
+      await appendEvent(repo, {
+        type: "reconciler-action-taken",
+        epicId: "e1",
+        payload: {
+          ruleName: "marker-driven-routing",
+          idempotencyKey: "marker-driven-routing::e1::planning",
+          context: { stage: "planning", markerMtimeMs: oldMtimeMs },
+        },
+      });
+      const rec = new Reconciler({ repoPath: repo });
+      // Current match carries a STRICTLY NEWER mtime — coherence re-plan
+      // re-wrote the marker after the prior dispatch.
+      const newMtimeMs = oldMtimeMs + 5 * 60_000;
+      const rule = makeRule("marker-driven-routing", [
+        {
+          idempotencyKey: "marker-driven-routing::e1::planning",
+          epicId: "e1",
+          context: { stage: "planning", markerMtimeMs: newMtimeMs },
+        },
+      ]);
+      rec.registerRule(rule);
+      await rec.tick();
+      expect(rule.actedKeys).toEqual([
+        "marker-driven-routing::e1::planning",
+      ]);
+    });
+
+    test("stage re-entry with SAME marker mtime is still deduped", async () => {
+      const repo = await makeRepo();
+      const mtimeMs = Date.now() - 15 * 60_000; // 15 min ago
+      await appendEvent(repo, {
+        type: "reconciler-action-taken",
+        epicId: "e1",
+        payload: {
+          ruleName: "marker-driven-routing",
+          idempotencyKey: "marker-driven-routing::e1::planning",
+          context: { stage: "planning", markerMtimeMs: mtimeMs },
+        },
+      });
+      const rec = new Reconciler({ repoPath: repo });
+      const rule = makeRule("marker-driven-routing", [
+        {
+          idempotencyKey: "marker-driven-routing::e1::planning",
+          epicId: "e1",
+          context: { stage: "planning", markerMtimeMs: mtimeMs },
+        },
+      ]);
+      rec.registerRule(rule);
+      await rec.tick();
+      // Same mtime ⇒ true dup ⇒ should NOT fire.
+      expect(rule.actedKeys).toEqual([]);
+    });
+
+    test("missing marker mtime on EITHER side falls back to existing dedup", async () => {
+      const repo = await makeRepo();
+      // Prior event has NO markerMtimeMs in context.
+      await appendEvent(repo, {
+        type: "reconciler-action-taken",
+        epicId: "e1",
+        payload: {
+          ruleName: "test-rule",
+          idempotencyKey: "k1",
+          context: { stage: "planning" },
+        },
+      });
+      const rec = new Reconciler({ repoPath: repo });
+      // Current match has a markerMtimeMs but prior didn't — we must NOT
+      // bypass on this side because we can't compare. Existing dedup wins.
+      const rule = makeRule("test-rule", [
+        {
+          idempotencyKey: "k1",
+          epicId: "e1",
+          context: { stage: "planning", markerMtimeMs: Date.now() },
+        },
+      ]);
+      rec.registerRule(rule);
+      await rec.tick();
+      expect(rule.actedKeys).toEqual([]);
+    });
+
+    test("bypass writes a NEW action-taken event with the new mtime — second re-entry can also bypass", async () => {
+      const repo = await makeRepo();
+      const t0 = Date.now() - 40 * 60_000;
+      await appendEvent(repo, {
+        type: "reconciler-action-taken",
+        epicId: "e1",
+        payload: {
+          ruleName: "marker-driven-routing",
+          idempotencyKey: "marker-driven-routing::e1::planning",
+          context: { stage: "planning", markerMtimeMs: t0 },
+        },
+      });
+      const rec = new Reconciler({ repoPath: repo });
+      const t1 = t0 + 10 * 60_000;
+      const rule = makeRule("marker-driven-routing", [
+        {
+          idempotencyKey: "marker-driven-routing::e1::planning",
+          epicId: "e1",
+          context: { stage: "planning", markerMtimeMs: t1 },
+        },
+      ]);
+      rec.registerRule(rule);
+      await rec.tick();
+      expect(rule.actedKeys).toEqual([
+        "marker-driven-routing::e1::planning",
+      ]);
+      // Now the events log has TWO action-taken records — the second with
+      // markerMtimeMs=t1. A future match with mtime > t1 must still bypass.
+      const events = await readEvents(repo, {
+        type: "reconciler-action-taken",
+      });
+      expect(events).toHaveLength(2);
+      const newest = events[0]; // newest-first
+      expect(
+        (newest.payload as { context?: { markerMtimeMs?: number } }).context
+          ?.markerMtimeMs,
+      ).toBe(t1);
+    });
+
+    test("zsjv invariant: thrown act() still consumes bucket on first dispatch", async () => {
+      // w2t is purely additive — the bypass only fires on RE-entry with a
+      // newer marker. First-time dispatches that throw still record the
+      // event with the original markerMtimeMs and consume the bucket
+      // (zsjv hotfix preserved).
+      const repo = await makeRepo();
+      const rec = new Reconciler({ repoPath: repo });
+      const mtimeMs = Date.now();
+      rec.registerRule({
+        name: "marker-driven-routing",
+        matches: async () => [
+          {
+            idempotencyKey: "marker-driven-routing::e1::planning",
+            epicId: "e1",
+            context: { stage: "planning", markerMtimeMs: mtimeMs },
+          },
+        ],
+        act: async () => {
+          throw new Error("permanent failure");
+        },
+      });
+      const errSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      await rec.tick();
+      errSpy.mockRestore();
+      const events = await readEvents(repo, {
+        type: "reconciler-action-taken",
+      });
+      expect(events).toHaveLength(1);
+      const payload = events[0].payload as {
+        success?: boolean;
+        context?: { markerMtimeMs?: number };
+      };
+      expect(payload.success).toBe(false);
+      expect(payload.context?.markerMtimeMs).toBe(mtimeMs);
+    });
+  });
 });

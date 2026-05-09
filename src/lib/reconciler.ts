@@ -350,6 +350,22 @@ export class Reconciler {
       for (const match of matches) {
         // Idempotency check: has this exact (rule, key) already acted
         // within the idempotency horizon?
+        //
+        // beads_web-w2t (2026-05-09): bucket-bypass on stage re-entry.
+        // When the rule's match carries a markerMtimeMs in context AND a
+        // prior reconciler-action-taken event recorded its own marker
+        // mtime in payload.context.markerMtimeMs, a STRICTLY-NEWER
+        // current mtime means the marker was rewritten since the prior
+        // dispatch — i.e. a fresh stage re-entry (V2 anomaly recovery,
+        // coherence re-plan, send-back-to-dev). Treat that as a fresh
+        // dispatch — bypass the bucket dedup. Mirrors poh.17's persistent-
+        // sentinel logic but applied to the events.jsonl bucket too.
+        // Default behaviour preserved when either side lacks a marker
+        // mtime (safe-fallback to existing 60-min lookback semantics).
+        const matchMarkerMtimeMs = (
+          match.context as { markerMtimeMs?: number } | undefined
+        )?.markerMtimeMs;
+        let bypassedDedupForKey: string | undefined;
         const alreadyActed = events.some((e) => {
           if (e.type !== "reconciler-action-taken") return false;
           if (
@@ -364,11 +380,35 @@ export class Reconciler {
             return false;
           const eventMs = Date.parse(e.timestamp);
           if (Number.isNaN(eventMs)) return false;
-          return now.getTime() - eventMs <= this.idempotencyHorizonMs;
+          if (now.getTime() - eventMs > this.idempotencyHorizonMs) return false;
+
+          // w2t bucket-bypass: prior event in window — but if the current
+          // match's marker is newer than the recorded marker mtime on the
+          // prior event, this is a re-entry, not a duplicate.
+          const priorContext = (
+            e.payload as { context?: { markerMtimeMs?: number } } | undefined
+          )?.context;
+          const priorMtimeMs = priorContext?.markerMtimeMs;
+          if (
+            typeof matchMarkerMtimeMs === "number" &&
+            matchMarkerMtimeMs > 0 &&
+            typeof priorMtimeMs === "number" &&
+            priorMtimeMs > 0 &&
+            matchMarkerMtimeMs > priorMtimeMs
+          ) {
+            bypassedDedupForKey = match.idempotencyKey;
+            return false; // do NOT count this prior event as deduping
+          }
+          return true; // counts as already-acted within horizon
         });
 
         if (alreadyActed) {
           continue; // short-circuit — this action was already taken
+        }
+        if (bypassedDedupForKey) {
+          console.log(
+            `[reconciler] w2t bucket-bypass: rule="${rule.name}" key="${bypassedDedupForKey}" — marker re-written since prior dispatch (currentMtime=${matchMarkerMtimeMs}), re-firing`,
+          );
         }
 
         // factory-core-3akh.1: concurrency cap. If we're already at
